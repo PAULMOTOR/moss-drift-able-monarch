@@ -20,7 +20,7 @@
  *     and identities persist in the embedded PGLite DB (same DB as app data);
  *     the process restart wipes both. Live-preview iframe clients use a bearer
  *     token (partitioned cookies) — see `client.ts`.
- *   - Explicitly off (`VITE_AUTH_ENABLED=false`): no providers; per-user server
+ *   - Explicitly off (`VITE_AUTH_ENABLED=false`): no providers; per-user data
  *     functions fall back to a dev user (see `verify.server.ts`).
  *
  * NEVER import this from client code — it pulls in `pg` + the preview secret +
@@ -89,7 +89,19 @@ export const authConfigured =
 // it derives the origin per-request from the (proxied) host, validated against the
 // preview allowlist, which makes the OAuth `redirect_uri` the concrete preview URL
 // the broker's preview client accepts.
-const explicitBaseURL = env("BETTER_AUTH_URL");
+//
+// On Vercel DIY deploys, `VERCEL_URL` / production URL are available even when
+// `BETTER_AUTH_URL` was omitted — use them so email/password does not 403 with
+// "Invalid origin".
+const vercelProductionUrl = env("VERCEL_PROJECT_PRODUCTION_URL");
+const vercelUrl = env("VERCEL_URL");
+const vercelBranchUrl = env("VERCEL_BRANCH_URL");
+const derivedVercelBaseURL =
+  (vercelProductionUrl ? `https://${vercelProductionUrl.replace(/^https?:\/\//, "")}` : undefined) ??
+  (vercelUrl ? `https://${vercelUrl.replace(/^https?:\/\//, "")}` : undefined);
+
+const explicitBaseURL = env("BETTER_AUTH_URL")?.replace(/\/+$/, "") ?? derivedVercelBaseURL;
+
 // Explicit `string[]` (not a readonly tuple) — Better Auth's DynamicBaseURLConfig
 // requires a mutable `allowedHosts: string[]`.
 const previewAllowedHosts: string[] = [...PREVIEW_ALLOWED_HOSTS];
@@ -101,10 +113,28 @@ const LOCAL_DEV_ORIGINS: string[] = [
   "http://127.0.0.1:8080",
   "http://[::1]:8080",
 ];
+
+/** Full https origins for this Vercel deployment (prod + preview aliases). */
+function vercelOrigins(): string[] {
+  const origins = new Set<string>();
+  for (const raw of [vercelProductionUrl, vercelUrl, vercelBranchUrl, env("BETTER_AUTH_URL")]) {
+    if (!raw) continue;
+    const host = raw.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    if (host) origins.add(`https://${host}`);
+  }
+  return [...origins];
+}
+
 const baseURL = explicitBaseURL ?? {
   // Include loopback hosts so dynamic baseURL resolves for local email/password
-  // (not only the preview wildcard).
-  allowedHosts: [...previewAllowedHosts, "localhost", "127.0.0.1", "[::1]"],
+  // (not only the preview wildcard). Also allow Vercel hosts when present.
+  allowedHosts: [
+    ...previewAllowedHosts,
+    "localhost",
+    "127.0.0.1",
+    "[::1]",
+    "*.vercel.app",
+  ],
   // `auto` → trust both http:// and https:// expansions of allowedHosts
   // (preview is https; local dev is http).
   protocol: "auto" as const,
@@ -113,15 +143,19 @@ const baseURL = explicitBaseURL ?? {
 
 // Origins Better Auth accepts on credentialed POSTs (sign-up/sign-in, etc.).
 // Missing entries here surface as FORBIDDEN "Invalid origin".
-const trustedOrigins: string[] = explicitBaseURL
-  ? [explicitBaseURL, ...LOCAL_DEV_ORIGINS]
-  : [
-      // Host wildcards (matched against Origin's host)
-      ...previewAllowedHosts,
-      // Full-origin wildcards (matched against Origin)
-      ...previewAllowedHosts.flatMap((host) => [`https://${host}`, `http://${host}`]),
-      ...LOCAL_DEV_ORIGINS,
-    ];
+// Always include Vercel deployment URLs + wildcards so DIY Hobby deploys work
+// even when BETTER_AUTH_URL is missing or slightly wrong.
+const trustedOrigins: string[] = [
+  ...(explicitBaseURL ? [explicitBaseURL] : []),
+  ...vercelOrigins(),
+  // Host wildcards (matched against Origin's host)
+  ...previewAllowedHosts,
+  "*.vercel.app",
+  // Full-origin wildcards (matched against Origin)
+  ...previewAllowedHosts.flatMap((host) => [`https://${host}`, `http://${host}`]),
+  "https://*.vercel.app",
+  ...LOCAL_DEV_ORIGINS,
+];
 
 const databaseUrl = env("DATABASE_URL");
 
@@ -247,7 +281,3 @@ export const auth = betterAuth({
 export function readSessionToken(): string | null {
   return getCookie(SESSION_TOKEN_COOKIE) ?? null;
 }
-
-// Re-exported for convenience; the array lives in the dependency-free
-// `providers.ts` so the client can import it too.
-export { GROK_PROVIDERS } from "./providers";

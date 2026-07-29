@@ -249,8 +249,11 @@ export async function syncRealInventory(sql: Sql): Promise<number> {
 }
 
 export async function ensureCrmSeeded(sql: Sql) {
-  // Production Neon: schema only + optional inventory fill. No demo passwords.
-  if (!shouldSeedDemoData()) {
+  const profileCount = await sql<{ n: number }>`select count(*)::int as n from profiles`;
+  const profilesEmpty = (profileCount[0]?.n ?? 0) === 0;
+  const seed = shouldSeedDemoData({ profilesEmpty });
+
+  if (!seed) {
     const inv = await sql<{ n: number }>`select count(*)::int as n from inventory`;
     if ((inv[0]?.n ?? 0) === 0) {
       await syncRealInventory(sql);
