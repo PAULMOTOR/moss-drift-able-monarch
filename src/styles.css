@@ -1,0 +1,104 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Cormorant Garamond", "Times New Roman", serif;
+  --font-brand: "Helvetica Neue", Helvetica, Arial, ui-sans-serif, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Luxury charcoal / gold */
+  --color-background: #0b0c0e;
+  --color-foreground: #f2efe8;
+  --color-card: #12141a;
+  --color-card-foreground: #f2efe8;
+  --color-popover: #161922;
+  --color-popover-foreground: #f2efe8;
+  --color-primary: #c6a75e;
+  --color-primary-foreground: #14110c;
+  --color-secondary: #1c1f28;
+  --color-secondary-foreground: #e8e4dc;
+  --color-muted: #1a1d26;
+  --color-muted-foreground: #9a958c;
+  --color-accent: #2a1f1c;
+  --color-accent-foreground: #e8c4b8;
+  --color-destructive: #b54a4a;
+  --color-destructive-foreground: #faf6f2;
+  --color-border: #2a2e38;
+  --color-input: #2a2e38;
+  --color-ring: #c6a75e;
+  --color-success: #3d8f6e;
+  --color-success-foreground: #e8f6ef;
+  --color-warning: #b8893d;
+  --color-warning-foreground: #f8f0e0;
+  --color-sidebar: #090a0c;
+  --color-sidebar-foreground: #e8e4dc;
+  --color-sidebar-muted: #7a766e;
+  --color-sidebar-border: #1e222b;
+  --color-sidebar-accent: #161922;
+  --color-gold: #c6a75e;
+  --color-gold-dim: #8a7340;
+  --color-ink: #050506;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply antialiased;
+    color-scheme: dark;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    min-height: 100dvh;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(198, 167, 94, 0.08), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(90, 40, 40, 0.06), transparent);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring/40 ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+  .font-brand {
+    font-family: var(--font-brand);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .gold-line {
+    background: linear-gradient(90deg, transparent, var(--color-gold-dim), transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

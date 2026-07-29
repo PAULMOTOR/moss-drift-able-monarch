@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+.npm
+.pnpm-store/
+
+# build / deploy output
+dist/
+.output/
+.vercel/
+.nitro/
+.tanstack/
+.wrangler/
+
+# env & secrets — never commit real credentials
+.env
+.env.*
+!.env.example
+deploy/env.local
+
+# logs & OS
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# editor / agent
+.idea/
+.vscode/
+*.swp
+.grok/
+screenshots/
+attachments/
+*.tsbuildinfo
+
+# local DB dumps
+*.sqlite
+*.db
+pglite-data/
