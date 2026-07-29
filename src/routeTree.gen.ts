@@ -17,6 +17,7 @@ import { Route as LeadsRouteImport } from './routes/leads'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PipelineRouteImport } from './routes/pipeline'
 import { Route as TestDrivesRouteImport } from './routes/test-drives'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as LeadsIndexRouteImport } from './routes/leads.index'
 import { Route as LeadsLeadIdRouteImport } from './routes/leads.$leadId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -61,6 +62,11 @@ const TestDrivesRoute = TestDrivesRouteImport.update({
   path: '/test-drives',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LeadsIndexRoute = LeadsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -86,6 +92,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/test-drives': typeof TestDrivesRoute
+  '/api/health': typeof ApiHealthRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -98,6 +105,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/test-drives': typeof TestDrivesRoute
+  '/api/health': typeof ApiHealthRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
   '/leads': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -112,6 +120,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/test-drives': typeof TestDrivesRoute
+  '/api/health': typeof ApiHealthRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -127,6 +136,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/pipeline'
     | '/test-drives'
+    | '/api/health'
     | '/leads/$leadId'
     | '/leads/'
     | '/api/auth/$'
@@ -139,6 +149,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/pipeline'
     | '/test-drives'
+    | '/api/health'
     | '/leads/$leadId'
     | '/leads'
     | '/api/auth/$'
@@ -152,6 +163,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/pipeline'
     | '/test-drives'
+    | '/api/health'
     | '/leads/$leadId'
     | '/leads/'
     | '/api/auth/$'
@@ -166,6 +178,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   PipelineRoute: typeof PipelineRoute
   TestDrivesRoute: typeof TestDrivesRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -227,6 +240,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TestDrivesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/leads/': {
       id: '/leads/'
       path: '/'
@@ -272,6 +292,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   PipelineRoute: PipelineRoute,
   TestDrivesRoute: TestDrivesRoute,
+  ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport
