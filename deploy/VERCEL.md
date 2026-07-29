@@ -1,101 +1,90 @@
-# Deploy PAUL MOTOR CO. CRM to production
+# Deploy PAUL MOTOR CO. CRM to Vercel (5 minutes)
 
-This app is a **TanStack Start** (Vite) full-stack CRM. Production target: **Vercel** + **Neon Postgres** + **Better Auth** (email/password sessions).
-
-## Architecture
-
-| Layer | Local preview | Production |
-|---|---|---|
-| Database | Embedded PGLite (in-memory) | **Neon Postgres** via `DATABASE_URL` |
-| Auth | Better Auth email/password | Same — sessions in Postgres |
-| Host | Grok sandbox preview | **Vercel** |
-| Schema | `migrations/*.sql` auto-applied | Same files via `npm run build` → `db:migrate` |
-
-There are **no mock data arrays** for core CRM data. Inventory, leads, users, and sessions all live in Postgres tables defined in `migrations/`.
+Your code is on GitHub:  
+**https://github.com/PAULMOTOR/moss-drift-able-monarch**
 
 ---
 
-## 1. Create a free Neon database
+## One-click import
 
-1. Sign up at [https://neon.tech](https://neon.tech) (free tier is fine).
-2. Create a project, e.g. `paul-motor-crm`.
-3. Copy the **pooled** connection string (includes `-pooler` and `?sslmode=require`).
-4. Optional: open SQL Editor and paste `deploy/setup-database.sql` once.  
-   Otherwise Vercel’s build will apply `migrations/` automatically when `DATABASE_URL` is set.
+Open this link (signed into Vercel with the same Google/GitHub account):
 
-## 2. Push this repo to GitHub
+**[Import this repo on Vercel →](https://vercel.com/new/import?s=https://github.com/PAULMOTOR/moss-drift-able-monarch)**
 
-If the code is only local:
+Or: [vercel.com/new](https://vercel.com/new) → **Import Git Repository** → choose `PAULMOTOR/moss-drift-able-monarch`.
 
-```bash
-cd /path/to/paul-motor-crm
-git remote add origin https://github.com/YOUR_ORG/paul-motor-crm.git
-git push -u origin main
-```
+---
 
-Create an empty repo on GitHub first (no README), then push.
+## Before you click Deploy — free Neon database
 
-## 3. Deploy on Vercel
+The CRM needs a real Postgres database (leads, logins, sessions). Free Neon:
 
-1. [vercel.com](https://vercel.com) → **Add New Project** → import the GitHub repo.
-2. Framework: leave defaults (Vite / Nitro from this template).
-3. **Environment variables** (Production + Preview):
+1. Go to **[https://console.neon.tech](https://console.neon.tech)** → sign up free  
+2. **Create project** → name it `paul-motor-crm`  
+3. Copy the **pooled** connection string  
+   (looks like `postgresql://…@ep-….aws.neon.tech/neondb?sslmode=require`  
+   Prefer the one with `-pooler` in the host.)
 
-| Name | Example | Required |
+---
+
+## Environment variables (paste in Vercel before Deploy)
+
+In the Vercel import screen → **Environment Variables** (or Project → Settings → Environment Variables after):
+
+| Name | Value | Notes |
 |---|---|---|
-| `DATABASE_URL` | `postgresql://…@…-pooler…/neondb?sslmode=require` | Yes |
-| `BETTER_AUTH_URL` | `https://your-app.vercel.app` | Yes |
-| `BETTER_AUTH_SECRET` | output of `openssl rand -base64 32` | Yes |
-| `CRM_SEED_DEMO` | `false` | Recommended in prod |
-| `VITE_SHOW_DEMO_LOGINS` | `false` | Recommended in prod |
+| `DATABASE_URL` | Neon pooled connection string | Required |
+| `BETTER_AUTH_SECRET` | long random string | Generate: `openssl rand -base64 32` |
+| `BETTER_AUTH_URL` | `https://YOUR-PROJECT.vercel.app` | Set after you know the Vercel URL; no trailing slash |
+| `CRM_SEED_DEMO` | `true` | First deploy only — creates team logins |
+| `VITE_SHOW_DEMO_LOGINS` | `false` | Keep false in production |
 
-4. Deploy. Build runs `vite build` then `node scripts/migrate.mjs` against Neon.
-5. After first deploy, open `/login` and sign in with an admin account you create (see below).
+**Tip:** Deploy once without `BETTER_AUTH_URL`, note the URL Vercel gives you (e.g. `https://moss-drift-able-monarch.vercel.app`), then add `BETTER_AUTH_URL` and **Redeploy**.
 
-### First admin user
+Or set `BETTER_AUTH_URL` after import but before first deploy if the project name is fixed.
 
-With `CRM_SEED_DEMO=false`, the database starts empty (schema only). Options:
+---
 
-**A. Temporary demo seed (fastest)**  
-Set `CRM_SEED_DEMO=true` for **one** deploy, sign in as:
+## After deploy — first login
 
-- `jeremyp@paulmotorcompany.com` / `PaulMotor2026!`
+With `CRM_SEED_DEMO=true`, open your Vercel URL → **/login**:
 
-Then **change passwords** in Admin, set `CRM_SEED_DEMO=false`, redeploy.
+| Person | Email | Password (change ASAP) |
+|---|---|---|
+| Jeremy (admin) | jeremyp@paulmotorcompany.com | `PaulMotor2026!` |
+| Guillaume (admin) | guillaume.dec@paulmotorcompany.com | `PaulMotor2026!` |
+| Lucas (sales) | lucasl@paulmotorcompany.com | `PaulMotor2026!` |
+| Alex (sales) | alexh@paulmotorcompany.com | `PaulMotor2026!` |
 
-**B. Create users only via Admin after a bootstrap**  
-Set `CRM_SEED_DEMO=true` once to get Jeremy, then Admin → Create user for Lucas, Alex, Guillaume. Turn seed off.
+Then:
 
-## 4. Custom domain (optional)
+1. Sign in as Jeremy → **Admin** → **Edit** each user → set a real password  
+2. Set `CRM_SEED_DEMO` to `false` in Vercel → Redeploy  
 
-Vercel → Project → Domains → add `crm.paulmotorcompany.com`.  
-Update `BETTER_AUTH_URL` to that exact `https://…` origin and redeploy.
+---
 
-## 5. Security checklist
+## Optional: Neon SQL manually
 
-- [ ] Strong unique `BETTER_AUTH_SECRET`
-- [ ] `CRM_SEED_DEMO=false` after bootstrap
-- [ ] `VITE_SHOW_DEMO_LOGINS=false` (hides demo chips on login)
-- [ ] Each rep has their **own** email + password (Admin → Users)
-- [ ] Demo password `PaulMotor2026!` changed for every seeded account
-- [ ] Neon backups / branch strategy considered for long-term data
-- [ ] Only Jeremy & Guillaume have `admin` role
+If migrations fail on build, open Neon SQL Editor and paste:
 
-## 6. Local production-like run
+`deploy/setup-database.sql`
 
-```bash
-cp deploy/env.template .env.local
-# fill DATABASE_URL, BETTER_AUTH_URL=http://127.0.0.1:8080, BETTER_AUTH_SECRET=…
-export $(grep -v '^#' .env.local | xargs)
-npm run db:migrate
-npm run dev
-```
+Then redeploy (build runs `npm run db:migrate`).
 
-## Files in `deploy/`
+---
 
-| File | Purpose |
+## Custom domain later
+
+Vercel → Project → Domains → `crm.paulmotorcompany.com`  
+Update `BETTER_AUTH_URL` to that HTTPS origin → Redeploy.
+
+---
+
+## Architecture
+
+| | |
 |---|---|
-| `setup-database.sql` | Full schema for Neon/Supabase SQL editor |
-| `env.template` | All env vars for Vercel |
-| `seed-team.sql` | Notes only — create users via Admin UI |
-| `VERCEL.md` | This guide |
+| Host | Vercel |
+| Database | Neon Postgres (`DATABASE_URL`) |
+| Auth | Better Auth email/password (sessions in Postgres) |
+| Schema | `migrations/*.sql` applied on each build |
