@@ -7,7 +7,7 @@
   "crons": [
     {
       "path": "/api/cron/import-emails",
-      "schedule": "0 * * * *"
+      "schedule": "*/2 * * * *"
     }
   ]
 }
