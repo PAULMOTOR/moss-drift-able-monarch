@@ -1147,10 +1147,13 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
 
 export const adminRunEmailImport = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .handler(async ({ context }) => {
+  .validator((data: { days?: number; max?: number } | undefined) => data ?? {})
+  .handler(async ({ context, data }) => {
     await requireAdmin(context.userId);
     const sql = await boot();
-    return runEmailImport(sql);
+    const days = data.days && data.days > 0 ? Math.min(data.days, 90) : 14;
+    const max = data.max && data.max > 0 ? Math.min(data.max, 300) : days >= 25 ? 200 : 40;
+    return runEmailImport(sql, { newerThanDays: days, maxResults: max });
   });
 
 export const adminEmailImportStatus = createServerFn({ method: "GET" })

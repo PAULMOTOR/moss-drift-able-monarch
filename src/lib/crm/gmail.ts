@@ -51,7 +51,6 @@ function header(
 
 function decodeBodyData(data?: string | null): string {
   if (!data) return "";
-  // Gmail uses URL-safe base64
   const b64 = data.replace(/-/g, "+").replace(/_/g, "/");
   try {
     return Buffer.from(b64, "base64").toString("utf8");
@@ -71,8 +70,7 @@ function extractTextFromPayload(payload: {
     return decodeBodyData(payload.body.data);
   }
   if (mime === "text/html" && payload.body?.data) {
-    const html = decodeBodyData(payload.body.data);
-    return htmlToText(html);
+    return htmlToText(decodeBodyData(payload.body.data));
   }
   const parts = (payload.parts || []) as Array<{
     mimeType?: string | null;
@@ -97,6 +95,7 @@ function extractTextFromPayload(payload: {
 }
 
 function htmlToText(html: string): string {
+  const amp = String.fromCharCode(38);
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -106,50 +105,67 @@ function htmlToText(html: string): string {
     .replace(/<\/tr>/gi, "\n")
     .replace(/<\/li>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&/g, "&")
-    .replace(/</g, "<")
-    .replace(/>/g, ">")
-    .replace(/&#39;/g, "'")
-    .replace(/"/g, '"')
+    .split(amp + "nbsp;")
+    .join(" ")
+    .split(amp + "amp;")
+    .join(amp)
+    .split(amp + "lt;")
+    .join("<")
+    .split(amp + "gt;")
+    .join(">")
+    .split(amp + "#39;")
+    .join("'")
+    .split(amp + "quot;")
+    .join('"')
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
 /**
- * List recent inbox messages (newest first).
- * Default: last 7 days, max 40 messages per poll.
+ * List inbox messages. Default: last 14 days.
+ * Pass newerThanDays: 25 for historical backfill.
+ * Paginates until maxResults or no more pages.
  */
 export async function fetchRecentLeadEmails(opts?: {
   maxResults?: number;
+  newerThanDays?: number;
   afterEpochSec?: number;
 }): Promise<GmailMessage[]> {
   const auth = getAuth();
   const gmail = google.gmail({ version: "v1", auth });
   const userId = env("GMAIL_USER") || "me";
   const maxResults = opts?.maxResults ?? 40;
+  const days = opts?.newerThanDays ?? 14;
 
-  // Only inbound portal-ish mail + general inbox (skip spam/trash)
   const queryParts = [
     "in:inbox",
     "-category:promotions",
-    "newer_than:14d",
+    `newer_than:${days}d`,
   ];
   if (opts?.afterEpochSec) {
     queryParts.push(`after:${opts.afterEpochSec}`);
   }
 
-  const list = await gmail.users.messages.list({
-    userId,
-    q: queryParts.join(" "),
-    maxResults,
-  });
+  const messageIds: string[] = [];
+  let pageToken: string | undefined;
+  while (messageIds.length < maxResults) {
+    const pageSize = Math.min(100, maxResults - messageIds.length);
+    const list = await gmail.users.messages.list({
+      userId,
+      q: queryParts.join(" "),
+      maxResults: pageSize,
+      pageToken,
+    });
+    for (const m of list.data.messages || []) {
+      if (m.id) messageIds.push(m.id);
+    }
+    pageToken = list.data.nextPageToken || undefined;
+    if (!pageToken) break;
+  }
 
-  const ids = (list.data.messages || []).map((m) => m.id!).filter(Boolean);
   const out: GmailMessage[] = [];
-
-  for (const id of ids) {
+  for (const id of messageIds) {
     const full = await gmail.users.messages.get({
       userId,
       id,
@@ -176,7 +192,6 @@ export async function fetchRecentLeadEmails(opts?: {
     });
   }
 
-  // Oldest first so merges process chronologically
   out.sort((a, b) => a.internalDate - b.internalDate);
   return out;
 }

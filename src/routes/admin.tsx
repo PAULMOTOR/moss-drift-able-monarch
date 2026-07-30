@@ -173,10 +173,12 @@ function AdminPage() {
     }
   }
 
-  async function handleImportNow() {
+  async function handleImportNow(days = 14) {
     setImporting(true);
     try {
-      const res = await runImport();
+      const res = await runImport({
+        data: { days, max: days >= 25 ? 200 : 40 },
+      });
       if (res.ok) toast.success(res.message);
       else toast.error(res.message);
       await load();
@@ -269,11 +271,22 @@ function AdminPage() {
           ) : null}
 
           <div className="flex flex-wrap gap-2">
-            <Button disabled={importing} onClick={() => void handleImportNow()}>
+            <Button disabled={importing} onClick={() => void handleImportNow(14)}>
               <RefreshCw className={cn("size-4", importing && "animate-spin")} />
               {importing ? "Importing…" : "Import now"}
             </Button>
+            <Button
+              variant="outline"
+              disabled={importing}
+              onClick={() => void handleImportNow(25)}
+            >
+              {importing ? "Importing…" : "Import last 25 days"}
+            </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Classifies each email as Inventory (CarGurus / AutoTrader), Lease (TAdvantage financing
+            forms), or General Interest. Duplicates (same person + same car) are merged.
+          </p>
 
           {importStatus?.recent && importStatus.recent.length > 0 ? (
             <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-border/60 p-2">

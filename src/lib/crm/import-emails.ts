@@ -374,7 +374,10 @@ async function processMessage(
 }
 
 /** Poll Gmail and create/merge leads. Safe to call often (idempotent). */
-export async function runEmailImport(sql: Sql): Promise<ImportResult> {
+export async function runEmailImport(
+  sql: Sql,
+  opts?: { newerThanDays?: number; maxResults?: number },
+): Promise<ImportResult> {
   const status = gmailConfigStatus();
   if (!isGmailConfigured()) {
     return {
@@ -391,9 +394,12 @@ export async function runEmailImport(sql: Sql): Promise<ImportResult> {
     };
   }
 
+  const newerThanDays = opts?.newerThanDays ?? 14;
+  const maxResults = opts?.maxResults ?? 40;
+
   let messages: GmailMessage[] = [];
   try {
-    messages = await fetchRecentLeadEmails({ maxResults: 40 });
+    messages = await fetchRecentLeadEmails({ maxResults, newerThanDays });
   } catch (e) {
     return {
       ok: false,
@@ -469,8 +475,8 @@ export async function runEmailImport(sql: Sql): Promise<ImportResult> {
     merged,
     skipped,
     errors,
-    details: details.slice(-30),
-    message: `Scanned ${messages.length}: ${created} new, ${merged} merged (duplicates), ${skipped} skipped, ${errors} errors. Inbox: ${status.user || "client@…"}`,
+    details: details.slice(-80),
+    message: `Scanned ${messages.length} (last ${newerThanDays}d): ${created} new, ${merged} merged (duplicates), ${skipped} skipped, ${errors} errors. Inbox: ${status.user || "client@…"}`,
   };
 }
 
