@@ -93,3 +93,5 @@ Optional: Vercel Pro can use built-in crons (`vercel.json` already documents the
 - Only the shared `client@` account is authorized.
 - Rotate `CRON_SECRET` if the URL is leaked.
 - Revoke access anytime: Google Account → Security → Third-party access for `client@`.
+
+<!-- redeploy 2026-07-30T20:14:37Z -->
