@@ -19,15 +19,16 @@ function uid() {
 }
 
 function escapeHtml(s: string) {
+  const amp = String.fromCharCode(38);
   return s
-    .split("&")
-    .join("&")
+    .split(amp)
+    .join(amp + "amp;")
     .split("<")
-    .join("<")
+    .join(amp + "lt;")
     .split(">")
-    .join(">")
+    .join(amp + "gt;")
     .split('"')
-    .join(""");
+    .join(amp + "quot;");
 }
 
 export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
@@ -49,8 +50,6 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
   `;
 
   const resendKey = process.env.RESEND_API_KEY?.trim();
-  // Resend free onboarding sender works immediately without domain verify.
-  // After Domains verify paulmotorcompany.com, set CRM_FROM_EMAIL to client@...
   const fromAddress =
     process.env.CRM_FROM_EMAIL?.trim() || "onboarding@resend.dev";
   const fromName = "PAUL MOTOR CO. CRM";
@@ -59,7 +58,7 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
     try {
       const htmlBody =
         mail.html ||
-        "<pre style=\"font-family:system-ui,sans-serif;white-space:pre-wrap\">" +
+        '<pre style="font-family:system-ui,sans-serif;white-space:pre-wrap">' +
           escapeHtml(mail.text) +
           "</pre>";
       const res = await fetch("https://api.resend.com/emails", {
