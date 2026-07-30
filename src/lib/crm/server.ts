@@ -983,7 +983,6 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
     if (!nextName) throw new Error("Name is required");
     if (!nextEmail || !nextEmail.includes("@")) throw new Error("Valid email required");
 
-    // Don't let an admin lock themselves out of admin
     if (me.id === data.id && nextRole !== "admin") {
       throw new Error("You cannot remove your own admin role");
     }
@@ -991,7 +990,6 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
       throw new Error("You cannot deactivate your own account");
     }
 
-    // Don't leave the system with zero active admins
     if (prev[0].role === "admin" && (nextRole !== "admin" || nextActive === false)) {
       const admins = await sql<{ n: number }>`
         select count(*)::int as n from profiles
@@ -1105,21 +1103,46 @@ export const adminDeleteUser = createServerFn({ method: "POST" })
       }
     }
 
-    // Detach CRM references (assigned_to has FK; created_by is free text)
     await sql`update leads set assigned_to = null where assigned_to = ${profileId}`;
     await sql`update leads set created_by = null where created_by = ${profileId}`;
     await sql`update lead_activities set created_by = null where created_by = ${profileId}`;
     await sql`update test_drives set created_by = null where created_by = ${profileId}`;
 
-    // Remove profile first so seed will not re-attach via leftover profile row
     await sql`delete from profiles where id = ${profileId}`;
 
     if (p.user_id) {
-      // session + account cascade from user
       await sql`delete from session where "userId" = ${p.user_id}`;
       await sql`delete from account where "userId" = ${p.user_id}`;
       await sql`delete from "user" where id = ${p.user_id}`;
     }
 
     return { ok: true as const, removed: p.name };
+  });
+
+/**
+ * Wipe all leads + activities + test drives (demo cleanup).
+ * Keeps team users and inventory.
+ */
+export const adminClearAllLeads = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    await requireAdmin(context.userId);
+    const sql = await boot();
+
+    const before = await sql<{ n: number }>`select count(*)::int as n from leads`;
+    const count = before[0]?.n ?? 0;
+
+    // Order: children first (FK from test_drives / activities → leads)
+    await sql`delete from test_drives`;
+    await sql`delete from lead_activities`;
+    await sql`delete from leads`;
+
+    return {
+      ok: true as const,
+      deleted: count,
+      message:
+        count === 0
+          ? "No leads to delete."
+          : `Deleted ${count} lead(s), plus all notes, activities, and test drives. Users and inventory kept.`,
+    };
   });

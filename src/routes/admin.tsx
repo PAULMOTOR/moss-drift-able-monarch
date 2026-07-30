@@ -2,7 +2,7 @@ import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
-import { Pencil, Trash2, UserPlus, X } from "lucide-react";
+import { Eraser, Pencil, Trash2, UserPlus, X } from "lucide-react";
 import { AuthGate, PageHeader } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  adminClearAllLeads,
   adminCreateUser,
   adminDeleteUser,
   adminUpdateUser,
@@ -65,9 +66,12 @@ function AdminPage() {
   const [editForm, setEditForm] = useState<EditForm | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
+  const [confirmClearLeads, setConfirmClearLeads] = useState(false);
+  const [clearingLeads, setClearingLeads] = useState(false);
   const createUser = useServerFn(adminCreateUser);
   const updateUser = useServerFn(adminUpdateUser);
   const deleteUser = useServerFn(adminDeleteUser);
+  const clearAllLeads = useServerFn(adminClearAllLeads);
 
   async function load() {
     const profile = await getMyProfile();
@@ -145,6 +149,20 @@ function AdminPage() {
     }
   }
 
+  async function handleClearAllLeads() {
+    setClearingLeads(true);
+    try {
+      const res = await clearAllLeads();
+      toast.success(res.message);
+      setConfirmClearLeads(false);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not clear leads");
+    } finally {
+      setClearingLeads(false);
+    }
+  }
+
   if (me && me.role !== "admin") {
     return <Navigate to="/" />;
   }
@@ -154,6 +172,7 @@ function AdminPage() {
   }
 
   const funnelMap = Object.fromEntries(metrics.funnel.map((f) => [f.stage, f.count]));
+  const leadTotal = metrics.overall.total;
 
   return (
     <>
@@ -180,6 +199,64 @@ function AdminPage() {
           hint="Open deals"
         />
       </div>
+
+      <Card className="mb-6 border-destructive/30">
+        <CardHeader className="pb-2">
+          <CardTitle className="font-display flex items-center gap-2 text-xl">
+            <Eraser className="size-5 text-destructive" />
+            Data cleanup
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Remove demo / sample leads so the pipeline only shows real customers. This deletes{" "}
+            <strong className="text-foreground">all leads</strong>, notes, activities, and test
+            drives. <strong className="text-foreground">Team accounts and inventory stay</strong>.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Currently: <span className="tabular font-medium text-foreground">{leadTotal}</span>{" "}
+            lead{leadTotal === 1 ? "" : "s"} in the database.
+          </p>
+
+          {!confirmClearLeads ? (
+            <Button
+              variant="destructive"
+              disabled={leadTotal === 0 || clearingLeads}
+              onClick={() => setConfirmClearLeads(true)}
+            >
+              <Trash2 className="size-4" />
+              Clear all leads
+            </Button>
+          ) : (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3">
+              <p className="text-sm font-medium">
+                Permanently delete all {leadTotal} lead{leadTotal === 1 ? "" : "s"}?
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                This cannot be undone. Use New Lead after this to capture real floor leads only.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={clearingLeads}
+                  onClick={() => void handleClearAllLeads()}
+                >
+                  {clearingLeads ? "Deleting…" : "Yes, delete everything"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={clearingLeads}
+                  onClick={() => setConfirmClearLeads(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <Card>
