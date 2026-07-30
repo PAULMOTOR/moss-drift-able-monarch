@@ -7,6 +7,7 @@ export const STAGES = [
   { id: "test_drive", label: "Test Drive", short: "Drive" },
   { id: "quote_sent", label: "Quote Sent", short: "Quote" },
   { id: "ready_bc", label: "Ready for Business Central", short: "BC Ready" },
+  { id: "paused", label: "Paused", short: "Paused" },
   { id: "won", label: "Closed Won", short: "Won" },
   { id: "lost", label: "Closed Lost", short: "Lost" },
 ] as const;
@@ -123,6 +124,9 @@ export type Lead = {
   source_email_raw: string | null;
   email_portal?: string | null;
   gmail_message_id?: string | null;
+  pause_until?: string | null;
+  pause_note?: string | null;
+  stage_before_pause?: string | null;
   google_review_status: ReviewStatus;
   google_review_at: string | null;
   google_review_link: string | null;
@@ -159,6 +163,18 @@ export type TestDrive = {
   vehicle_label?: string | null;
 };
 
+export type LeadAppointment = {
+  id: string;
+  lead_id: string;
+  profile_id: string | null;
+  scheduled_at: string;
+  kind: string;
+  note: string | null;
+  status: string;
+  created_by: string | null;
+  created_at: string;
+};
+
 export type AdminMetrics = {
   overall: {
     total: number;
@@ -181,6 +197,34 @@ export type AdminMetrics = {
     reviews_received: number;
   }>;
   funnel: Array<{ stage: string; count: number }>;
+};
+
+export type PortalCloseStats = {
+  portal: string;
+  label: string;
+  total: number;
+  won: number;
+  lost: number;
+  open: number;
+  close_rate: number;
+};
+
+export type RepCloseStats = {
+  profile_id: string;
+  name: string;
+  role: string;
+  inventory_total: number;
+  inventory_won: number;
+  inventory_close_rate: number;
+  all_total: number;
+  all_won: number;
+  all_close_rate: number;
+};
+
+export type DataAnalysis = {
+  portal_inventory: PortalCloseStats[];
+  by_rep: RepCloseStats[];
+  generated_at: string;
 };
 
 export type ParsedEmailLead = {

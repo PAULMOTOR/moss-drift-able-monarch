@@ -21,9 +21,11 @@ import {
 import {
   addActivity,
   bookTestDrive,
+  clearLeadPause,
   getLead,
   listInventory,
   listProfiles,
+  scheduleContactAppointment,
   updateLead,
 } from "@/lib/crm/server";
 import {
@@ -59,6 +61,8 @@ function LeadDetail() {
   const updateFn = useServerFn(updateLead);
   const noteFn = useServerFn(addActivity);
   const bookFn = useServerFn(bookTestDrive);
+  const scheduleFn = useServerFn(scheduleContactAppointment);
+  const clearPauseFn = useServerFn(clearLeadPause);
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
   const [lead, setLead] = useState<Lead | null>(null);
@@ -74,6 +78,13 @@ function LeadDetail() {
     d.setHours(d.getHours() + 2, 0, 0, 0);
     return toLocalInputValue(d);
   });
+  const [contactAt, setContactAt] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(10, 0, 0, 0);
+    return toLocalInputValue(d);
+  });
+  const [contactNote, setContactNote] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function load() {
@@ -176,10 +187,16 @@ function LeadDetail() {
                 "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
                 lead.lead_type === "lease"
                   ? "border-accent-foreground/30 bg-accent text-accent-foreground"
-                  : "border-primary/40 bg-primary/15 text-primary",
+                  : lead.lead_type === "general"
+                    ? "border-border bg-muted text-foreground"
+                    : "border-primary/40 bg-primary/15 text-primary",
               )}
             >
-              {lead.lead_type === "lease" ? "Lease" : "Inventory"}
+              {lead.lead_type === "lease"
+                ? "Lease"
+                : lead.lead_type === "general"
+                  ? "General"
+                  : "Inventory"}
             </span>
             <StageBadge stage={lead.stage} />
           </div>
@@ -233,6 +250,87 @@ function LeadDetail() {
                     <p className="whitespace-pre-wrap text-sm">{a.body}</p>
                   </div>
                 ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-display text-xl">Contact appointment</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Schedule a callback. The lead moves to <strong className="text-foreground">Paused</strong>{" "}
+                until that date — hourly and daily auto-reminders skip it.
+              </p>
+              {lead.stage === "paused" && lead.pause_until ? (
+                <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-sm">
+                  <p className="font-medium">
+                    Paused until {formatDateTime(lead.pause_until)}
+                  </p>
+                  {lead.pause_note ? (
+                    <p className="mt-1 text-xs text-muted-foreground">{lead.pause_note}</p>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-2"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await clearPauseFn({ data: { leadId: lead.id } });
+                        toast.success("Pause cleared");
+                        await load();
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : "Failed");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Resume now
+                  </Button>
+                </div>
+              ) : null}
+              <div className="grid gap-2">
+                <Input
+                  type="datetime-local"
+                  value={contactAt}
+                  onChange={(e) => setContactAt(e.target.value)}
+                  className="h-11"
+                />
+                <Input
+                  placeholder="Note (e.g. call back after work)"
+                  value={contactNote}
+                  onChange={(e) => setContactNote(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await scheduleFn({
+                        data: {
+                          leadId: lead.id,
+                          scheduled_at: new Date(contactAt).toISOString(),
+                          note: contactNote || undefined,
+                        },
+                      });
+                      toast.success("Appointment set — lead paused");
+                      setContactNote("");
+                      await load();
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Failed");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  <CalendarPlus className="size-4" />
+                  Pause until appointment
+                </Button>
               </div>
             </CardContent>
           </Card>

@@ -1,5 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
+  BarChart3,
   CalendarDays,
   Columns3,
   LayoutDashboard,
@@ -25,6 +26,7 @@ const baseNav = [
   { to: "/pipeline", label: "Pipeline", icon: Columns3 },
   { to: "/inventory", label: "Inventory", icon: Package },
   { to: "/test-drives", label: "Test drives", icon: CalendarDays },
+  { to: "/data-analysis", label: "Data analysis", icon: BarChart3 },
 ] as const;
 
 export function AppShell({

@@ -202,7 +202,7 @@ export async function syncRealInventory(sql: Sql): Promise<number> {
 
   for (const row of existing) {
     const isReal = row.stock_number && realStocks.includes(row.stock_number);
-    if (!isReal && (row.source === "website" || row.source === "autotrader")) {
+    if (!isReal && (row.source === "website" || row.source === "autotrader" || row.source === "paulmotor")) {
       await sql`update leads set inventory_id = null where inventory_id = ${row.id}`;
       await sql`update test_drives set inventory_id = null where inventory_id = ${row.id}`;
       await sql`delete from inventory where id = ${row.id}`;
@@ -225,9 +225,9 @@ export async function syncRealInventory(sql: Sql): Promise<number> {
           mileage = ${v.mileage},
           body_type = ${v.body_type},
           status = 'available',
-          source = 'website',
+          source = 'autotrader',
           external_url = ${v.external_url},
-          notes = ${v.notes ?? "Live unit from paulmotorleasing.com"},
+          notes = ${v.notes ?? "AutoTrader dealer feed · Paul Motor"},
           updated_at = now()
         where id = ${found[0].id}
       `;
@@ -238,8 +238,8 @@ export async function syncRealInventory(sql: Sql): Promise<number> {
           body_type, status, source, external_url, notes
         ) values (
           ${uid()}, ${v.year}, ${v.make}, ${v.model}, ${v.trim}, ${v.stock_number},
-          ${v.price}, ${v.mileage}, ${v.body_type}, 'available', 'website',
-          ${v.external_url}, ${v.notes ?? "Live unit from paulmotorleasing.com"}
+          ${v.price}, ${v.mileage}, ${v.body_type}, 'available', 'autotrader',
+          ${v.external_url}, ${v.notes ?? "AutoTrader dealer feed · Paul Motor"}
         )
       `;
     }

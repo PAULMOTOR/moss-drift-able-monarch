@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as CaptureRouteImport } from './routes/capture'
+import { Route as DataAnalysisRouteImport } from './routes/data-analysis'
 import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as LeadsRouteImport } from './routes/leads'
 import { Route as LoginRouteImport } from './routes/login'
@@ -22,6 +23,9 @@ import { Route as LeadsIndexRouteImport } from './routes/leads.index'
 import { Route as LeadsLeadIdRouteImport } from './routes/leads.$leadId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCronImportEmailsRouteImport } from './routes/api/cron/import-emails'
+import { Route as ApiCronRemindersRouteImport } from './routes/api/cron/reminders'
+import { Route as ApiCronRemindersDailyRouteImport } from './routes/api/cron/reminders-daily'
+import { Route as ApiCronRemindersHourlyRouteImport } from './routes/api/cron/reminders-hourly'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -36,6 +40,11 @@ const AdminRoute = AdminRouteImport.update({
 const CaptureRoute = CaptureRouteImport.update({
   id: '/capture',
   path: '/capture',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DataAnalysisRoute = DataAnalysisRouteImport.update({
+  id: '/data-analysis',
+  path: '/data-analysis',
   getParentRoute: () => rootRouteImport,
 } as any)
 const InventoryRoute = InventoryRouteImport.update({
@@ -88,11 +97,27 @@ const ApiCronImportEmailsRoute = ApiCronImportEmailsRouteImport.update({
   path: '/api/cron/import-emails',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCronRemindersRoute = ApiCronRemindersRouteImport.update({
+  id: '/api/cron/reminders',
+  path: '/api/cron/reminders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCronRemindersDailyRoute = ApiCronRemindersDailyRouteImport.update({
+  id: '/api/cron/reminders-daily',
+  path: '/api/cron/reminders-daily',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCronRemindersHourlyRoute = ApiCronRemindersHourlyRouteImport.update({
+  id: '/api/cron/reminders-hourly',
+  path: '/api/cron/reminders-hourly',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/capture': typeof CaptureRoute
+  '/data-analysis': typeof DataAnalysisRoute
   '/inventory': typeof InventoryRoute
   '/leads': typeof LeadsRouteWithChildren
   '/login': typeof LoginRoute
@@ -103,11 +128,15 @@ export interface FileRoutesByFullPath {
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/import-emails': typeof ApiCronImportEmailsRoute
+  '/api/cron/reminders': typeof ApiCronRemindersRoute
+  '/api/cron/reminders-daily': typeof ApiCronRemindersDailyRoute
+  '/api/cron/reminders-hourly': typeof ApiCronRemindersHourlyRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/capture': typeof CaptureRoute
+  '/data-analysis': typeof DataAnalysisRoute
   '/inventory': typeof InventoryRoute
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
@@ -117,12 +146,16 @@ export interface FileRoutesByTo {
   '/leads': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/import-emails': typeof ApiCronImportEmailsRoute
+  '/api/cron/reminders': typeof ApiCronRemindersRoute
+  '/api/cron/reminders-daily': typeof ApiCronRemindersDailyRoute
+  '/api/cron/reminders-hourly': typeof ApiCronRemindersHourlyRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/capture': typeof CaptureRoute
+  '/data-analysis': typeof DataAnalysisRoute
   '/inventory': typeof InventoryRoute
   '/leads': typeof LeadsRouteWithChildren
   '/login': typeof LoginRoute
@@ -133,6 +166,9 @@ export interface FileRoutesById {
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/import-emails': typeof ApiCronImportEmailsRoute
+  '/api/cron/reminders': typeof ApiCronRemindersRoute
+  '/api/cron/reminders-daily': typeof ApiCronRemindersDailyRoute
+  '/api/cron/reminders-hourly': typeof ApiCronRemindersHourlyRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -140,6 +176,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/capture'
+    | '/data-analysis'
     | '/inventory'
     | '/leads'
     | '/login'
@@ -150,11 +187,15 @@ export interface FileRouteTypes {
     | '/leads/'
     | '/api/auth/$'
     | '/api/cron/import-emails'
+    | '/api/cron/reminders'
+    | '/api/cron/reminders-daily'
+    | '/api/cron/reminders-hourly'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/admin'
     | '/capture'
+    | '/data-analysis'
     | '/inventory'
     | '/login'
     | '/pipeline'
@@ -164,11 +205,15 @@ export interface FileRouteTypes {
     | '/leads'
     | '/api/auth/$'
     | '/api/cron/import-emails'
+    | '/api/cron/reminders'
+    | '/api/cron/reminders-daily'
+    | '/api/cron/reminders-hourly'
   id:
     | '__root__'
     | '/'
     | '/admin'
     | '/capture'
+    | '/data-analysis'
     | '/inventory'
     | '/leads'
     | '/login'
@@ -179,12 +224,16 @@ export interface FileRouteTypes {
     | '/leads/'
     | '/api/auth/$'
     | '/api/cron/import-emails'
+    | '/api/cron/reminders'
+    | '/api/cron/reminders-daily'
+    | '/api/cron/reminders-hourly'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
   CaptureRoute: typeof CaptureRoute
+  DataAnalysisRoute: typeof DataAnalysisRoute
   InventoryRoute: typeof InventoryRoute
   LeadsRoute: typeof LeadsRouteWithChildren
   LoginRoute: typeof LoginRoute
@@ -193,6 +242,9 @@ export interface RootRouteChildren {
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCronImportEmailsRoute: typeof ApiCronImportEmailsRoute
+  ApiCronRemindersRoute: typeof ApiCronRemindersRoute
+  ApiCronRemindersDailyRoute: typeof ApiCronRemindersDailyRoute
+  ApiCronRemindersHourlyRoute: typeof ApiCronRemindersHourlyRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -216,6 +268,13 @@ declare module '@tanstack/react-router' {
       path: '/capture'
       fullPath: '/capture'
       preLoaderRoute: typeof CaptureRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/data-analysis': {
+      id: '/data-analysis'
+      path: '/data-analysis'
+      fullPath: '/data-analysis'
+      preLoaderRoute: typeof DataAnalysisRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/inventory': {
@@ -288,6 +347,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCronImportEmailsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cron/reminders': {
+      id: '/api/cron/reminders'
+      path: '/api/cron/reminders'
+      fullPath: '/api/cron/reminders'
+      preLoaderRoute: typeof ApiCronRemindersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cron/reminders-daily': {
+      id: '/api/cron/reminders-daily'
+      path: '/api/cron/reminders-daily'
+      fullPath: '/api/cron/reminders-daily'
+      preLoaderRoute: typeof ApiCronRemindersDailyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cron/reminders-hourly': {
+      id: '/api/cron/reminders-hourly'
+      path: '/api/cron/reminders-hourly'
+      fullPath: '/api/cron/reminders-hourly'
+      preLoaderRoute: typeof ApiCronRemindersHourlyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -307,6 +387,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
   CaptureRoute: CaptureRoute,
+  DataAnalysisRoute: DataAnalysisRoute,
   InventoryRoute: InventoryRoute,
   LeadsRoute: LeadsRouteWithChildren,
   LoginRoute: LoginRoute,
@@ -315,6 +396,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCronImportEmailsRoute: ApiCronImportEmailsRoute,
+  ApiCronRemindersRoute: ApiCronRemindersRoute,
+  ApiCronRemindersDailyRoute: ApiCronRemindersDailyRoute,
+  ApiCronRemindersHourlyRoute: ApiCronRemindersHourlyRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -8,9 +8,11 @@ import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
 import {
   type AdminMetrics,
+  type DataAnalysis,
   type InventoryItem,
   type Lead,
   type LeadActivity,
+  type LeadAppointment,
   type LeadType,
   type ParsedEmailLead,
   type Profile,
@@ -41,7 +43,6 @@ async function boot() {
   return sql;
 }
 
-/** Public — primes demo users / inventory before first sign-in. */
 export const ensureDemoReady = createServerFn({ method: "POST" }).handler(async () => {
   await boot();
   return { ok: true as const };
@@ -89,6 +90,9 @@ function mapLead(r: Record<string, unknown>): Lead {
     source_email_raw: (r.source_email_raw as string) ?? null,
     email_portal: (r.email_portal as string) ?? null,
     gmail_message_id: (r.gmail_message_id as string) ?? null,
+    pause_until: (r.pause_until as string) ?? null,
+    pause_note: (r.pause_note as string) ?? null,
+    stage_before_pause: (r.stage_before_pause as string) ?? null,
     google_review_status: (r.google_review_status as Lead["google_review_status"]) || "not_requested",
     google_review_at: (r.google_review_at as string) ?? null,
     google_review_link: (r.google_review_link as string) ?? null,
@@ -108,6 +112,7 @@ const leadSelect = `
   l.quote_sent, l.quote_sent_at::text as quote_sent_at,
   l.quote_link, l.quote_notes, l.quote_pdf_name, l.quote_pdf_data, l.source_email_raw,
   l.email_portal, l.gmail_message_id,
+  l.pause_until::text as pause_until, l.pause_note, l.stage_before_pause,
   l.google_review_status,
   l.google_review_at::text as google_review_at,
   l.google_review_link,
@@ -123,9 +128,7 @@ const leadSelect = `
 
 export const getMyProfile = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
-  .handler(async ({ context }) => {
-    return requireProfile(context.userId);
-  });
+  .handler(async ({ context }) => requireProfile(context.userId));
 
 export const listProfiles = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -138,17 +141,14 @@ export const listProfiles = createServerFn({ method: "GET" })
         select id, user_id, email, name, role, active, phone, title,
                created_at::text as created_at, updated_at::text as updated_at
         from profiles order by
-          case role when 'admin' then 0 when 'rep' then 1 else 2 end,
-          name
+          case role when 'admin' then 0 when 'rep' then 1 else 2 end, name
       `;
     }
     return sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
              created_at::text as created_at, updated_at::text as updated_at
       from profiles where active = true
-      order by
-        case role when 'admin' then 0 when 'rep' then 1 else 2 end,
-        name
+      order by case role when 'admin' then 0 when 'rep' then 1 else 2 end, name
     `;
   });
 
@@ -208,21 +208,16 @@ export const upsertInventory = createServerFn({ method: "POST" })
     if (data.id) {
       await sql`
         update inventory set
-          year = ${data.year},
-          make = ${data.make.trim()},
-          model = ${data.model.trim()},
-          trim = ${data.trim?.trim() || null},
-          vin = ${data.vin?.trim() || null},
+          year = ${data.year}, make = ${data.make.trim()}, model = ${data.model.trim()},
+          trim = ${data.trim?.trim() || null}, vin = ${data.vin?.trim() || null},
           stock_number = ${data.stock_number?.trim() || null},
-          price = ${data.price ?? null},
-          mileage = ${data.mileage ?? null},
+          price = ${data.price ?? null}, mileage = ${data.mileage ?? null},
           exterior_color = ${data.exterior_color?.trim() || null},
           body_type = ${data.body_type?.trim() || null},
           status = ${data.status || "available"},
           source = ${data.source || "manual"},
           external_url = ${data.external_url?.trim() || null},
-          notes = ${data.notes?.trim() || null},
-          updated_at = now()
+          notes = ${data.notes?.trim() || null}, updated_at = now()
         where id = ${data.id}
       `;
     } else {
@@ -262,7 +257,7 @@ export const refreshInventoryFeeds = createServerFn({ method: "POST" })
       ok: true as const,
       refreshed,
       sources: [PAUL_MOTOR_INVENTORY_SOURCE],
-      message: `Synced ${refreshed} live units from paulmotorleasing.com inventory snapshot.`,
+      message: `Synced ${refreshed} units from AutoTrader dealer feed (Paul Motor).`,
     };
   });
 
@@ -287,9 +282,7 @@ export const parseEmailLead = createServerFn({ method: "POST" })
                  body_type, transmission, fuel_type, status, source,
                  external_url, image_url, notes,
                  created_at::text as created_at, updated_at::text as updated_at
-          from inventory
-          where lower(stock_number) = ${parsed.stock_number.toLowerCase()}
-          limit 1
+          from inventory where lower(stock_number) = ${parsed.stock_number.toLowerCase()} limit 1
         `;
         if (byStock[0]) {
           inventory_id = byStock[0].id;
@@ -297,7 +290,6 @@ export const parseEmailLead = createServerFn({ method: "POST" })
           if (!parsed.vehicle_interest) parsed.vehicle_interest = inventory_label;
         }
       }
-
       if (!inventory_id && parsed.vehicle_interest) {
         const q = `%${parsed.vehicle_interest.toLowerCase().replace(/\s+/g, "%")}%`;
         const fuzzy = await sql<InventoryItem>`
@@ -309,15 +301,13 @@ export const parseEmailLead = createServerFn({ method: "POST" })
           from inventory
           where lower(concat(year, ' ', make, ' ', model, ' ', coalesce(trim, ''))) like ${q}
              or lower(concat(make, ' ', model)) like ${q}
-          order by price desc nulls last
-          limit 1
+          order by price desc nulls last limit 1
         `;
         if (fuzzy[0]) {
           inventory_id = fuzzy[0].id;
           inventory_label = vehicleLabel(fuzzy[0]);
         }
       }
-
       return { ...parsed, inventory_id, inventory_label };
     },
   );
@@ -363,7 +353,12 @@ export const getLead = createServerFn({ method: "GET" })
     async ({
       context,
       data: leadId,
-    }): Promise<{ lead: Lead; activities: LeadActivity[]; drives: TestDrive[] } | null> => {
+    }): Promise<{
+      lead: Lead;
+      activities: LeadActivity[];
+      drives: TestDrive[];
+      appointments: LeadAppointment[];
+    } | null> => {
       await requireProfile(context.userId);
       const sql = await boot();
       const rows = await sql.query<Record<string, unknown>>(
@@ -394,7 +389,18 @@ export const getLead = createServerFn({ method: "GET" })
         where t.lead_id = ${leadId}
         order by t.scheduled_at desc
       `;
-      return { lead: mapLead(rows[0]), activities, drives };
+      let appointments: LeadAppointment[] = [];
+      try {
+        appointments = await sql<LeadAppointment>`
+          select id, lead_id, profile_id, scheduled_at::text as scheduled_at,
+                 kind, note, status, created_by, created_at::text as created_at
+          from lead_appointments where lead_id = ${leadId}
+          order by scheduled_at desc
+        `;
+      } catch {
+        appointments = [];
+      }
+      return { lead: mapLead(rows[0]), activities, drives, appointments };
     },
   );
 
@@ -426,9 +432,7 @@ export const captureLead = createServerFn({ method: "POST" })
     const sql = await boot();
     const name = data.name.trim();
     if (!name) throw new Error("Name is required");
-    if (!data.phone?.trim() && !data.email?.trim()) {
-      throw new Error("Phone or email required");
-    }
+    if (!data.phone?.trim() && !data.email?.trim()) throw new Error("Phone or email required");
 
     const leadType: LeadType =
       data.lead_type && isLeadType(data.lead_type) ? data.lead_type : "inventory";
@@ -543,8 +547,17 @@ export const updateLead = createServerFn({ method: "POST" })
     if (!existing[0]) throw new Error("Lead not found");
     const prev = existing[0];
 
-    const stage =
+    let stage =
       data.stage && isStageId(data.stage) ? data.stage : String(prev.stage);
+    // Manual stage change off paused clears pause
+    let pauseUntil = (prev.pause_until as string | null) ?? null;
+    let pauseNote = (prev.pause_note as string | null) ?? null;
+    let stageBefore = (prev.stage_before_pause as string | null) ?? null;
+    if (data.stage && data.stage !== "paused" && String(prev.stage) === "paused") {
+      pauseUntil = null;
+      pauseNote = null;
+      stageBefore = null;
+    }
     const stageChanged = stage !== String(prev.stage);
     const hasNewPdf = Boolean(data.quote_pdf_data);
     const quoteSent =
@@ -597,6 +610,9 @@ export const updateLead = createServerFn({ method: "POST" })
         },
         stage = ${stage},
         stage_entered_at = ${stageChanged ? new Date().toISOString() : String(prev.stage_entered_at)},
+        pause_until = ${pauseUntil},
+        pause_note = ${pauseNote},
+        stage_before_pause = ${stageBefore},
         quote_sent = ${quoteSent},
         quote_sent_at = ${
           data.quote_sent_at !== undefined
@@ -671,6 +687,121 @@ export const updateLead = createServerFn({ method: "POST" })
     return mapLead(rows[0]!);
   });
 
+/** Schedule a call/contact — sets stage to Paused until that date (skips auto-reminders). */
+export const scheduleContactAppointment = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: { leadId: string; scheduled_at: string; note?: string }) => data,
+  )
+  .handler(async ({ context, data }): Promise<Lead> => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const when = new Date(data.scheduled_at);
+    if (Number.isNaN(when.getTime())) throw new Error("Invalid date/time");
+    if (when.getTime() < Date.now() - 60000) {
+      throw new Error("Appointment must be in the future");
+    }
+
+    const existing = await sql<Record<string, unknown>>`
+      select id, stage, stage_before_pause from leads where id = ${data.leadId}
+    `;
+    if (!existing[0]) throw new Error("Lead not found");
+    const prevStage = String(existing[0].stage);
+    const before =
+      prevStage === "paused"
+        ? (existing[0].stage_before_pause as string) || "new"
+        : prevStage === "won" || prevStage === "lost"
+          ? "contacted"
+          : prevStage;
+
+    await sql`
+      update leads set
+        stage = 'paused',
+        stage_entered_at = now(),
+        pause_until = ${when.toISOString()},
+        pause_note = ${data.note?.trim() || null},
+        stage_before_pause = ${before},
+        updated_at = now()
+      where id = ${data.leadId}
+    `;
+
+    await sql`
+      insert into lead_appointments (
+        id, lead_id, profile_id, scheduled_at, kind, note, status, created_by
+      ) values (
+        ${id()}, ${data.leadId}, ${me.id}, ${when.toISOString()},
+        'contact', ${data.note?.trim() || null}, 'scheduled', ${me.id}
+      )
+    `;
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+      values (
+        ${id()}, ${data.leadId}, 'system',
+        ${`Contact appointment set for ${when.toLocaleString("en-CA", { timeZone: "America/Toronto" })}. Lead paused — auto-reminders off until then.${data.note?.trim() ? ` Note: ${data.note.trim()}` : ""}`},
+        ${me.id}, ${me.name}
+      )
+    `;
+
+    const rows = await sql.query<Record<string, unknown>>(
+      `select ${leadSelect}
+       from leads l
+       left join profiles p on p.id = l.assigned_to
+       left join inventory i on i.id = l.inventory_id
+       where l.id = $1`,
+      [data.leadId],
+    );
+    return mapLead(rows[0]!);
+  });
+
+export const clearLeadPause = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { leadId: string }) => data)
+  .handler(async ({ context, data }): Promise<Lead> => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const existing = await sql<Record<string, unknown>>`
+      select stage, stage_before_pause from leads where id = ${data.leadId}
+    `;
+    if (!existing[0]) throw new Error("Lead not found");
+    const back =
+      (existing[0].stage_before_pause as string) &&
+      String(existing[0].stage_before_pause) !== "paused"
+        ? String(existing[0].stage_before_pause)
+        : "contacted";
+
+    await sql`
+      update leads set
+        stage = ${back},
+        stage_entered_at = now(),
+        pause_until = null,
+        pause_note = null,
+        stage_before_pause = null,
+        updated_at = now()
+      where id = ${data.leadId}
+    `;
+    await sql`
+      update lead_appointments set status = 'cancelled', updated_at = now()
+      where lead_id = ${data.leadId} and status = 'scheduled'
+    `;
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+      values (
+        ${id()}, ${data.leadId}, 'system',
+        ${`Pause cleared by ${me.name} — back to ${back}`},
+        ${me.id}, ${me.name}
+      )
+    `;
+    const rows = await sql.query<Record<string, unknown>>(
+      `select ${leadSelect}
+       from leads l
+       left join profiles p on p.id = l.assigned_to
+       left join inventory i on i.id = l.inventory_id
+       where l.id = $1`,
+      [data.leadId],
+    );
+    return mapLead(rows[0]!);
+  });
+
 export const addActivity = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((data: { leadId: string; body: string; kind?: string }) => data)
@@ -739,8 +870,11 @@ export const bookTestDrive = createServerFn({ method: "POST" })
       )
     `;
     await sql`
-      update leads set stage = case when stage = 'new' or stage = 'contacted' then 'test_drive' else stage end,
-        stage_entered_at = case when stage = 'new' or stage = 'contacted' then now() else stage_entered_at end,
+      update leads set stage = case when stage in ('new','contacted','paused') then 'test_drive' else stage end,
+        stage_entered_at = case when stage in ('new','contacted','paused') then now() else stage_entered_at end,
+        pause_until = case when stage = 'paused' then null else pause_until end,
+        pause_note = case when stage = 'paused' then null else pause_note end,
+        stage_before_pause = case when stage = 'paused' then null else stage_before_pause end,
         updated_at = now()
       where id = ${data.lead_id}
     `;
@@ -823,6 +957,122 @@ export const getDashboardStats = createServerFn({ method: "GET" })
     };
   });
 
+export const getDataAnalysis = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }): Promise<DataAnalysis> => {
+    await requireProfile(context.userId);
+    const sql = await boot();
+
+    const portalRows = await sql<{
+      portal: string;
+      total: number;
+      won: number;
+      lost: number;
+      open: number;
+    }>`
+      select
+        coalesce(nullif(email_portal, ''), case
+          when lower(source) like '%cargurus%' then 'cargurus'
+          when lower(source) like '%autotrader%' or lower(source) like '%trader%' then 'autotrader'
+          else 'other'
+        end) as portal,
+        count(*)::int as total,
+        count(*) filter (where stage = 'won')::int as won,
+        count(*) filter (where stage = 'lost')::int as lost,
+        count(*) filter (where stage not in ('won','lost'))::int as open
+      from leads
+      where lead_type = 'inventory'
+      group by 1
+      order by total desc
+    `;
+
+    const labelMap: Record<string, string> = {
+      cargurus: "CarGurus",
+      autotrader: "AutoTrader",
+      other: "Other / floor",
+      manual: "Manual",
+      tadvantage: "TAdvantage",
+    };
+
+    const portal_inventory = portalRows.map((r) => {
+      const closed = r.won + r.lost;
+      return {
+        portal: r.portal,
+        label: labelMap[r.portal] || r.portal,
+        total: r.total,
+        won: r.won,
+        lost: r.lost,
+        open: r.open,
+        close_rate: closed ? Math.round((r.won / closed) * 1000) / 10 : 0,
+      };
+    });
+
+    // Force CarGurus + AutoTrader rows even if zero
+    for (const key of ["cargurus", "autotrader"] as const) {
+      if (!portal_inventory.some((p) => p.portal === key)) {
+        portal_inventory.push({
+          portal: key,
+          label: labelMap[key],
+          total: 0,
+          won: 0,
+          lost: 0,
+          open: 0,
+          close_rate: 0,
+        });
+      }
+    }
+
+    const repRows = await sql<{
+      profile_id: string;
+      name: string;
+      role: string;
+      inventory_total: number;
+      inventory_won: number;
+      all_total: number;
+      all_won: number;
+    }>`
+      select
+        p.id as profile_id,
+        p.name,
+        p.role,
+        count(l.id) filter (where l.lead_type = 'inventory')::int as inventory_total,
+        count(l.id) filter (where l.lead_type = 'inventory' and l.stage = 'won')::int as inventory_won,
+        count(l.id)::int as all_total,
+        count(l.id) filter (where l.stage = 'won')::int as all_won
+      from profiles p
+      left join leads l on l.assigned_to = p.id
+      where p.active = true and p.role in ('rep', 'broker', 'admin')
+      group by p.id, p.name, p.role
+      order by inventory_won desc, inventory_total desc
+    `;
+
+    const by_rep = repRows.map((r) => {
+      const invClosed = r.inventory_total; // rate of won / inventory total (or only closed?)
+      // User asked closing rates — won / (won+lost) preferred; if no closed, show won/total
+      return {
+        profile_id: r.profile_id,
+        name: r.name,
+        role: r.role,
+        inventory_total: r.inventory_total,
+        inventory_won: r.inventory_won,
+        inventory_close_rate: r.inventory_total
+          ? Math.round((r.inventory_won / r.inventory_total) * 1000) / 10
+          : 0,
+        all_total: r.all_total,
+        all_won: r.all_won,
+        all_close_rate: r.all_total
+          ? Math.round((r.all_won / r.all_total) * 1000) / 10
+          : 0,
+      };
+    });
+
+    return {
+      portal_inventory: portal_inventory.sort((a, b) => b.total - a.total),
+      by_rep,
+      generated_at: new Date().toISOString(),
+    };
+  });
+
 export const getAdminMetrics = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }): Promise<AdminMetrics> => {
@@ -856,9 +1106,7 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
       reviews_received: number;
     }>`
       select
-        p.id as profile_id,
-        p.name,
-        p.role,
+        p.id as profile_id, p.name, p.role,
         count(l.id)::int as total,
         count(l.id) filter (where l.stage = 'won')::int as won,
         count(l.id) filter (where l.stage is not null and l.stage <> 'new')::int as contacted,
@@ -897,7 +1145,6 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
     };
   });
 
-/** Admin: poll client@ Gmail and import leads now. */
 export const adminRunEmailImport = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
@@ -906,7 +1153,6 @@ export const adminRunEmailImport = createServerFn({ method: "POST" })
     return runEmailImport(sql);
   });
 
-/** Admin: Gmail connection + recent import log. */
 export const adminEmailImportStatus = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
@@ -1006,87 +1252,54 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
 
     if (!nextName) throw new Error("Name is required");
     if (!nextEmail || !nextEmail.includes("@")) throw new Error("Valid email required");
-
     if (me.id === data.id && nextRole !== "admin") {
       throw new Error("You cannot remove your own admin role");
     }
     if (me.id === data.id && nextActive === false) {
       throw new Error("You cannot deactivate your own account");
     }
-
     if (prev[0].role === "admin" && (nextRole !== "admin" || nextActive === false)) {
       const admins = await sql<{ n: number }>`
         select count(*)::int as n from profiles
         where role = 'admin' and active = true and id <> ${data.id}
       `;
-      if ((admins[0]?.n ?? 0) < 1) {
-        throw new Error("At least one active admin is required");
-      }
+      if ((admins[0]?.n ?? 0) < 1) throw new Error("At least one active admin is required");
     }
-
     if (nextEmail !== prev[0].email) {
       const clash = await sql`
         select id from profiles where email = ${nextEmail} and id <> ${data.id} limit 1
       `;
       if (clash[0]) throw new Error("Email already in use by another user");
-      if (prev[0].user_id) {
-        const uClash = await sql`
-          select id from "user" where email = ${nextEmail} and id <> ${prev[0].user_id} limit 1
-        `;
-        if (uClash[0]) throw new Error("Email already in use");
-      }
     }
 
     await sql`
       update profiles set
-        name = ${nextName},
-        email = ${nextEmail},
-        role = ${nextRole},
-        active = ${nextActive},
-        phone = ${nextPhone},
-        title = ${nextTitle},
+        name = ${nextName}, email = ${nextEmail}, role = ${nextRole},
+        active = ${nextActive}, phone = ${nextPhone}, title = ${nextTitle},
         updated_at = now()
       where id = ${data.id}
     `;
 
     if (prev[0].user_id) {
       await sql`
-        update "user" set
-          name = ${nextName},
-          email = ${nextEmail},
-          "updatedAt" = now()
+        update "user" set name = ${nextName}, email = ${nextEmail}, "updatedAt" = now()
         where id = ${prev[0].user_id}
       `;
       await sql`
-        update account set
-          "accountId" = ${nextEmail},
-          "updatedAt" = now()
+        update account set "accountId" = ${nextEmail}, "updatedAt" = now()
         where "userId" = ${prev[0].user_id} and "providerId" = 'credential'
       `;
-
       if (data.password && data.password.length > 0) {
-        if (data.password.length < 8) {
-          throw new Error("Password must be at least 8 characters");
-        }
+        if (data.password.length < 8) throw new Error("Password must be at least 8 characters");
         const passwordHash = await hashPassword(data.password);
         const acc = await sql<{ id: string }>`
           select id from account
-          where "userId" = ${prev[0].user_id} and "providerId" = 'credential'
-          limit 1
+          where "userId" = ${prev[0].user_id} and "providerId" = 'credential' limit 1
         `;
         if (acc[0]) {
           await sql`
             update account set password = ${passwordHash}, "updatedAt" = now()
             where id = ${acc[0].id}
-          `;
-        } else {
-          await sql`
-            insert into account (
-              id, "accountId", "providerId", "userId", password, "createdAt", "updatedAt"
-            ) values (
-              ${id()}, ${nextEmail}, 'credential', ${prev[0].user_id},
-              ${passwordHash}, ${new Date().toISOString()}, ${new Date().toISOString()}
-            )
           `;
         }
       }
@@ -1107,7 +1320,6 @@ export const adminDeleteUser = createServerFn({ method: "POST" })
     const me = await requireAdmin(context.userId);
     const profileId = data.id;
     if (me.id === profileId) throw new Error("Cannot remove your own account");
-
     const sql = await boot();
     const rows = await sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
@@ -1116,57 +1328,52 @@ export const adminDeleteUser = createServerFn({ method: "POST" })
     `;
     const p = rows[0];
     if (!p) throw new Error("User not found");
-
     if (p.role === "admin") {
       const admins = await sql<{ n: number }>`
         select count(*)::int as n from profiles
         where role = 'admin' and active = true and id <> ${profileId}
       `;
-      if ((admins[0]?.n ?? 0) < 1) {
-        throw new Error("Cannot remove the last active admin");
-      }
+      if ((admins[0]?.n ?? 0) < 1) throw new Error("Cannot remove the last active admin");
     }
-
     await sql`update leads set assigned_to = null where assigned_to = ${profileId}`;
     await sql`update leads set created_by = null where created_by = ${profileId}`;
     await sql`update lead_activities set created_by = null where created_by = ${profileId}`;
     await sql`update test_drives set created_by = null where created_by = ${profileId}`;
-
     await sql`delete from profiles where id = ${profileId}`;
-
     if (p.user_id) {
       await sql`delete from session where "userId" = ${p.user_id}`;
       await sql`delete from account where "userId" = ${p.user_id}`;
       await sql`delete from "user" where id = ${p.user_id}`;
     }
-
     return { ok: true as const, removed: p.name };
   });
 
-/**
- * Wipe all leads + activities + test drives (demo cleanup).
- * Keeps team users and inventory. Also clears email_imports so re-import works.
- */
 export const adminClearAllLeads = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     await requireAdmin(context.userId);
     const sql = await boot();
-
     const before = await sql<{ n: number }>`select count(*)::int as n from leads`;
     const count = before[0]?.n ?? 0;
-
     await sql`delete from test_drives`;
     await sql`delete from lead_activities`;
-    await sql`delete from email_imports`;
+    try {
+      await sql`delete from lead_appointments`;
+    } catch {
+      /* optional table */
+    }
+    try {
+      await sql`delete from email_imports`;
+    } catch {
+      /* optional */
+    }
     await sql`delete from leads`;
-
     return {
       ok: true as const,
       deleted: count,
       message:
         count === 0
           ? "No leads to delete."
-          : `Deleted ${count} lead(s), plus all notes, activities, test drives, and import log. Users and inventory kept.`,
+          : `Deleted ${count} lead(s). Users and inventory kept.`,
     };
   });

@@ -1,12 +1,16 @@
 import { Badge } from "@/components/ui/badge";
 import { stageLabel, type StageId } from "@/lib/crm/types";
 
-const map: Record<StageId, "new" | "contacted" | "qualified" | "proposal" | "negotiation" | "won" | "lost"> = {
+const map: Record<
+  StageId,
+  "new" | "contacted" | "qualified" | "proposal" | "negotiation" | "won" | "lost" | "outline"
+> = {
   new: "new",
   contacted: "contacted",
   test_drive: "qualified",
   quote_sent: "proposal",
   ready_bc: "negotiation",
+  paused: "outline",
   won: "won",
   lost: "lost",
 };
