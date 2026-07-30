@@ -4,10 +4,10 @@ export type Role = (typeof ROLES)[number];
 export const STAGES = [
   { id: "new", label: "New Lead", short: "New" },
   { id: "contacted", label: "Contacted", short: "Contacted" },
+  { id: "paused", label: "Paused", short: "Paused" },
   { id: "test_drive", label: "Test Drive", short: "Drive" },
   { id: "quote_sent", label: "Quote Sent", short: "Quote" },
   { id: "ready_bc", label: "Ready for Business Central", short: "BC Ready" },
-  { id: "paused", label: "Paused", short: "Paused" },
   { id: "won", label: "Closed Won", short: "Won" },
   { id: "lost", label: "Closed Lost", short: "Lost" },
 ] as const;

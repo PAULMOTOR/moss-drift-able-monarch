@@ -802,6 +802,39 @@ export const clearLeadPause = createServerFn({ method: "POST" })
     return mapLead(rows[0]!);
   });
 
+/** Permanently delete a lead (false positives). Does not count as Closed Lost. */
+export const deleteLead = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { id: string }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const existing = await sql<{ id: string; name: string }>`
+      select id, name from leads where id = ${data.id} limit 1
+    `;
+    if (!existing[0]) throw new Error("Lead not found");
+
+    try {
+      await sql`delete from lead_appointments where lead_id = ${data.id}`;
+    } catch {
+      /* table may not exist on old DBs */
+    }
+    await sql`delete from test_drives where lead_id = ${data.id}`;
+    await sql`delete from lead_activities where lead_id = ${data.id}`;
+    try {
+      await sql`update email_imports set lead_id = null where lead_id = ${data.id}`;
+    } catch {
+      /* optional */
+    }
+    await sql`delete from leads where id = ${data.id}`;
+
+    return {
+      ok: true as const,
+      deleted: existing[0].name,
+      message: `Permanently deleted “${existing[0].name}” (not counted as Closed Lost). Removed by ${me.name}.`,
+    };
+  });
+
 export const addActivity = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((data: { leadId: string; body: string; kind?: string }) => data)

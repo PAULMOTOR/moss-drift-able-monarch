@@ -1,8 +1,8 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
-import { ArrowLeft, CalendarPlus, FileUp, Mail, Phone, X } from "lucide-react";
+import { ArrowLeft, CalendarPlus, FileUp, Mail, Phone, Trash2, X } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { StageBadge } from "@/components/stage-badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import {
   addActivity,
   bookTestDrive,
   clearLeadPause,
+  deleteLead,
   getLead,
   listInventory,
   listProfiles,
@@ -57,8 +58,10 @@ const MAX_PDF_BYTES = 4 * 1024 * 1024;
 
 function LeadDetail() {
   const { leadId } = Route.useParams();
+  const navigate = useNavigate();
   const getLeadFn = useServerFn(getLead);
   const updateFn = useServerFn(updateLead);
+  const deleteFn = useServerFn(deleteLead);
   const noteFn = useServerFn(addActivity);
   const bookFn = useServerFn(bookTestDrive);
   const scheduleFn = useServerFn(scheduleContactAppointment);
@@ -73,6 +76,10 @@ function LeadDetail() {
   const [note, setNote] = useState("");
   const [missing, setMissing] = useState(false);
   const [pdfDrag, setPdfDrag] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [driveAt, setDriveAt] = useState(() => {
     const d = new Date();
     d.setHours(d.getHours() + 2, 0, 0, 0);
@@ -102,6 +109,9 @@ function LeadDetail() {
     }
     setMissing(false);
     setLead(detail.lead);
+    setEditName(detail.lead.name);
+    setEditPhone(detail.lead.phone || "");
+    setEditEmail(detail.lead.email || "");
     setActivities(detail.activities);
     setDrives(detail.drives);
   }
@@ -117,11 +127,51 @@ function LeadDetail() {
     try {
       const updated = await updateFn({ data: { id: lead.id, ...partial } as never });
       setLead(updated);
+      setEditName(updated.name);
+      setEditPhone(updated.phone || "");
+      setEditEmail(updated.email || "");
       await load();
       toast.success("Updated");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Update failed");
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveContact() {
+    if (!lead) return;
+    const name = editName.trim();
+    if (!name) {
+      toast.error("Name is required");
+      return;
+    }
+    const phone = editPhone.trim();
+    const email = editEmail.trim();
+    if (!phone && !email) {
+      toast.error("Add a phone or email");
+      return;
+    }
+    if (
+      name === lead.name &&
+      phone === (lead.phone || "") &&
+      email === (lead.email || "")
+    ) {
+      toast.message("No contact changes");
+      return;
+    }
+    await patch({ name, phone: phone || null, email: email || null });
+  }
+
+  async function handleDelete() {
+    if (!lead) return;
+    setBusy(true);
+    try {
+      const res = await deleteFn({ data: { id: lead.id } });
+      toast.success(res.message);
+      void navigate({ to: "/leads" });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Delete failed");
       setBusy(false);
     }
   }
@@ -260,14 +310,13 @@ function LeadDetail() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-xs text-muted-foreground">
-                Schedule a callback. The lead moves to <strong className="text-foreground">Paused</strong>{" "}
-                until that date — hourly and daily auto-reminders skip it.
+                Schedule a callback. The lead moves to{" "}
+                <strong className="text-foreground">Paused</strong> until that date — hourly and
+                daily auto-reminders skip it.
               </p>
               {lead.stage === "paused" && lead.pause_until ? (
                 <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-sm">
-                  <p className="font-medium">
-                    Paused until {formatDateTime(lead.pause_until)}
-                  </p>
+                  <p className="font-medium">Paused until {formatDateTime(lead.pause_until)}</p>
                   {lead.pause_note ? (
                     <p className="mt-1 text-xs text-muted-foreground">{lead.pause_note}</p>
                   ) : null}
@@ -396,19 +445,65 @@ function LeadDetail() {
 
         <div className="space-y-4 lg:col-span-2">
           <Card>
-            <CardContent className="space-y-3 p-4">
-              {lead.phone ? (
-                <a href={`tel:${lead.phone}`} className="flex items-center gap-2 text-sm hover:text-primary">
-                  <Phone className="size-3.5" />
-                  {lead.phone}
-                </a>
-              ) : null}
-              {lead.email ? (
-                <a href={`mailto:${lead.email}`} className="flex items-center gap-2 text-sm hover:text-primary">
-                  <Mail className="size-3.5" />
-                  {lead.email}
-                </a>
-              ) : null}
+            <CardHeader className="pb-2">
+              <CardTitle className="font-display text-lg">Contact</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 p-4 pt-0">
+              <Field label="Client name">
+                <Input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  disabled={busy}
+                  className="h-11"
+                />
+              </Field>
+              <Field label="Phone">
+                <div className="flex gap-2">
+                  <Input
+                    value={editPhone}
+                    onChange={(e) => setEditPhone(e.target.value)}
+                    placeholder="Add phone"
+                    disabled={busy}
+                    className="h-11"
+                  />
+                  {editPhone.trim() ? (
+                    <Button variant="outline" size="icon" className="h-11 w-11 shrink-0" asChild>
+                      <a href={`tel:${editPhone}`} aria-label="Call">
+                        <Phone className="size-4" />
+                      </a>
+                    </Button>
+                  ) : null}
+                </div>
+              </Field>
+              <Field label="Email">
+                <div className="flex gap-2">
+                  <Input
+                    type="email"
+                    value={editEmail}
+                    onChange={(e) => setEditEmail(e.target.value)}
+                    placeholder="Add email"
+                    disabled={busy}
+                    className="h-11"
+                  />
+                  {editEmail.trim() ? (
+                    <Button variant="outline" size="icon" className="h-11 w-11 shrink-0" asChild>
+                      <a href={`mailto:${editEmail}`} aria-label="Email">
+                        <Mail className="size-4" />
+                      </a>
+                    </Button>
+                  ) : null}
+                </div>
+              </Field>
+              <Button
+                type="button"
+                className="w-full"
+                disabled={busy}
+                onClick={() => void saveContact()}
+              >
+                Save contact
+              </Button>
+
+              <div className="border-t border-border pt-3" />
 
               <Field label="Lead type">
                 <Select
@@ -430,7 +525,11 @@ function LeadDetail() {
               </Field>
 
               <Field label="Stage">
-                <Select value={lead.stage} onValueChange={(v) => void patch({ stage: v })} disabled={busy}>
+                <Select
+                  value={lead.stage}
+                  onValueChange={(v) => void patch({ stage: v })}
+                  disabled={busy}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -447,7 +546,9 @@ function LeadDetail() {
               <Field label="Assignee">
                 <Select
                   value={lead.assigned_to || "unassigned"}
-                  onValueChange={(v) => void patch({ assigned_to: v === "unassigned" ? null : v })}
+                  onValueChange={(v) =>
+                    void patch({ assigned_to: v === "unassigned" ? null : v })
+                  }
                   disabled={busy}
                 >
                   <SelectTrigger>
@@ -465,7 +566,11 @@ function LeadDetail() {
               </Field>
 
               <Field label="Source">
-                <Select value={lead.source} onValueChange={(v) => void patch({ source: v })} disabled={busy}>
+                <Select
+                  value={lead.source}
+                  onValueChange={(v) => void patch({ source: v })}
+                  disabled={busy}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -498,13 +603,13 @@ function LeadDetail() {
                     disabled={busy}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select unit" />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="none">None</SelectItem>
+                      <SelectItem value="none">None / TBD</SelectItem>
                       {inventory.map((i) => (
                         <SelectItem key={i.id} value={i.id}>
-                          {vehicleLabel(i)} · #{i.stock_number}
+                          {vehicleLabel(i)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -512,123 +617,114 @@ function LeadDetail() {
                 </Field>
               ) : null}
 
-              <Field label={lead.lead_type === "lease" ? "Vehicle for lease quote" : "Vehicle interest"}>
+              <Field label="Vehicle interest">
                 <Input
-                  defaultValue={lead.vehicle_interest ?? ""}
-                  key={`vi-${lead.updated_at}`}
+                  defaultValue={lead.vehicle_interest || ""}
+                  key={lead.vehicle_interest || "vi"}
                   onBlur={(e) => {
-                    if (e.target.value !== (lead.vehicle_interest ?? "")) {
-                      void patch({ vehicle_interest: e.target.value });
+                    if (e.target.value !== (lead.vehicle_interest || "")) {
+                      void patch({ vehicle_interest: e.target.value || null });
                     }
                   }}
+                  disabled={busy}
                 />
               </Field>
 
-              <div className="rounded-xl border border-border bg-muted/20 p-3">
-                <label className="flex items-center gap-2 text-sm">
+              <div className="space-y-2 rounded-xl border border-border p-3">
+                <div className="flex items-center gap-2">
                   <Checkbox
                     checked={lead.quote_sent}
                     onCheckedChange={(c) =>
                       void patch({
                         quote_sent: c === true,
-                        quote_sent_at: c === true ? new Date().toISOString() : null,
-                        stage: c === true && lead.stage === "new" ? "quote_sent" : lead.stage,
+                        quote_sent_at:
+                          c === true
+                            ? lead.quote_sent_at || new Date().toISOString()
+                            : null,
+                        stage:
+                          c === true && lead.stage === "new" ? "quote_sent" : lead.stage,
                       })
                     }
+                    disabled={busy}
                   />
-                  Quote sent
-                </label>
+                  <Label>Quote sent</Label>
+                </div>
                 {lead.quote_sent ? (
-                  <div className="mt-2 space-y-2">
-                    <p className="text-xs text-muted-foreground">
-                      {lead.quote_sent_at ? formatDate(lead.quote_sent_at) : "Date set"}
-                    </p>
-                    <div
-                      className={cn(
-                        "rounded-xl border border-dashed px-3 py-3 text-center transition-colors",
-                        pdfDrag
-                          ? "border-primary bg-primary/10"
-                          : "border-border bg-background/40 hover:border-primary/40",
-                      )}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        setPdfDrag(true);
+                  <>
+                    <Input
+                      type="date"
+                      defaultValue={
+                        lead.quote_sent_at
+                          ? formatDate(lead.quote_sent_at).split("/").reverse().join("-")
+                          : ""
+                      }
+                      onBlur={(e) => {
+                        if (e.target.value) {
+                          void patch({
+                            quote_sent_at: new Date(e.target.value).toISOString(),
+                          });
+                        }
                       }}
-                      onDragLeave={() => setPdfDrag(false)}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        setPdfDrag(false);
-                        const file = e.dataTransfer.files?.[0];
-                        if (file) void readPdfFile(file);
-                      }}
-                    >
-                      <FileUp className="mx-auto size-4 text-primary" />
-                      <p className="mt-1 text-[11px] text-muted-foreground">
-                        Drop PDF quote or{" "}
-                        <button
-                          type="button"
-                          className="font-medium text-primary underline-offset-2 hover:underline"
-                          onClick={() => pdfInputRef.current?.click()}
-                        >
-                          upload
-                        </button>
-                      </p>
-                      {lead.quote_pdf_name ? (
-                        <div className="mt-2 flex items-center justify-center gap-2 text-xs">
-                          {lead.quote_pdf_data ? (
-                            <a
-                              href={lead.quote_pdf_data}
-                              download={lead.quote_pdf_name}
-                              className="truncate font-medium text-primary hover:underline"
-                            >
-                              {lead.quote_pdf_name}
-                            </a>
-                          ) : (
-                            <span className="truncate font-medium">{lead.quote_pdf_name}</span>
-                          )}
-                          <button
-                            type="button"
-                            className="text-muted-foreground hover:text-destructive"
-                            onClick={() => void patch({ clear_quote_pdf: true })}
-                          >
-                            <X className="size-3.5" />
-                          </button>
-                        </div>
-                      ) : null}
-                      <input
-                        ref={pdfInputRef}
-                        type="file"
-                        accept="application/pdf,.pdf"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) void readPdfFile(file);
-                          e.target.value = "";
-                        }}
-                      />
-                    </div>
+                    />
                     <Input
                       placeholder="Quote link"
-                      defaultValue={lead.quote_link ?? ""}
-                      key={`ql-${lead.updated_at}`}
+                      defaultValue={lead.quote_link || ""}
                       onBlur={(e) => {
-                        if (e.target.value !== (lead.quote_link ?? "")) {
-                          void patch({ quote_link: e.target.value });
+                        if (e.target.value !== (lead.quote_link || "")) {
+                          void patch({ quote_link: e.target.value || null });
                         }
                       }}
                     />
-                    <Input
-                      placeholder="Quote notes"
-                      defaultValue={lead.quote_notes ?? ""}
-                      key={`qn-${lead.updated_at}`}
-                      onBlur={(e) => {
-                        if (e.target.value !== (lead.quote_notes ?? "")) {
-                          void patch({ quote_notes: e.target.value });
-                        }
-                      }}
-                    />
-                  </div>
+                  </>
                 ) : null}
+                <div
+                  className={cn(
+                    "rounded-lg border border-dashed p-3 text-center text-xs",
+                    pdfDrag ? "border-primary bg-primary/10" : "border-border",
+                  )}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setPdfDrag(true);
+                  }}
+                  onDragLeave={() => setPdfDrag(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setPdfDrag(false);
+                    const f = e.dataTransfer.files?.[0];
+                    if (f) void readPdfFile(f);
+                  }}
+                >
+                  <input
+                    ref={pdfInputRef}
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void readPdfFile(f);
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => pdfInputRef.current?.click()}
+                  >
+                    <FileUp className="size-3.5" />
+                    {lead.quote_pdf_name || "Upload quote PDF"}
+                  </Button>
+                  {lead.quote_pdf_name ? (
+                    <button
+                      type="button"
+                      className="mt-2 flex w-full items-center justify-center gap-1 text-muted-foreground hover:text-foreground"
+                      onClick={() =>
+                        void patch({ clear_quote_pdf: true, quote_pdf_name: null })
+                      }
+                    >
+                      <X className="size-3" /> Remove PDF
+                    </button>
+                  ) : null}
+                </div>
               </div>
 
               <Field label="Google review">
@@ -638,9 +734,12 @@ function LeadDetail() {
                     void patch({
                       google_review_status: v,
                       google_review_at:
-                        v === "not_requested" ? null : lead.google_review_at || new Date().toISOString(),
+                        v === "received"
+                          ? lead.google_review_at || new Date().toISOString()
+                          : lead.google_review_at,
                     })
                   }
+                  disabled={busy}
                 >
                   <SelectTrigger>
                     <SelectValue />
@@ -653,37 +752,59 @@ function LeadDetail() {
                     ))}
                   </SelectContent>
                 </Select>
-                {lead.google_review_status !== "not_requested" ? (
-                  <Input
-                    className="mt-2"
-                    placeholder="Review link"
-                    defaultValue={lead.google_review_link ?? ""}
-                    key={`gr-${lead.updated_at}`}
-                    onBlur={(e) => {
-                      if (e.target.value !== (lead.google_review_link ?? "")) {
-                        void patch({ google_review_link: e.target.value });
-                      }
-                    }}
-                  />
-                ) : null}
               </Field>
 
-              <Field label="Est. value (CAD)">
-                <Input
-                  type="number"
-                  defaultValue={lead.estimated_value ?? ""}
-                  key={`ev-${lead.updated_at}`}
-                  onBlur={(e) => {
-                    const n = e.target.value === "" ? null : Number(e.target.value);
-                    if (n !== lead.estimated_value) void patch({ estimated_value: n });
-                  }}
-                />
-                <p className="text-xs text-muted-foreground">{formatCurrency(lead.estimated_value)}</p>
-              </Field>
+              {lead.estimated_value != null ? (
+                <p className="text-sm text-muted-foreground">
+                  Est. value {formatCurrency(lead.estimated_value)}
+                </p>
+              ) : null}
 
-              <p className="text-xs text-muted-foreground">
-                Created {formatDate(lead.created_at)} · Updated {formatRelative(lead.updated_at)}
-              </p>
+              <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3">
+                <p className="text-xs text-muted-foreground">
+                  False lead? Delete permanently — removed from the CRM and{" "}
+                  <strong className="text-foreground">not</strong> counted as Closed Lost (keeps
+                  close rates clean).
+                </p>
+                {!confirmDelete ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-2 w-full border-destructive/50 text-destructive hover:bg-destructive/10"
+                    disabled={busy}
+                    onClick={() => setConfirmDelete(true)}
+                  >
+                    <Trash2 className="size-4" />
+                    Delete lead permanently
+                  </Button>
+                ) : (
+                  <div className="mt-2 flex flex-col gap-2">
+                    <p className="text-xs font-medium text-destructive">
+                      Delete “{lead.name}” forever? This cannot be undone.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        className="flex-1"
+                        disabled={busy}
+                        onClick={() => void handleDelete()}
+                      >
+                        Yes, delete
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="flex-1"
+                        disabled={busy}
+                        onClick={() => setConfirmDelete(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -694,8 +815,8 @@ function LeadDetail() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid gap-1.5">
-      <Label>{label}</Label>
+    <div className="space-y-1.5">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
       {children}
     </div>
   );
