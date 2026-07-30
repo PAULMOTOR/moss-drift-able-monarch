@@ -18,13 +18,19 @@ export const LEAD_TYPES = [
     id: "inventory",
     label: "Inventory",
     short: "Inventory",
-    description: "Inquiry on a car we have for sale",
+    description: "Inquiry on a car we have for sale (CarGurus, AutoTrader, walk-in)",
   },
   {
     id: "lease",
     label: "Lease",
     short: "Lease",
-    description: "Broker / dealer requesting a lease quote",
+    description: "Lease quote — broker, dealer, or TAdvantage financing forms",
+  },
+  {
+    id: "general",
+    label: "General Interest",
+    short: "General",
+    description: "General contact / web inquiry (TAdvantage Contact Us, etc.)",
   },
 ] as const;
 
@@ -115,6 +121,8 @@ export type Lead = {
   quote_pdf_name: string | null;
   quote_pdf_data: string | null;
   source_email_raw: string | null;
+  email_portal?: string | null;
+  gmail_message_id?: string | null;
   google_review_status: ReviewStatus;
   google_review_at: string | null;
   google_review_link: string | null;

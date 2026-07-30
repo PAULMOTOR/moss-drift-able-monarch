@@ -221,3 +221,36 @@ INSERT INTO _migrations (name) VALUES ('0001_auth.sql') ON CONFLICT (name) DO NO
 INSERT INTO _migrations (name) VALUES ('0002_crm.sql') ON CONFLICT (name) DO NOTHING;
 INSERT INTO _migrations (name) VALUES ('0003_crm_v2_reset.sql') ON CONFLICT (name) DO NOTHING;
 INSERT INTO _migrations (name) VALUES ('0004_lead_type_quote_pdf.sql') ON CONFLICT (name) DO NOTHING;
+
+-- >>> 0005_email_import_general.sql
+alter table leads drop constraint if exists leads_lead_type_check;
+alter table leads add constraint leads_lead_type_check
+  check (lead_type in ('inventory', 'lease', 'general'));
+alter table leads add column if not exists email_portal text;
+alter table leads add column if not exists gmail_message_id text;
+alter table leads add column if not exists gmail_thread_id text;
+create unique index if not exists leads_gmail_message_id_uidx
+  on leads (gmail_message_id) where gmail_message_id is not null;
+create table if not exists email_imports (
+  id text primary key,
+  gmail_message_id text not null unique,
+  gmail_thread_id text,
+  from_address text,
+  subject text,
+  received_at timestamptz,
+  lead_id text references leads(id) on delete set null,
+  status text not null,
+  reason text,
+  lead_type text,
+  portal text,
+  raw_snippet text,
+  created_at timestamptz not null default now()
+);
+create index if not exists email_imports_created_idx on email_imports (created_at desc);
+create index if not exists email_imports_status_idx on email_imports (status);
+create table if not exists crm_settings (
+  key text primary key,
+  value text not null,
+  updated_at timestamptz not null default now()
+);
+INSERT INTO _migrations (name) VALUES ('0005_email_import_general.sql') ON CONFLICT (name) DO NOTHING;

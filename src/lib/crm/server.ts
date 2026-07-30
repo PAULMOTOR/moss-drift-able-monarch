@@ -5,6 +5,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { ensureCrmSeeded, syncRealInventory } from "./seed";
 import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
+import { getEmailImportStatus, runEmailImport } from "./import-emails";
 import {
   type AdminMetrics,
   type InventoryItem,
@@ -86,6 +87,8 @@ function mapLead(r: Record<string, unknown>): Lead {
     quote_pdf_name: (r.quote_pdf_name as string) ?? null,
     quote_pdf_data: (r.quote_pdf_data as string) ?? null,
     source_email_raw: (r.source_email_raw as string) ?? null,
+    email_portal: (r.email_portal as string) ?? null,
+    gmail_message_id: (r.gmail_message_id as string) ?? null,
     google_review_status: (r.google_review_status as Lead["google_review_status"]) || "not_requested",
     google_review_at: (r.google_review_at as string) ?? null,
     google_review_link: (r.google_review_link as string) ?? null,
@@ -104,6 +107,7 @@ const leadSelect = `
   l.stage_entered_at::text as stage_entered_at,
   l.quote_sent, l.quote_sent_at::text as quote_sent_at,
   l.quote_link, l.quote_notes, l.quote_pdf_name, l.quote_pdf_data, l.source_email_raw,
+  l.email_portal, l.gmail_message_id,
   l.google_review_status,
   l.google_review_at::text as google_review_at,
   l.google_review_link,
@@ -787,6 +791,7 @@ export const getDashboardStats = createServerFn({ method: "GET" })
       drives: number;
       inventory_leads: number;
       lease_leads: number;
+      general_leads: number;
     }>`
       select
         count(*)::int as total,
@@ -795,7 +800,8 @@ export const getDashboardStats = createServerFn({ method: "GET" })
         count(*) filter (where quote_sent = true and stage not in ('won','lost'))::int as quote_pending,
         (select count(*)::int from test_drives where status = 'scheduled' and scheduled_at >= now()) as drives,
         count(*) filter (where lead_type = 'inventory')::int as inventory_leads,
-        count(*) filter (where lead_type = 'lease')::int as lease_leads
+        count(*) filter (where lead_type = 'lease')::int as lease_leads,
+        count(*) filter (where lead_type = 'general')::int as general_leads
       from leads
     `;
     const mine = await sql<{ n: number }>`
@@ -889,6 +895,24 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
       })),
       funnel,
     };
+  });
+
+/** Admin: poll client@ Gmail and import leads now. */
+export const adminRunEmailImport = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    await requireAdmin(context.userId);
+    const sql = await boot();
+    return runEmailImport(sql);
+  });
+
+/** Admin: Gmail connection + recent import log. */
+export const adminEmailImportStatus = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    await requireAdmin(context.userId);
+    const sql = await boot();
+    return getEmailImportStatus(sql);
   });
 
 export const adminCreateUser = createServerFn({ method: "POST" })
@@ -1121,7 +1145,7 @@ export const adminDeleteUser = createServerFn({ method: "POST" })
 
 /**
  * Wipe all leads + activities + test drives (demo cleanup).
- * Keeps team users and inventory.
+ * Keeps team users and inventory. Also clears email_imports so re-import works.
  */
 export const adminClearAllLeads = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -1132,9 +1156,9 @@ export const adminClearAllLeads = createServerFn({ method: "POST" })
     const before = await sql<{ n: number }>`select count(*)::int as n from leads`;
     const count = before[0]?.n ?? 0;
 
-    // Order: children first (FK from test_drives / activities → leads)
     await sql`delete from test_drives`;
     await sql`delete from lead_activities`;
+    await sql`delete from email_imports`;
     await sql`delete from leads`;
 
     return {
@@ -1143,6 +1167,6 @@ export const adminClearAllLeads = createServerFn({ method: "POST" })
       message:
         count === 0
           ? "No leads to delete."
-          : `Deleted ${count} lead(s), plus all notes, activities, and test drives. Users and inventory kept.`,
+          : `Deleted ${count} lead(s), plus all notes, activities, test drives, and import log. Users and inventory kept.`,
     };
   });

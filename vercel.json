@@ -3,5 +3,11 @@
   "framework": null,
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "regions": ["iad1"]
+  "regions": ["iad1"],
+  "crons": [
+    {
+      "path": "/api/cron/import-emails",
+      "schedule": "0 * * * *"
+    }
+  ]
 }

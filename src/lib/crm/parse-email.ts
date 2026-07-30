@@ -1,4 +1,5 @@
 import type { LeadType, ParsedEmailLead, SourceId } from "./types";
+import { classifyInboundEmail } from "./classify-email";
 
 /**
  * Fast floor helper: paste a whole inventory or lease-inquiry email and
@@ -11,7 +12,18 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
 
   const matched: string[] = [];
 
-  const lead_type = detectLeadType(lower, flat);
+  // Prefer From/Subject portal rules when present in the paste
+  const fromLine = text.match(/^From:\s*(.+)$/im)?.[1]?.trim() || "";
+  const subjectLine = text.match(/^Subject:\s*(.+)$/im)?.[1]?.trim() || "";
+  let lead_type: LeadType = detectLeadType(lower, flat);
+  if (fromLine || subjectLine) {
+    const classified = classifyInboundEmail({
+      from: fromLine,
+      subject: subjectLine,
+      body: text,
+    });
+    lead_type = classified.lead_type;
+  }
   matched.push(`type:${lead_type}`);
 
   const name =
@@ -107,7 +119,6 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
     matched.push("message");
   }
 
-  // Lease-specific extras
   if (lead_type === "lease") {
     for (const key of ["term", "lease term", "months", "km", "kilometers", "down payment", "trade"]) {
       const v = pickLabeled(text, [key]);
@@ -115,7 +126,6 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
     }
   }
 
-  // Keep a short raw snippet if we have almost nothing structured
   if (!notesBits.length && text.length > 0) {
     const cleaned = text
       .split("\n")
@@ -129,9 +139,11 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
   const source: SourceId =
     lead_type === "lease" || /broker|dealer request|outside dealer/i.test(lower)
       ? "broker"
-      : /walk[- ]?in/i.test(lower)
-        ? "walk_in"
-        : "email";
+      : lead_type === "general"
+        ? "web"
+        : /walk[- ]?in/i.test(lower)
+          ? "walk_in"
+          : "email";
 
   const score = matched.filter((m) => !m.startsWith("type:")).length;
   const confidence: ParsedEmailLead["confidence"] =
@@ -152,13 +164,16 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
 }
 
 function detectLeadType(lower: string, flat: string): LeadType {
+  if (/general contact|contact général|contact us|general interest/i.test(lower)) {
+    return "general";
+  }
   const leaseHits =
     (lower.match(
-      /\blease\b|\bleasing\b|lease quote|quote request|broker request|dealer request|payment quote|monthly payment/g,
+      /\blease\b|\bleasing\b|lease quote|quote request|broker request|dealer request|payment quote|monthly payment|financing form|location individuel|location entreprise/g,
     )?.length ?? 0) + (/\bterm\b.*\b(24|36|48|60)\b/i.test(flat) ? 1 : 0);
   const invHits =
     lower.match(
-      /\bstock\s*(#|number|no)?\b|\binventory\b|\bfor sale\b|\bvehicle of interest\b|\bunits?\b|\bvin\b|\bodometer\b|\bcarfax\b/g,
+      /\bstock\s*(#|number|no)?\b|\binventory\b|\bfor sale\b|\bvehicle of interest\b|\bunits?\b|\bvin\b|\bodometer\b|\bcarfax\b|\bcargurus\b|\bautotrader\b/g,
     )?.length ?? 0;
 
   if (leaseHits > invHits && leaseHits > 0) return "lease";
@@ -170,7 +185,6 @@ function detectLeadType(lower: string, flat: string): LeadType {
 function pickLabeled(text: string, labels: string[]): string {
   for (const label of labels) {
     const esc = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // Label: value  OR  Label = value  OR  **Label** value
     const patterns = [
       new RegExp(`(?:^|\\n)\\s*\\*?\\*?${esc}\\*?\\*?\\s*[:\\-–—=]\\s*(.+)$`, "im"),
       new RegExp(`(?:^|\\n)\\s*${esc}\\s{2,}(.+)$`, "im"),
@@ -194,7 +208,6 @@ function combineFirstLast(text: string): string {
 }
 
 function fromHeaderName(text: string): string {
-  // From: "Alex Hudon" <alexh@...>
   const m = text.match(/^From:\s*(?:"?([^"<\n]+)"?\s*)?</im);
   if (m?.[1]) {
     const n = m[1].trim();
@@ -204,17 +217,18 @@ function fromHeaderName(text: string): string {
 }
 
 function extractEmail(text: string): string {
-  // Prefer emails not belonging to paulmotor domains when multiple
   const all = [...text.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((m) => m[0]);
   if (!all.length) return "";
-  const external = all.find((e) => !/paulmotor/i.test(e) && !/noreply|no-reply|donotreply/i.test(e));
+  const external = all.find(
+    (e) =>
+      !/paulmotor/i.test(e) &&
+      !/noreply|no-reply|donotreply|tadvantage|cargurus|dealerleads|trader\.ca/i.test(e),
+  );
   return (external || all[0] || "").toLowerCase();
 }
 
 function extractPhone(text: string): string {
-  const m = text.match(
-    /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/,
-  );
+  const m = text.match(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/);
   return m?.[0]?.trim() || "";
 }
 
@@ -226,7 +240,6 @@ function extractStock(text: string): string {
 }
 
 function extractVehicleLine(text: string): string {
-  // 2015 Ferrari 458 Speciale / 2024 Ferrari Purosangue AWD
   const m = text.match(
     /\b((?:19|20)\d{2}\s+(?:[A-Z][A-Za-zÀ-ÿ0-9-]+(?:\s+[A-Z0-9][A-Za-zÀ-ÿ0-9-]*){1,6}))/,
   );

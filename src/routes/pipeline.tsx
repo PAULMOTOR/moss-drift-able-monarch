@@ -179,10 +179,16 @@ function PipelinePage() {
                             "rounded px-1.5 py-0.5",
                             lead.lead_type === "lease"
                               ? "bg-accent text-accent-foreground"
-                              : "bg-primary/15 text-primary",
+                              : lead.lead_type === "general"
+                                ? "bg-muted text-foreground"
+                                : "bg-primary/15 text-primary",
                           )}
                         >
-                          {lead.lead_type === "lease" ? "Lease" : "Inv"}
+                          {lead.lead_type === "lease"
+                            ? "Lease"
+                            : lead.lead_type === "general"
+                              ? "General"
+                              : "Inv"}
                         </span>
                         {lead.quote_sent ? (
                           <span className="rounded bg-primary/15 px-1.5 py-0.5 text-primary">

@@ -2,7 +2,7 @@ import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
-import { Eraser, Pencil, Trash2, UserPlus, X } from "lucide-react";
+import { Eraser, Inbox, Mail, Pencil, RefreshCw, Trash2, UserPlus, X } from "lucide-react";
 import { AuthGate, PageHeader } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,8 @@ import {
   adminClearAllLeads,
   adminCreateUser,
   adminDeleteUser,
+  adminEmailImportStatus,
+  adminRunEmailImport,
   adminUpdateUser,
   getAdminMetrics,
   getMyProfile,
@@ -46,6 +48,8 @@ type EditForm = {
   password: string;
 };
 
+type ImportStatus = Awaited<ReturnType<typeof adminEmailImportStatus>>;
+
 function emptyCreate() {
   return {
     name: "",
@@ -68,21 +72,27 @@ function AdminPage() {
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [confirmClearLeads, setConfirmClearLeads] = useState(false);
   const [clearingLeads, setClearingLeads] = useState(false);
+  const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
+  const [importing, setImporting] = useState(false);
   const createUser = useServerFn(adminCreateUser);
   const updateUser = useServerFn(adminUpdateUser);
   const deleteUser = useServerFn(adminDeleteUser);
   const clearAllLeads = useServerFn(adminClearAllLeads);
+  const runImport = useServerFn(adminRunEmailImport);
+  const loadImportStatus = useServerFn(adminEmailImportStatus);
 
   async function load() {
     const profile = await getMyProfile();
     setMe(profile);
     if (profile.role !== "admin") return;
-    const [m, u] = await Promise.all([
+    const [m, u, emailSt] = await Promise.all([
       getAdminMetrics(),
       listProfiles({ data: { activeOnly: false } }),
+      loadImportStatus().catch(() => null),
     ]);
     setMetrics(m);
     setUsers(u);
+    if (emailSt) setImportStatus(emailSt);
   }
 
   useEffect(() => {
@@ -163,6 +173,20 @@ function AdminPage() {
     }
   }
 
+  async function handleImportNow() {
+    setImporting(true);
+    try {
+      const res = await runImport();
+      if (res.ok) toast.success(res.message);
+      else toast.error(res.message);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setImporting(false);
+    }
+  }
+
   if (me && me.role !== "admin") {
     return <Navigate to="/" />;
   }
@@ -173,12 +197,13 @@ function AdminPage() {
 
   const funnelMap = Object.fromEntries(metrics.funnel.map((f) => [f.stage, f.count]));
   const leadTotal = metrics.overall.total;
+  const gmailOk = importStatus?.config?.configured;
 
   return (
     <>
       <PageHeader
         title="Admin"
-        description="Jeremy & Guillaume — team performance, funnel, and user management."
+        description="Jeremy & Guillaume — team performance, email import, and user management."
       />
 
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -199,6 +224,93 @@ function AdminPage() {
           hint="Open deals"
         />
       </div>
+
+      <Card className="mb-6 border-primary/25">
+        <CardHeader className="pb-2">
+          <CardTitle className="font-display flex items-center gap-2 text-xl">
+            <Mail className="size-5 text-primary" />
+            Email import · client@paulmotorcompany.com
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Auto-reads the shared lead inbox. Rules: TAdvantage general →{" "}
+            <strong className="text-foreground">General Interest</strong>; financing forms →{" "}
+            <strong className="text-foreground">Lease</strong>; CarGurus / AutoTrader →{" "}
+            <strong className="text-foreground">Inventory</strong>. Same person + same car merges
+            into one open lead (90 days).
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Badge variant={gmailOk ? "default" : "outline"}>
+              {gmailOk ? "Gmail connected" : "Gmail not connected"}
+            </Badge>
+            {importStatus?.config?.user ? (
+              <span className="text-xs text-muted-foreground">{importStatus.config.user}</span>
+            ) : null}
+            {importStatus?.last_run ? (
+              <span className="text-xs text-muted-foreground">
+                Last run: {new Date(importStatus.last_run).toLocaleString("en-CA")}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">Never run yet</span>
+            )}
+          </div>
+
+          {!gmailOk ? (
+            <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+              Add <code className="text-foreground">GMAIL_CLIENT_ID</code>,{" "}
+              <code className="text-foreground">GMAIL_CLIENT_SECRET</code>,{" "}
+              <code className="text-foreground">GMAIL_REFRESH_TOKEN</code>,{" "}
+              <code className="text-foreground">GMAIL_USER=client@paulmotorcompany.com</code> in
+              Vercel env, then redeploy. Full steps:{" "}
+              <code className="text-foreground">deploy/GMAIL_SETUP.md</code> in GitHub.
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            <Button disabled={importing} onClick={() => void handleImportNow()}>
+              <RefreshCw className={cn("size-4", importing && "animate-spin")} />
+              {importing ? "Importing…" : "Import now"}
+            </Button>
+          </div>
+
+          {importStatus?.recent && importStatus.recent.length > 0 ? (
+            <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-border/60 p-2">
+              <p className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                <Inbox className="size-3.5" /> Recent imports
+              </p>
+              {importStatus.recent.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border/40 py-1.5 text-xs last:border-0"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{r.subject || "(no subject)"}</p>
+                    <p className="truncate text-muted-foreground">
+                      {r.from_address} · {r.portal || "—"} · {r.lead_type || "—"}
+                    </p>
+                  </div>
+                  <Badge
+                    variant={
+                      r.status === "created"
+                        ? "default"
+                        : r.status === "merged"
+                          ? "outline"
+                          : r.status === "error"
+                            ? "lost"
+                            : "outline"
+                    }
+                    className="shrink-0 capitalize"
+                  >
+                    {r.status}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
       <Card className="mb-6 border-destructive/30">
         <CardHeader className="pb-2">
@@ -582,8 +694,7 @@ function AdminPage() {
                     <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 p-3">
                       <p className="text-sm font-medium">Remove {u.name} permanently?</p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Their assigned leads become unassigned. They lose sign-in access. You can
-                        create a new account later if needed.
+                        Their assigned leads become unassigned. They lose sign-in access.
                       </p>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <Button

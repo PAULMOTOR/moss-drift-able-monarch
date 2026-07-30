@@ -150,7 +150,9 @@ function CapturePage() {
       toast.success(
         parsed.lead_type === "lease"
           ? "Lease inquiry fields filled — confirm and save"
-          : "Inventory lead fields filled — confirm and save",
+          : parsed.lead_type === "general"
+            ? "General interest fields filled — confirm and save"
+            : "Inventory lead fields filled — confirm and save",
       );
       setEmailOpen(false);
     } catch (e) {
@@ -199,6 +201,7 @@ function CapturePage() {
           notes: form.notes || undefined,
           vehicle_interest: form.vehicle_interest || undefined,
           inventory_id: form.lead_type === "inventory" ? form.inventory_id || null : null,
+
           assigned_to: form.assigned_to || null,
           quote_sent: form.quote_sent,
           quote_sent_at:
@@ -653,7 +656,14 @@ Message: Interested in a viewing this weekend.`}
               ) : (
                 <>
                   <Check className="size-5" />
-                  Save {form.lead_type === "lease" ? "lease" : "inventory"} lead
+                  Save {
+                    form.lead_type === "lease"
+                      ? "lease"
+                      : form.lead_type === "general"
+                        ? "general"
+                        : "inventory"
+                  }{" "}
+                  lead
                 </>
               )}
             </Button>
