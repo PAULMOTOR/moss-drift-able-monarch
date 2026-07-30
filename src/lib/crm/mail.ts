@@ -1,6 +1,6 @@
 /**
- * Outbound email for CRM reminders.
- * Prefer Resend (RESEND_API_KEY). Falls back to email_outbox for Admin visibility.
+ * Outbound email for CRM reminders via Resend.
+ * Until paulmotorcompany.com is verified in Resend, use onboarding@resend.dev as From.
  */
 import type { Sql } from "@/lib/db";
 
@@ -37,10 +37,11 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
   `;
 
   const resendKey = process.env.RESEND_API_KEY?.trim();
-  const from =
-    process.env.CRM_FROM_EMAIL?.trim() ||
-    process.env.GMAIL_USER?.trim() ||
-    "client@paulmotorcompany.com";
+  // Resend free onboarding sender works immediately without domain verify.
+  // After Domains → verify paulmotorcompany.com, set CRM_FROM_EMAIL to client@...
+  const fromAddress =
+    process.env.CRM_FROM_EMAIL?.trim() || "onboarding@resend.dev";
+  const fromName = "PAUL MOTOR CO. CRM";
 
   if (resendKey) {
     try {
@@ -51,11 +52,11 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from: `PAUL MOTOR CO. CRM <${from}>`,
+          from: `${fromName} <${fromAddress}>`,
           to: [mail.to],
           subject: mail.subject,
           text: mail.text,
-          html: mail.html || undefined,
+          html: mail.html || `<pre style="font-family:system-ui,sans-serif;white-space:pre-wrap">${escapeHtml(mail.text)}</pre>`,
         }),
       });
       if (!res.ok) {
@@ -80,17 +81,24 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
     }
   }
 
-  // No provider — left pending for Admin / future Resend key
   await sql`
     update email_outbox set
       status = 'queued_no_provider',
-      error = 'Set RESEND_API_KEY (and optional CRM_FROM_EMAIL) in Vercel to deliver mail'
+      error = 'Set RESEND_API_KEY in Vercel Production env, then redeploy'
     where id = ${outboxId}
   `;
   return {
     ok: false,
     via: "outbox",
-    error: "RESEND_API_KEY not set — email queued in outbox only",
+    error: "RESEND_API_KEY not set — email queued only",
     outboxId,
   };
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, "&")
+    .replace(/</g, "<")
+    .replace(/>/g, ">")
+    .replace(/"/g, """);
 }
