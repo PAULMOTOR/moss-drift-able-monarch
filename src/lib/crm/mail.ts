@@ -18,6 +18,18 @@ function uid() {
   return crypto.randomUUID();
 }
 
+function escapeHtml(s: string) {
+  return s
+    .split("&")
+    .join("&")
+    .split("<")
+    .join("<")
+    .split(">")
+    .join(">")
+    .split('"')
+    .join(""");
+}
+
 export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
   ok: boolean;
   via: string;
@@ -38,25 +50,30 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
 
   const resendKey = process.env.RESEND_API_KEY?.trim();
   // Resend free onboarding sender works immediately without domain verify.
-  // After Domains → verify paulmotorcompany.com, set CRM_FROM_EMAIL to client@...
+  // After Domains verify paulmotorcompany.com, set CRM_FROM_EMAIL to client@...
   const fromAddress =
     process.env.CRM_FROM_EMAIL?.trim() || "onboarding@resend.dev";
   const fromName = "PAUL MOTOR CO. CRM";
 
   if (resendKey) {
     try {
+      const htmlBody =
+        mail.html ||
+        "<pre style=\"font-family:system-ui,sans-serif;white-space:pre-wrap\">" +
+          escapeHtml(mail.text) +
+          "</pre>";
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${resendKey}`,
+          Authorization: "Bearer " + resendKey,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from: `${fromName} <${fromAddress}>`,
+          from: fromName + " <" + fromAddress + ">",
           to: [mail.to],
           subject: mail.subject,
           text: mail.text,
-          html: mail.html || `<pre style="font-family:system-ui,sans-serif;white-space:pre-wrap">${escapeHtml(mail.text)}</pre>`,
+          html: htmlBody,
         }),
       });
       if (!res.ok) {
@@ -93,12 +110,4 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
     error: "RESEND_API_KEY not set — email queued only",
     outboxId,
   };
-}
-
-function escapeHtml(s: string) {
-  return s
-    .replace(/&/g, "&")
-    .replace(/</g, "<")
-    .replace(/>/g, ">")
-    .replace(/"/g, """);
 }
