@@ -13,12 +13,27 @@ export const Route = createFileRoute("/api/health")({
         const betterAuthUrl = process.env.BETTER_AUTH_URL?.trim() || null;
         const vercelUrl = process.env.VERCEL_URL?.trim() || null;
         const crmSeedDemo = process.env.CRM_SEED_DEMO?.trim() || null;
+        const gmail = {
+          hasClientId: Boolean(process.env.GMAIL_CLIENT_ID?.trim()),
+          hasClientSecret: Boolean(process.env.GMAIL_CLIENT_SECRET?.trim()),
+          hasRefreshToken: Boolean(process.env.GMAIL_REFRESH_TOKEN?.trim()),
+          user: process.env.GMAIL_USER?.trim() || null,
+          hasCronSecret: Boolean(process.env.CRON_SECRET?.trim()),
+          configured: Boolean(
+            process.env.GMAIL_CLIENT_ID?.trim() &&
+              process.env.GMAIL_CLIENT_SECRET?.trim() &&
+              process.env.GMAIL_REFRESH_TOKEN?.trim() &&
+              process.env.GMAIL_USER?.trim(),
+          ),
+        };
 
         let db: {
           ok: boolean;
           source: string;
           profiles?: number;
           users?: number;
+          email_imports_table?: boolean;
+          email_portal_column?: boolean;
           error?: string;
         } = { ok: false, source: hasDatabaseUrl ? "neon" : "pglite" };
 
@@ -32,11 +47,21 @@ export const Route = createFileRoute("/api/health")({
           const users = await sql<{ n: number }>`
             select count(*)::int as n from "user"
           `;
+          const cols = await sql<{ column_name: string }>`
+            select column_name from information_schema.columns
+            where table_name = 'leads' and column_name in ('email_portal', 'gmail_message_id')
+          `;
+          const tables = await sql<{ table_name: string }>`
+            select table_name from information_schema.tables
+            where table_schema = 'public' and table_name = 'email_imports'
+          `;
           db = {
             ok: true,
             source: dbSource,
             profiles: profiles[0]?.n ?? 0,
             users: users[0]?.n ?? 0,
+            email_portal_column: cols.some((c) => c.column_name === "email_portal"),
+            email_imports_table: tables.length > 0,
           };
         } catch (e) {
           db = {
@@ -46,15 +71,13 @@ export const Route = createFileRoute("/api/health")({
           };
         }
 
-        // Optionally seed if empty and DB works
         let seed: { ran: boolean; error?: string } = { ran: false };
         if (db.ok && (db.profiles ?? 0) === 0) {
           try {
             const { ensureCrmSeeded } = await import("@/lib/crm/seed");
             const { getSql } = await import("@/lib/db");
             await ensureCrmSeeded(await getSql());
-            const { getSql: getSql2 } = await import("@/lib/db");
-            const sql2 = await getSql2();
+            const sql2 = await getSql();
             const after = await sql2<{ n: number }>`select count(*)::int as n from profiles`;
             seed = { ran: true };
             db.profiles = after[0]?.n ?? 0;
@@ -66,8 +89,57 @@ export const Route = createFileRoute("/api/health")({
           }
         }
 
+        // Light Gmail API probe (token only — no inbox read)
+        let gmailProbe: { ok: boolean; error?: string } | null = null;
+        if (gmail.configured) {
+          try {
+            const { google } = await import("googleapis");
+            const oauth2 = new google.auth.OAuth2(
+              process.env.GMAIL_CLIENT_ID!.trim(),
+              process.env.GMAIL_CLIENT_SECRET!.trim(),
+            );
+            oauth2.setCredentials({
+              refresh_token: process.env.GMAIL_REFRESH_TOKEN!.trim(),
+            });
+            const { credentials } = await oauth2.refreshAccessToken();
+            gmailProbe = {
+              ok: Boolean(credentials.access_token),
+            };
+          } catch (e) {
+            gmailProbe = {
+              ok: false,
+              error: e instanceof Error ? e.message : String(e),
+            };
+          }
+        }
+
+        const hints: string[] = [];
+        if (!hasDatabaseUrl) hints.push("Missing DATABASE_URL");
+        if (!gmail.configured) {
+          hints.push(
+            "Gmail incomplete: need GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, GMAIL_USER on Production + Redeploy",
+          );
+        }
+        if (gmail.configured && gmailProbe && !gmailProbe.ok) {
+          hints.push(
+            "Gmail token invalid — re-run scripts/gmail-oauth.mjs as client@ and update GMAIL_REFRESH_TOKEN",
+          );
+        }
+        if (db.ok && !db.email_imports_table) {
+          hints.push("DB missing email_imports table — redeploy so migrations run, or run migrations/0005");
+        }
+        if (db.ok && !db.email_portal_column) {
+          hints.push("DB missing email_portal column — redeploy so migration 0005 applies");
+        }
+        if (!gmail.hasCronSecret) {
+          hints.push("CRON_SECRET not set — Vercel cron will get 401");
+        }
+        if (hints.length === 0) {
+          hints.push("Config looks good. Use Admin → Import now, or wait for the 2-minute cron.");
+        }
+
         const body = {
-          ok: db.ok,
+          ok: db.ok && gmail.configured && (gmailProbe?.ok ?? false),
           env: {
             hasDatabaseUrl,
             hasAuthSecret,
@@ -75,20 +147,15 @@ export const Route = createFileRoute("/api/health")({
             vercelUrl,
             crmSeedDemo,
           },
+          gmail,
+          gmailProbe,
           db,
           seed,
-          hint:
-            !hasDatabaseUrl
-              ? "Set DATABASE_URL (Neon pooled connection string) in Vercel → Settings → Environment Variables, then Redeploy."
-              : !db.ok
-                ? "DATABASE_URL is set but connection failed. Use Neon pooled URL with ?sslmode=require."
-                : (db.profiles ?? 0) === 0
-                  ? "Database connected but no users. Open /login once or set CRM_SEED_DEMO=true and redeploy."
-                  : "Database OK. If login still fails, confirm password PaulMotor2026! and clear cookies.",
+          hint: hints.join(" · "),
         };
 
         return new Response(JSON.stringify(body, null, 2), {
-          status: db.ok ? 200 : 503,
+          status: 200,
           headers: {
             "content-type": "application/json; charset=utf-8",
             "cache-control": "no-store",
