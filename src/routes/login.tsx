@@ -5,7 +5,6 @@ import { authClient, authEnabled } from "@/lib/auth/client";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { DEMO_PASSWORD } from "@/lib/crm/demo";
 import { ensureDemoReady } from "@/lib/crm/server";
-import { Brand } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -65,25 +64,28 @@ function LoginPage() {
   return (
     <main className="grid min-h-dvh place-items-center bg-background px-4 py-10">
       <div className="w-full max-w-md">
-        <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 grid size-16 place-items-center rounded-2xl border border-primary/35 bg-ink p-2 shadow-lg shadow-primary/10">
-            <img
-              src="/palmetto.png"
-              alt="Paul Motor Co. palmetto"
-              className="size-12 object-contain"
-              width={48}
-              height={48}
-            />
+        <div className="mb-6 overflow-hidden rounded-sm border border-border bg-card shadow-sm">
+          <div className="bg-primary px-5 py-4 text-primary-foreground">
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-sm border border-white/25 bg-white/10 p-1">
+                <img
+                  src="/palmetto.png"
+                  alt="Paul Motor Co. palmetto"
+                  className="size-8 object-contain"
+                  width={32}
+                  height={32}
+                />
+              </div>
+              <div>
+                <h1 className="text-base font-semibold tracking-wide">
+                  Paul Motor Company Inc.
+                </h1>
+                <p className="text-[12px] text-white/85">CRM · Secure sign-in</p>
+              </div>
+            </div>
           </div>
-          <h1 className="font-brand text-3xl font-bold tracking-[0.06em] text-foreground">
-            PAUL MOTOR CO.
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Team CRM · secure sign-in
-          </p>
-        </div>
 
-        <div className="rounded-2xl border border-border bg-card p-6 shadow-xl sm:p-8">
+          <div className="p-6 sm:p-7">
           {authEnabled ? (
             <form onSubmit={onSubmit} className="space-y-4">
               <div className="grid gap-1.5">
@@ -95,6 +97,7 @@ function LoginPage() {
                   autoComplete="email"
                   value={form.email}
                   onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                  className="h-10 rounded-sm"
                 />
               </div>
               <div className="grid gap-1.5">
@@ -107,14 +110,14 @@ function LoginPage() {
                   autoComplete="current-password"
                   value={form.password}
                   onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                  className="h-10 rounded-sm"
                 />
               </div>
-              <Button type="submit" className="h-12 w-full text-base" disabled={busy}>
+              <Button type="submit" className="h-10 w-full rounded-sm" disabled={busy}>
                 {busy ? "Signing in…" : "Sign in"}
               </Button>
               <p className="text-center text-[11px] text-muted-foreground">
-                Sessions are encrypted and stored server-side. Use your own password — ask an
-                admin if you need an account.
+                Sessions are encrypted and stored server-side. Ask an admin if you need an account.
               </p>
             </form>
           ) : (
@@ -123,7 +126,7 @@ function LoginPage() {
 
           {showDemoLogins ? (
             <div className="mt-6">
-              <p className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Preview demo accounts
               </p>
               <div className="grid gap-1.5">
@@ -131,10 +134,10 @@ function LoginPage() {
                   <button
                     key={d.email}
                     type="button"
-                    className="rounded-lg border border-border/80 bg-muted/40 px-3 py-2 text-left text-xs transition-colors hover:border-primary/40 hover:bg-muted"
+                    className="rounded-sm border border-border bg-muted/40 px-3 py-2 text-left text-xs transition-colors hover:border-primary/40 hover:bg-secondary"
                     onClick={() => setForm({ email: d.email, password: DEMO_PASSWORD })}
                   >
-                    <span className="font-medium text-foreground">{d.label}</span>
+                    <span className="font-semibold text-foreground">{d.label}</span>
                     <span className="mt-0.5 block text-muted-foreground">{d.email}</span>
                   </button>
                 ))}
@@ -144,14 +147,12 @@ function LoginPage() {
               </p>
             </div>
           ) : null}
+          </div>
         </div>
 
-        <p className="mt-6 text-center text-xs text-muted-foreground">
-          Floor-first lead capture · Inventory · Pipeline · Quotes
+        <p className="text-center text-xs text-muted-foreground">
+          Floor lead capture · Inventory · Pipeline · Quotes
         </p>
-        <div className="mt-4 flex justify-center opacity-40">
-          <Brand compact />
-        </div>
       </div>
     </main>
   );

@@ -14,20 +14,16 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
-      { title: "PAUL MOTOR CO. CRM" },
+      { title: "Paul Motor Company Inc. | CRM" },
       {
         name: "description",
         content:
-          "PAUL MOTOR CO. CRM — luxury & exotic lead capture, inventory, pipeline, and test drives in Montréal.",
+          "Paul Motor Company CRM — lead capture, inventory, pipeline, and test drives (Business Central–style).",
       },
-      { name: "theme-color", content: "#0b0c0e" },
+      { name: "theme-color", content: "#008272" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
-      {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap",
-      },
       { rel: "icon", href: "/palmetto.png", type: "image/png" },
     ],
   }),
@@ -39,7 +35,7 @@ function RootComponent() {
     <RootDocument>
       <AuthProvider>
         <Outlet />
-        <Toaster theme="dark" position="top-center" richColors closeButton />
+        <Toaster theme="light" position="top-center" richColors closeButton />
       </AuthProvider>
     </RootDocument>
   );
@@ -47,7 +43,7 @@ function RootComponent() {
 
 function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <head>
         <HeadContent />
       </head>

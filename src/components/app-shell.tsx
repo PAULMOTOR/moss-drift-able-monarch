@@ -46,8 +46,9 @@ export function AppShell({
   ];
 
   return (
-    <div className="min-h-dvh lg:grid lg:grid-cols-[252px_1fr]">
-      <header className="sticky top-0 z-40 flex items-center justify-between border-b border-border/80 bg-background/90 px-4 py-3 backdrop-blur-md lg:hidden">
+    <div className="min-h-dvh bg-background lg:grid lg:grid-cols-[220px_1fr]">
+      {/* Mobile top bar — BC style white chrome */}
+      <header className="sticky top-0 z-40 flex items-center justify-between border-b border-border bg-card px-3 py-2 shadow-sm lg:hidden">
         <Brand compact />
         <Button variant="ghost" size="icon" onClick={() => setOpen((v) => !v)} aria-label="Menu">
           {open ? <X className="size-5" /> : <Menu className="size-5" />}
@@ -57,14 +58,14 @@ export function AppShell({
       <aside
         className={cn(
           "z-30 border-r border-sidebar-border bg-sidebar text-sidebar-foreground lg:sticky lg:top-0 lg:flex lg:h-dvh lg:flex-col",
-          open ? "fixed inset-x-0 top-[57px] bottom-0 flex flex-col" : "hidden lg:flex",
+          open ? "fixed inset-x-0 top-[49px] bottom-0 flex flex-col shadow-lg" : "hidden lg:flex",
         )}
       >
-        <div className="hidden border-b border-sidebar-border px-4 py-5 lg:block">
-          <Brand />
+        <div className="hidden border-b border-sidebar-border bg-primary px-4 py-3 lg:block">
+          <Brand onTeal />
         </div>
 
-        <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
+        <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
           {nav.map((item) => {
             const active =
               item.to === "/"
@@ -77,17 +78,17 @@ export function AppShell({
                 to={item.to}
                 onClick={() => setOpen(false)}
                 className={cn(
-                  "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors",
+                  "flex h-10 items-center gap-2.5 rounded-sm px-3 text-[13px] font-semibold transition-colors",
                   "primary" in item && item.primary
                     ? active
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "bg-primary/15 text-primary hover:bg-primary/25"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-secondary text-primary hover:bg-primary/15"
                     : active
-                      ? "bg-sidebar-accent text-sidebar-foreground"
-                      : "text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground",
+                      ? "bg-sidebar-accent text-primary"
+                      : "text-sidebar-muted hover:bg-muted hover:text-foreground",
                 )}
               >
-                <Icon className="size-4 shrink-0" />
+                <Icon className="size-4 shrink-0 opacity-90" />
                 {item.label}
               </Link>
             );
@@ -95,48 +96,65 @@ export function AppShell({
         </nav>
 
         <div className="border-t border-sidebar-border p-3">
-          <div className="mb-2 rounded-xl bg-sidebar-accent/70 px-3 py-2">
-            <p className="truncate text-sm font-medium">{profile.name}</p>
-            <p className="truncate text-[11px] capitalize text-sidebar-muted">
+          <div className="mb-2 rounded-sm border border-border bg-muted/50 px-3 py-2">
+            <p className="truncate text-sm font-semibold">{profile.name}</p>
+            <p className="truncate text-[11px] capitalize text-muted-foreground">
               {profile.role}
               {profile.title ? ` · ${profile.title}` : ""}
             </p>
           </div>
-          <div className="rounded-xl px-1 py-1 [&_span]:text-sidebar-foreground [&_button]:text-sidebar-muted">
-            <UserButton />
-          </div>
+          <UserButton />
         </div>
       </aside>
 
       <main className="min-w-0">
-        <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 lg:px-8 lg:py-8">{children}</div>
+        {/* Desktop page ribbon */}
+        <div className="hidden border-b border-border bg-card px-6 py-2 lg:block">
+          <p className="text-sm font-semibold text-foreground">
+            Paul Motor Company Inc.{" "}
+            <span className="font-normal text-muted-foreground">| CRM</span>
+          </p>
+        </div>
+        <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 lg:px-8 lg:py-6">{children}</div>
       </main>
     </div>
   );
 }
 
-export function Brand({ compact }: { compact?: boolean }) {
+export function Brand({ compact, onTeal }: { compact?: boolean; onTeal?: boolean }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="grid size-10 place-items-center overflow-hidden rounded-xl border border-primary/35 bg-ink shadow-inner shadow-primary/10">
+    <div className="flex items-center gap-2.5">
+      <div
+        className={cn(
+          "grid size-9 place-items-center overflow-hidden rounded-sm border",
+          onTeal ? "border-white/30 bg-white/10" : "border-border bg-card",
+        )}
+      >
         <img
           src="/palmetto.png"
           alt="Paul Motor Co. palmetto"
-          className="size-8 object-contain"
-          width={32}
-          height={32}
+          className="size-7 object-contain"
+          width={28}
+          height={28}
         />
       </div>
       <div className={cn(compact && "leading-tight")}>
-        <p className="font-brand text-[15px] font-bold tracking-[0.04em] text-foreground sm:text-base">
-          PAUL MOTOR CO.
+        <p
+          className={cn(
+            "text-[14px] font-semibold tracking-wide sm:text-[15px]",
+            onTeal ? "text-white" : "text-foreground",
+          )}
+        >
+          Paul Motor Company Inc.
         </p>
         {!compact ? (
-          <p className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-            CRM · Montréal
+          <p className={cn("text-[11px]", onTeal ? "text-white/80" : "text-muted-foreground")}>
+            CRM · Role Center
           </p>
         ) : (
-          <p className="text-[10px] text-muted-foreground">CRM</p>
+          <p className={cn("text-[10px]", onTeal ? "text-white/75" : "text-muted-foreground")}>
+            CRM
+          </p>
         )}
       </div>
     </div>
@@ -153,9 +171,9 @@ export function PageHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-start sm:justify-between">
+    <div className="mb-5 flex flex-col gap-3 sm:mb-6 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
-        <h1 className="font-display text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-[1.65rem]">
           {title}
         </h1>
         {description ? (
@@ -196,7 +214,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (isPending || (user && !profile && !error)) {
     return (
       <div className="grid min-h-dvh place-items-center bg-background">
-        <div className="h-10 w-48 animate-pulse rounded-xl bg-muted" />
+        <div className="h-10 w-48 animate-pulse rounded-sm bg-muted" />
       </div>
     );
   }
@@ -204,16 +222,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (!user) {
     return (
       <div className="grid min-h-dvh place-items-center bg-background px-4">
-        <div className="w-full max-w-md rounded-2xl border border-border bg-card p-8 shadow-xl">
+        <div className="w-full max-w-md rounded-sm border border-border bg-card p-8 shadow-sm">
           <Brand />
-          <div className="gold-line my-5 h-px w-full" />
-          <h1 className="font-display text-2xl font-semibold">Team sign in</h1>
+          <div className="my-5 h-px w-full bg-border" />
+          <h1 className="text-xl font-semibold">Sign in</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            PAUL MOTOR CO. CRM — floor lead capture, inventory, pipeline, and test drives.
+            Paul Motor Company Inc. CRM — lead capture, inventory, pipeline, and test drives.
           </p>
           <Link
             to="/login"
-            className="mt-6 flex h-12 items-center justify-center rounded-xl bg-primary text-sm font-semibold text-primary-foreground"
+            className="mt-6 flex h-10 items-center justify-center rounded-sm bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90"
           >
             Continue to sign in
           </Link>
@@ -225,10 +243,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (error || !profile) {
     return (
       <div className="grid min-h-dvh place-items-center bg-background px-4">
-        <div className="max-w-md rounded-2xl border border-border bg-card p-6 text-sm">
+        <div className="max-w-md rounded-sm border border-border bg-card p-6 text-sm shadow-sm">
           <p className="font-medium text-destructive">{error || "No CRM profile"}</p>
           <p className="mt-2 text-muted-foreground">
-            Use a seeded team account, or ask an admin to create your user.
+            Use a team account, or ask an admin to create your user.
           </p>
           <Link to="/login" className="mt-4 inline-block text-primary underline-offset-4 hover:underline">
             Back to login
