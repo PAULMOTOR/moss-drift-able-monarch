@@ -6,6 +6,7 @@ import { ensureCrmSeeded, syncRealInventory } from "./seed";
 import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
+import { sendCrmEmail } from "./mail";
 import {
   type AdminMetrics,
   type DataAnalysis,
@@ -35,6 +36,20 @@ function num(v: unknown): number | null {
 
 function bool(v: unknown): boolean {
   return v === true || v === "t" || v === "true" || v === 1;
+}
+
+/** Normalize Date/string for Postgres timestamptz — never use Date#toString(). */
+function toIsoTs(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return null;
+    return v.toISOString();
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 async function boot() {
@@ -472,7 +487,7 @@ export const captureLead = createServerFn({ method: "POST" })
         ${vehicleInterest}, ${data.inventory_id || null},
         ${assigned}, ${stage}, now(),
         ${quoteSent},
-        ${quoteSent ? data.quote_sent_at || new Date().toISOString() : null},
+        ${quoteSent ? toIsoTs(data.quote_sent_at) || new Date().toISOString() : null},
         ${data.quote_link?.trim() || null},
         ${data.quote_notes?.trim() || null},
         ${data.quote_pdf_name?.trim() || null},
@@ -517,6 +532,42 @@ export const captureLead = createServerFn({ method: "POST" })
       `;
     }
 
+    // Email assignee if capturing for someone else
+    if (assigned && assigned !== me.id) {
+      const assignee = await sql<{ id: string; name: string; email: string }>`
+        select id, name, email from profiles where id = ${assigned} and active = true limit 1
+      `;
+      const a = assignee[0];
+      if (a?.email) {
+        const appUrl =
+          process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
+          process.env.APP_URL?.replace(/\/$/, "") ||
+          "https://moss-drift-able-monarch.vercel.app";
+        await sendCrmEmail(sql, {
+          to: a.email,
+          subject: `[CRM] New lead assigned to you — ${name}`,
+          text: [
+            `Hi ${a.name},`,
+            ``,
+            `${me.name} captured a lead and assigned it to you:`,
+            ``,
+            `  Name: ${name}`,
+            `  Phone: ${data.phone?.trim() || "—"}`,
+            `  Email: ${data.email?.trim() || "—"}`,
+            `  Interest: ${vehicleInterest || "—"}`,
+            `  Source: ${data.source || "phone"}`,
+            ``,
+            `Open: ${appUrl}/leads/${leadId}`,
+            ``,
+            `— PAUL MOTOR CO. CRM`,
+          ].join("\n"),
+          kind: "lead_assigned",
+          leadId,
+          profileId: a.id,
+        });
+      }
+    }
+
     const rows = await sql.query<Record<string, unknown>>(
       `select ${leadSelect}
        from leads l
@@ -550,7 +601,7 @@ export const updateLead = createServerFn({ method: "POST" })
     let stage =
       data.stage && isStageId(data.stage) ? data.stage : String(prev.stage);
     // Manual stage change off paused clears pause
-    let pauseUntil = (prev.pause_until as string | null) ?? null;
+    let pauseUntil = toIsoTs(prev.pause_until);
     let pauseNote = (prev.pause_note as string | null) ?? null;
     let stageBefore = (prev.stage_before_pause as string | null) ?? null;
     if (data.stage && data.stage !== "paused" && String(prev.stage) === "paused") {
@@ -559,6 +610,14 @@ export const updateLead = createServerFn({ method: "POST" })
       stageBefore = null;
     }
     const stageChanged = stage !== String(prev.stage);
+    const prevAssigned =
+      prev.assigned_to == null || prev.assigned_to === ""
+        ? null
+        : String(prev.assigned_to);
+    const nextAssigned =
+      data.assigned_to !== undefined
+        ? data.assigned_to || null
+        : prevAssigned;
     const hasNewPdf = Boolean(data.quote_pdf_data);
     const quoteSent =
       data.quote_sent !== undefined
@@ -603,23 +662,23 @@ export const updateLead = createServerFn({ method: "POST" })
             ? data.inventory_id || null
             : (prev.inventory_id as string | null)
         },
-        assigned_to = ${
-          data.assigned_to !== undefined
-            ? data.assigned_to || null
-            : (prev.assigned_to as string | null)
-        },
+        assigned_to = ${nextAssigned},
         stage = ${stage},
-        stage_entered_at = ${stageChanged ? new Date().toISOString() : String(prev.stage_entered_at)},
+        stage_entered_at = ${
+          stageChanged
+            ? new Date().toISOString()
+            : toIsoTs(prev.stage_entered_at) ?? new Date().toISOString()
+        },
         pause_until = ${pauseUntil},
         pause_note = ${pauseNote},
         stage_before_pause = ${stageBefore},
         quote_sent = ${quoteSent},
         quote_sent_at = ${
           data.quote_sent_at !== undefined
-            ? data.quote_sent_at
+            ? toIsoTs(data.quote_sent_at)
             : quoteSent && !prev.quote_sent_at
               ? new Date().toISOString()
-              : (prev.quote_sent_at as string | null)
+              : toIsoTs(prev.quote_sent_at)
         },
         quote_link = ${
           data.quote_link !== undefined
@@ -638,8 +697,8 @@ export const updateLead = createServerFn({ method: "POST" })
         },
         google_review_at = ${
           data.google_review_at !== undefined
-            ? data.google_review_at
-            : (prev.google_review_at as string | null)
+            ? toIsoTs(data.google_review_at)
+            : toIsoTs(prev.google_review_at)
         },
         google_review_link = ${
           data.google_review_link !== undefined
@@ -665,6 +724,67 @@ export const updateLead = createServerFn({ method: "POST" })
         )
       `;
     }
+
+    // Notify rep when assignment changes (or first assign)
+    if (nextAssigned && nextAssigned !== prevAssigned) {
+      const assignee = await sql<{ id: string; name: string; email: string }>`
+        select id, name, email from profiles where id = ${nextAssigned} and active = true limit 1
+      `;
+      const a = assignee[0];
+      if (a?.email) {
+        const leadName = data.name?.trim() ?? String(prev.name);
+        const phone =
+          data.phone !== undefined
+            ? data.phone?.trim() || null
+            : (prev.phone as string | null);
+        const email =
+          data.email !== undefined
+            ? data.email?.trim().toLowerCase() || null
+            : (prev.email as string | null);
+        const interest =
+          data.vehicle_interest !== undefined
+            ? data.vehicle_interest?.trim() || null
+            : (prev.vehicle_interest as string | null);
+        await sql`
+          insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+          values (
+            ${id()}, ${data.id}, 'system',
+            ${`Assigned to ${a.name} by ${me.name}`},
+            ${me.id}, ${me.name}
+          )
+        `;
+        // Don't email yourself
+        if (a.id !== me.id) {
+          const appUrl =
+            process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
+            process.env.APP_URL?.replace(/\/$/, "") ||
+            "https://moss-drift-able-monarch.vercel.app";
+          await sendCrmEmail(sql, {
+            to: a.email,
+            subject: `[CRM] Lead assigned to you — ${leadName}`,
+            text: [
+              `Hi ${a.name},`,
+              ``,
+              `${me.name} assigned you a lead:`,
+              ``,
+              `  Name: ${leadName}`,
+              `  Phone: ${phone || "—"}`,
+              `  Email: ${email || "—"}`,
+              `  Interest: ${interest || "—"}`,
+              `  Stage: ${stage}`,
+              ``,
+              `Open: ${appUrl}/leads/${data.id}`,
+              ``,
+              `— PAUL MOTOR CO. CRM`,
+            ].join("\n"),
+            kind: "lead_assigned",
+            leadId: data.id,
+            profileId: a.id,
+          });
+        }
+      }
+    }
+
     if (hasNewPdf) {
       await sql`
         insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)

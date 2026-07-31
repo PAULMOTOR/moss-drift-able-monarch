@@ -13,6 +13,11 @@ export const Route = createFileRoute("/api/health")({
         const betterAuthUrl = process.env.BETTER_AUTH_URL?.trim() || null;
         const vercelUrl = process.env.VERCEL_URL?.trim() || null;
         const crmSeedDemo = process.env.CRM_SEED_DEMO?.trim() || null;
+        const mail = {
+          hasResendKey: Boolean(process.env.RESEND_API_KEY?.trim()),
+          fromEmail: process.env.CRM_FROM_EMAIL?.trim() || "onboarding@resend.dev",
+        };
+
         const gmail = {
           hasClientId: Boolean(process.env.GMAIL_CLIENT_ID?.trim()),
           hasClientSecret: Boolean(process.env.GMAIL_CLIENT_SECRET?.trim()),
@@ -134,6 +139,11 @@ export const Route = createFileRoute("/api/health")({
         if (!gmail.hasCronSecret) {
           hints.push("CRON_SECRET not set — Vercel cron will get 401");
         }
+        if (!mail.hasResendKey) {
+          hints.push(
+            "RESEND_API_KEY not set — assignment/reminder emails are queued only (not delivered). Add Resend key + optional CRM_FROM_EMAIL on Production, redeploy.",
+          );
+        }
         if (hints.length === 0) {
           hints.push("Config looks good. Use Admin → Import now, or wait for the 2-minute cron.");
         }
@@ -147,6 +157,7 @@ export const Route = createFileRoute("/api/health")({
             vercelUrl,
             crmSeedDemo,
           },
+          mail,
           gmail,
           gmailProbe,
           db,
