@@ -111,7 +111,7 @@ export function AppShell({
         {/* Desktop page ribbon */}
         <div className="hidden border-b border-border bg-card px-6 py-2 lg:block">
           <p className="text-sm font-semibold text-foreground">
-            Paul Motor Company Inc.{" "}
+            Paul Motor Co.{" "}
             <span className="font-normal text-muted-foreground">| CRM</span>
           </p>
         </div>
@@ -124,28 +124,25 @@ export function AppShell({
 export function Brand({ compact, onTeal }: { compact?: boolean; onTeal?: boolean }) {
   return (
     <div className="flex items-center gap-2.5">
-      <div
+      <img
+        src={onTeal ? "/palmetto-white.png" : "/palmetto.png"}
+        alt="Paul Motor Co."
         className={cn(
-          "grid size-9 place-items-center overflow-hidden rounded-sm border",
-          onTeal ? "border-white/30 bg-white/10" : "border-border bg-card",
+          "object-contain",
+          compact ? "size-8" : "size-9",
+          onTeal && "drop-shadow-sm",
         )}
-      >
-        <img
-          src="/palmetto.png"
-          alt="Paul Motor Co. palmetto"
-          className="size-7 object-contain"
-          width={28}
-          height={28}
-        />
-      </div>
+        width={onTeal ? 36 : 36}
+        height={onTeal ? 36 : 36}
+      />
       <div className={cn(compact && "leading-tight")}>
         <p
           className={cn(
-            "text-[14px] font-semibold tracking-wide sm:text-[15px]",
+            "text-[15px] font-semibold tracking-wide sm:text-base",
             onTeal ? "text-white" : "text-foreground",
           )}
         >
-          Paul Motor Company Inc.
+          Paul Motor Co.
         </p>
         {!compact ? (
           <p className={cn("text-[11px]", onTeal ? "text-white/80" : "text-muted-foreground")}>
@@ -227,7 +224,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <div className="my-5 h-px w-full bg-border" />
           <h1 className="text-xl font-semibold">Sign in</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Paul Motor Company Inc. CRM — lead capture, inventory, pipeline, and test drives.
+            Paul Motor Co. CRM — lead capture, inventory, pipeline, and test drives.
           </p>
           <Link
             to="/login"

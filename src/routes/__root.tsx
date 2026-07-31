@@ -14,17 +14,17 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
-      { title: "Paul Motor Company Inc. | CRM" },
+      { title: "Paul Motor Co. | CRM" },
       {
         name: "description",
         content:
-          "Paul Motor Company CRM — lead capture, inventory, pipeline, and test drives (Business Central–style).",
+          "Paul Motor Co. CRM — lead capture, inventory, pipeline, and test drives (Business Central–style).",
       },
       { name: "theme-color", content: "#008272" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
-      { rel: "icon", href: "/palmetto.png", type: "image/png" },
+      { rel: "icon", href: "/palmetto-white.png", type: "image/png" },
     ],
   }),
   component: RootComponent,

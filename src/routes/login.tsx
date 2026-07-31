@@ -67,18 +67,16 @@ function LoginPage() {
         <div className="mb-6 overflow-hidden rounded-sm border border-border bg-card shadow-sm">
           <div className="bg-primary px-5 py-4 text-primary-foreground">
             <div className="flex items-center gap-3">
-              <div className="grid size-10 place-items-center rounded-sm border border-white/25 bg-white/10 p-1">
-                <img
-                  src="/palmetto.png"
-                  alt="Paul Motor Co. palmetto"
-                  className="size-8 object-contain"
-                  width={32}
-                  height={32}
-                />
-              </div>
+              <img
+                src="/palmetto-white.png"
+                alt="Paul Motor Co."
+                className="size-10 object-contain"
+                width={40}
+                height={40}
+              />
               <div>
                 <h1 className="text-base font-semibold tracking-wide">
-                  Paul Motor Company Inc.
+                  Paul Motor Co.
                 </h1>
                 <p className="text-[12px] text-white/85">CRM · Secure sign-in</p>
               </div>

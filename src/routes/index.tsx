@@ -46,7 +46,8 @@ function HomePage() {
     <>
       <PageHeader
         title={`Hello, ${data.me.name.split(" ")[0]}`}
-        description="Role Center — lead capture, pipeline, and inventory for Paul Motor Company Inc."
+        description="Role Center — lead capture, pipeline, and inventory for Paul Motor Co."
+
         actions={
           <Button asChild className="h-9 rounded-sm px-4">
             <Link to="/capture">
