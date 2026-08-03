@@ -272,7 +272,8 @@ export const refreshInventoryFeeds = createServerFn({ method: "POST" })
       ok: true as const,
       refreshed,
       sources: [PAUL_MOTOR_INVENTORY_SOURCE],
-      message: `Synced ${refreshed} units from AutoTrader dealer feed (Paul Motor).`,
+      message: `Synced ${refreshed} units from paulmotorleasing.com (real stock numbers).`,
+
     };
   });
 
