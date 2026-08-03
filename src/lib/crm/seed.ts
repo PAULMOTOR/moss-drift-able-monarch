@@ -193,16 +193,32 @@ async function syncStaff(sql: Sql) {
   }
 }
 
-/** Replace website-sourced stock with the real Paul Motor list; keep manual rows. */
+/**
+ * Replace website/autotrader-sourced stock with the live Paul Motor list.
+ * Source: paulmotorleasing.com used inventory (real stock numbers).
+ * Keeps rows with source = "manual".
+ */
 export async function syncRealInventory(sql: Sql): Promise<number> {
   const realStocks = REAL_INVENTORY.map((v) => v.stock_number);
-  const existing = await sql<{ id: string; stock_number: string | null; source: string }>`
-    select id, stock_number, source from inventory
+  const existing = await sql<{
+    id: string;
+    stock_number: string | null;
+    source: string;
+    year: number;
+    make: string;
+    model: string;
+  }>`
+    select id, stock_number, source, year, make, model from inventory
   `;
 
   for (const row of existing) {
     const isReal = row.stock_number && realStocks.includes(row.stock_number);
-    if (!isReal && (row.source === "website" || row.source === "autotrader" || row.source === "paulmotor")) {
+    const isAutoOrSite =
+      row.source === "website" ||
+      row.source === "autotrader" ||
+      row.source === "paulmotor" ||
+      (row.stock_number || "").startsWith("AT-");
+    if (!isReal && isAutoOrSite) {
       await sql`update leads set inventory_id = null where inventory_id = ${row.id}`;
       await sql`update test_drives set inventory_id = null where inventory_id = ${row.id}`;
       await sql`delete from inventory where id = ${row.id}`;
@@ -214,32 +230,55 @@ export async function syncRealInventory(sql: Sql): Promise<number> {
     const found = await sql<{ id: string }>`
       select id from inventory where stock_number = ${v.stock_number} limit 1
     `;
-    if (found[0]) {
+    // Also rematch by year+make+model if an old AT-* or wrong stock still matches the car
+    let rowId = found[0]?.id;
+    if (!rowId) {
+      const byYm = await sql<{ id: string }>`
+        select id from inventory
+        where year = ${v.year}
+          and lower(make) = ${v.make.toLowerCase()}
+          and lower(model) = ${v.model.toLowerCase()}
+          and source in ('website', 'autotrader', 'paulmotor')
+        limit 1
+      `;
+      rowId = byYm[0]?.id;
+    }
+
+    const note =
+      v.notes ??
+      "Paul Motor Leasing website · https://www.paulmotorleasing.com/vehicles/used/";
+    const vin = v.vin ?? null;
+    const color = v.exterior_color ?? null;
+
+    if (rowId) {
       await sql`
         update inventory set
           year = ${v.year},
           make = ${v.make},
           model = ${v.model},
           trim = ${v.trim},
+          stock_number = ${v.stock_number},
+          vin = coalesce(${vin}, vin),
           price = ${v.price},
           mileage = ${v.mileage},
           body_type = ${v.body_type},
+          exterior_color = coalesce(${color}, exterior_color),
           status = 'available',
-          source = 'autotrader',
+          source = 'website',
           external_url = ${v.external_url},
-          notes = ${v.notes ?? "AutoTrader dealer feed · Paul Motor"},
+          notes = ${note},
           updated_at = now()
-        where id = ${found[0].id}
+        where id = ${rowId}
       `;
     } else {
       await sql`
         insert into inventory (
-          id, year, make, model, trim, stock_number, price, mileage,
-          body_type, status, source, external_url, notes
+          id, year, make, model, trim, stock_number, vin, price, mileage,
+          body_type, exterior_color, status, source, external_url, notes
         ) values (
           ${uid()}, ${v.year}, ${v.make}, ${v.model}, ${v.trim}, ${v.stock_number},
-          ${v.price}, ${v.mileage}, ${v.body_type}, 'available', 'autotrader',
-          ${v.external_url}, ${v.notes ?? "AutoTrader dealer feed · Paul Motor"}
+          ${vin}, ${v.price}, ${v.mileage}, ${v.body_type}, ${color},
+          'available', 'website', ${v.external_url}, ${note}
         )
       `;
     }
@@ -254,10 +293,8 @@ export async function ensureCrmSeeded(sql: Sql) {
   const seed = shouldSeedDemoData({ profilesEmpty });
 
   if (!seed) {
-    const inv = await sql<{ n: number }>`select count(*)::int as n from inventory`;
-    if ((inv[0]?.n ?? 0) === 0) {
-      await syncRealInventory(sql);
-    }
+    // Always refresh website inventory so stock numbers stay current
+    await syncRealInventory(sql);
     return;
   }
 
