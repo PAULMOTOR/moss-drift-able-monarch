@@ -95,7 +95,14 @@ function CapturePage() {
         setProfiles(p);
         setInventory(inv.filter((i) => i.status === "available" || i.status === "incoming"));
         setMe(profile);
-        setForm((f) => ({ ...f, assigned_to: profile.id }));
+        const lucas = p.find(
+          (x) => x.email?.toLowerCase() === "lucasl@paulmotorcompany.com" || /^lucas/i.test(x.name),
+        );
+        setForm((f) => ({
+          ...f,
+          // Inventory defaults to Lucas; other types default to current user
+          assigned_to: f.lead_type === "inventory" && lucas ? lucas.id : profile.id,
+        }));
       },
     );
   }, []);

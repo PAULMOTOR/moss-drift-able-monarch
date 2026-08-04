@@ -134,7 +134,8 @@ function LeadsPage() {
                 <SelectValue placeholder="Owner" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Everyone</SelectItem>
+                <SelectItem value="all">My leads + unassigned</SelectItem>
+                <SelectItem value="unassigned">Unassigned only</SelectItem>
                 {profiles.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     {p.name}
