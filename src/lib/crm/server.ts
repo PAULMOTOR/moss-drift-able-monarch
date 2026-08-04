@@ -7,6 +7,8 @@ import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
 import { sendCrmEmail } from "./mail";
+import type { ClientQuoteInfo, LeaseOptionResult } from "./lease-quote";
+import { buildRetailQuoteHtml, taxRateForProvince } from "./lease-quote";
 import {
   type AdminMetrics,
   type DataAnalysis,
@@ -1534,3 +1536,128 @@ export const adminClearAllLeads = createServerFn({ method: "POST" })
           : `Deleted ${count} lead(s). Users and inventory kept.`,
     };
   });
+
+
+export const saveLeaseQuote = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: {
+      leadId?: string | null;
+      client: ClientQuoteInfo;
+      options: LeaseOptionResult[];
+      selectedOption?: number;
+      status?: string;
+    }) => data,
+  )
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const taxRate = taxRateForProvince(data.client.province || "QC");
+    const html = buildRetailQuoteHtml(data.client, data.options, taxRate);
+    const quoteId = id();
+    const payload = {
+      client: data.client,
+      options: data.options,
+      taxRate,
+      selectedOption: data.selectedOption ?? 1,
+    };
+    await sql`
+      insert into lease_quotes (
+        id, lead_id, created_by, client_name, payload, retail_html, selected_option, status
+      ) values (
+        ${quoteId},
+        ${data.leadId || null},
+        ${me.id},
+        ${data.client.clientName || ""},
+        ${JSON.stringify(payload)}::jsonb,
+        ${html},
+        ${data.selectedOption ?? 1},
+        ${data.status || "draft"}
+      )
+    `;
+    if (data.leadId) {
+      const primary = data.options[(data.selectedOption ?? 1) - 1] || data.options[0];
+      await sql`
+        update leads set
+          quote_sent = true,
+          quote_sent_at = coalesce(quote_sent_at, now()),
+          quote_notes = ${`Lease quote ${quoteId.slice(0, 8)} · payment ${primary ? primary.totalPayment : ""}`},
+          stage = case when stage in ('new','contacted','test_drive','paused') then 'quote_sent' else stage end,
+          updated_at = now()
+        where id = ${data.leadId}
+      `;
+      await sql`
+        insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+        values (
+          ${id()}, ${data.leadId}, 'quote',
+          ${`Lease quote saved (${data.options.filter((o) => o.cost > 0 || o.payment > 0).length} option(s)). Primary total payment: $${primary?.totalPayment ?? "—"}.`},
+          ${me.id}, ${me.name}
+        )
+      `;
+    }
+    return { ok: true as const, id: quoteId, html };
+  });
+
+export const listLeaseQuotes = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .validator((data: { leadId?: string } | undefined) => data)
+  .handler(async ({ context, data }) => {
+    await requireProfile(context.userId);
+    const sql = await boot();
+    if (data?.leadId) {
+      return sql<{
+        id: string;
+        lead_id: string | null;
+        client_name: string;
+        selected_option: number;
+        status: string;
+        created_at: string;
+      }>`
+        select id, lead_id, client_name, selected_option, status,
+               created_at::text as created_at
+        from lease_quotes
+        where lead_id = ${data.leadId}
+        order by created_at desc
+        limit 50
+      `;
+    }
+    return sql<{
+      id: string;
+      lead_id: string | null;
+      client_name: string;
+      selected_option: number;
+      status: string;
+      created_at: string;
+    }>`
+      select id, lead_id, client_name, selected_option, status,
+             created_at::text as created_at
+      from lease_quotes
+      order by created_at desc
+      limit 50
+    `;
+  });
+
+export const getLeaseQuote = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .validator((data: { id: string }) => data)
+  .handler(async ({ context, data }) => {
+    await requireProfile(context.userId);
+    const sql = await boot();
+    const rows = await sql<{
+      id: string;
+      lead_id: string | null;
+      client_name: string;
+      payload: string;
+      retail_html: string | null;
+      selected_option: number;
+      status: string;
+      created_at: string;
+    }>`
+      select id, lead_id, client_name, payload::text as payload, retail_html, selected_option, status,
+             created_at::text as created_at
+      from lease_quotes where id = ${data.id} limit 1
+    `;
+    if (!rows[0]) throw new Error("Quote not found");
+    return rows[0];
+  });
+

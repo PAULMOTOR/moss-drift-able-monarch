@@ -1,6 +1,7 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
   BarChart3,
+  Calculator,
   CalendarDays,
   Columns3,
   LayoutDashboard,
@@ -11,6 +12,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+
 import { useEffect, useState } from "react";
 import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
@@ -24,6 +26,7 @@ const baseNav = [
   { to: "/", label: "Home", icon: LayoutDashboard },
   { to: "/leads", label: "Leads", icon: Users },
   { to: "/pipeline", label: "Pipeline", icon: Columns3 },
+  { to: "/quote", label: "Lease quote", icon: Calculator },
   { to: "/inventory", label: "Inventory", icon: Package },
   { to: "/test-drives", label: "Test drives", icon: CalendarDays },
   { to: "/data-analysis", label: "Data analysis", icon: BarChart3 },

@@ -232,6 +232,11 @@ function LeadDetail() {
         description={[lead.phone, lead.email].filter(Boolean).join(" · ") || "No contact yet"}
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Button asChild size="sm" variant="outline">
+              <Link to="/quote" search={{ leadId: lead.id }}>
+                Lease quote
+              </Link>
+            </Button>
             <span
               className={cn(
                 "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide",

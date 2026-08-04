@@ -17,6 +17,7 @@ import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as LeadsRouteImport } from './routes/leads'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PipelineRouteImport } from './routes/pipeline'
+import { Route as QuoteRouteImport } from './routes/quote'
 import { Route as TestDrivesRouteImport } from './routes/test-drives'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as LeadsIndexRouteImport } from './routes/leads.index'
@@ -65,6 +66,11 @@ const LoginRoute = LoginRouteImport.update({
 const PipelineRoute = PipelineRouteImport.update({
   id: '/pipeline',
   path: '/pipeline',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const QuoteRoute = QuoteRouteImport.update({
+  id: '/quote',
+  path: '/quote',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TestDrivesRoute = TestDrivesRouteImport.update({
@@ -122,6 +128,7 @@ export interface FileRoutesByFullPath {
   '/leads': typeof LeadsRouteWithChildren
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
+  '/quote': typeof QuoteRoute
   '/test-drives': typeof TestDrivesRoute
   '/api/health': typeof ApiHealthRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
@@ -140,6 +147,7 @@ export interface FileRoutesByTo {
   '/inventory': typeof InventoryRoute
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
+  '/quote': typeof QuoteRoute
   '/test-drives': typeof TestDrivesRoute
   '/api/health': typeof ApiHealthRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
@@ -160,6 +168,7 @@ export interface FileRoutesById {
   '/leads': typeof LeadsRouteWithChildren
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
+  '/quote': typeof QuoteRoute
   '/test-drives': typeof TestDrivesRoute
   '/api/health': typeof ApiHealthRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
@@ -181,6 +190,7 @@ export interface FileRouteTypes {
     | '/leads'
     | '/login'
     | '/pipeline'
+    | '/quote'
     | '/test-drives'
     | '/api/health'
     | '/leads/$leadId'
@@ -199,6 +209,7 @@ export interface FileRouteTypes {
     | '/inventory'
     | '/login'
     | '/pipeline'
+    | '/quote'
     | '/test-drives'
     | '/api/health'
     | '/leads/$leadId'
@@ -218,6 +229,7 @@ export interface FileRouteTypes {
     | '/leads'
     | '/login'
     | '/pipeline'
+    | '/quote'
     | '/test-drives'
     | '/api/health'
     | '/leads/$leadId'
@@ -238,6 +250,7 @@ export interface RootRouteChildren {
   LeadsRoute: typeof LeadsRouteWithChildren
   LoginRoute: typeof LoginRoute
   PipelineRoute: typeof PipelineRoute
+  QuoteRoute: typeof QuoteRoute
   TestDrivesRoute: typeof TestDrivesRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -303,6 +316,13 @@ declare module '@tanstack/react-router' {
       path: '/pipeline'
       fullPath: '/pipeline'
       preLoaderRoute: typeof PipelineRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/quote': {
+      id: '/quote'
+      path: '/quote'
+      fullPath: '/quote'
+      preLoaderRoute: typeof QuoteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/test-drives': {
@@ -392,6 +412,7 @@ const rootRouteChildren: RootRouteChildren = {
   LeadsRoute: LeadsRouteWithChildren,
   LoginRoute: LoginRoute,
   PipelineRoute: PipelineRoute,
+  QuoteRoute: QuoteRoute,
   TestDrivesRoute: TestDrivesRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
