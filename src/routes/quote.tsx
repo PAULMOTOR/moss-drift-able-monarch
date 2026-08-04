@@ -292,11 +292,14 @@ function QuotePage() {
   const daysInfo = computeDaysLeftInMonth(proRataCtx.startDate);
 
   const calculated: LeaseOptionResult[] = useMemo(
-    () => options.map((o) => calcLeaseOption(o, taxRate, fees, proRataCtx)),
+    () =>
+      options.map((o) =>
+        calcLeaseOption(o, client.province || "QC", fees, proRataCtx),
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       options,
-      taxRate,
+      client.province,
       client.adminFee,
       client.trackerFee,
       client.lienPpsa,
@@ -774,7 +777,15 @@ function QuotePage() {
             <MoneyField label="Tire tax" value={client.tireTax} onChange={(v) => setClient((c) => ({ ...c, tireTax: v }))} />
             <p className="text-xs text-muted-foreground">
               Pro-rata = payment × (days left ÷ days in month). Tax:{" "}
-              <strong>{(taxRate * 100).toFixed(3)}%</strong>
+              <strong>
+                {client.province?.toUpperCase() === "BC"
+                  ? (() => {
+                      const sample = calculated.find((o) => o.cost > 0 || o.payment > 0) || calculated[0];
+                      if (!sample) return "GST 5% + PST (TRV)";
+                      return `GST 5% + PST ${(sample.pstRate * 100).toFixed(0)}% (TRV ${formatMoney(sample.trv)})`;
+                    })()
+                  : `${(taxRate * 100).toFixed(3)}%`}
+              </strong>
             </p>
           </CardContent>
         </Card>
@@ -873,7 +884,17 @@ function QuotePage() {
                 <Row label="Depreciation" value={formatMoney(o.depreciation)} />
                 <Row label="Interest" value={formatMoney(o.interest)} />
                 <Row label="Lease payment" value={formatMoney(o.payment)} bold />
-                <Row label="Taxes" value={formatMoney(o.taxOnPayment)} />
+                {o.taxProvince === "BC" ? (
+                  <>
+                    <Row label={`GST ${(o.gstRate * 100).toFixed(0)}%`} value={formatMoney(o.gstOnPayment)} />
+                    <Row label={`PST ${(o.pstRate * 100).toFixed(0)}% (locked)`} value={formatMoney(o.pstOnPayment)} />
+                    <Row label="Taxes total" value={formatMoney(o.taxOnPayment)} />
+                    <Row label="TRV (gross cap)" value={formatMoney(o.trv)} />
+                    <Row label="Buyout tax (end)" value={formatMoney(o.residualTax)} />
+                  </>
+                ) : (
+                  <Row label="Taxes" value={formatMoney(o.taxOnPayment)} />
+                )}
                 <Row label="Total payment" value={formatMoney(o.totalPayment)} bold />
                 <Row label={`Pro-rata (${o.daysLeftMonth}/${o.daysInMonth}d)`} value={formatMoney(o.proRata)} />
                 <Row label="Due on delivery" value={formatMoney(o.dueTotal)} bold />

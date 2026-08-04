@@ -13,10 +13,14 @@
 
 import { PALMETTO_DATA_URI } from "./palmetto-data-uri";
 
+/**
+ * Flat combined rates for non-BC provinces.
+ * BC uses TRV-based ICE vehicle PST (see bcIcePstFromTrv) + 5% GST — not this table.
+ */
 export const PROVINCE_TAX: Record<string, number> = {
   QC: 0.14975,
   ON: 0.13,
-  BC: 0.12,
+  BC: 0.12, // fallback only; real BC quotes use TRV chart
   AB: 0.05,
   MB: 0.13,
   SK: 0.11,
@@ -73,6 +77,22 @@ export type LeaseOptionResult = LeaseOptionInput & {
   dueSubtotal: number;
   dueTax: number;
   dueTotal: number;
+  /** Tax meta (BC TRV / locked PST, etc.) */
+  taxProvince: string;
+  gstRate: number;
+  /** Locked ICE vehicle PST for BC; 0 when province uses combined rate only. */
+  pstRate: number;
+  /** Combined rate applied to payments/fees (GST+PST or provincial combined). */
+  taxCombinedRate: number;
+  /** Gross capitalized cost used as BC Tax Rate Value (TRV). */
+  trv: number;
+  trvBand: string;
+  gstOnPayment: number;
+  pstOnPayment: number;
+  /** Residual/buyout tax if purchased at lease end (locked PST + GST for BC). */
+  residualTax: number;
+  residualGst: number;
+  residualPst: number;
 };
 
 export type ClientQuoteInfo = {
@@ -157,6 +177,90 @@ export function taxRateForProvince(province: string): number {
   return PROVINCE_TAX[key] ?? PROVINCE_TAX.QC;
 }
 
+/**
+ * BC ICE vehicle PST brackets (luxury vehicle tax) — locked from TRV at lease inception.
+ * Combined rate = PST + 5% federal GST.
+ */
+export function bcIcePstFromTrv(trv: number): { pstRate: number; band: string } {
+  const v = Math.max(0, trv || 0);
+  if (v < 55_000) return { pstRate: 0.07, band: "Under $55,000 → PST 7%" };
+  if (v < 56_000) return { pstRate: 0.08, band: "$55,000–$55,999.99 → PST 8%" };
+  if (v < 57_000) return { pstRate: 0.09, band: "$56,000–$56,999.99 → PST 9%" };
+  if (v < 125_000) return { pstRate: 0.1, band: "$57,000–$124,999.99 → PST 10%" };
+  if (v < 150_000) return { pstRate: 0.15, band: "$125,000–$149,999.99 → PST 15%" };
+  return { pstRate: 0.2, band: "$150,000 and over → PST 20%" };
+}
+
+/** Gross Capitalized Cost used as BC Tax Rate Value (TRV) at inception. */
+export function grossCapitalizedCost(input: Pick<LeaseOptionInput, "cost" | "extra" | "profit">): number {
+  return round2(Math.max(0, (input.cost || 0) + (input.extra || 0) + (input.profit || 0)));
+}
+
+export type LeaseTaxRates = {
+  province: string;
+  gstRate: number;
+  pstRate: number;
+  combinedRate: number;
+  trv: number;
+  trvBand: string;
+  isBc: boolean;
+};
+
+/**
+ * Resolve GST/PST (or combined) for a quote.
+ * BC: TRV = gross cap cost → lock PST from chart; GST always 5%.
+ * lockedPstRate: if set (reopened quote), keep inception PST even if price edited.
+ */
+export function resolveLeaseTaxRates(
+  province: string,
+  trv: number,
+  lockedPstRate?: number | null,
+): LeaseTaxRates {
+  const p = (province || "QC").trim().toUpperCase() || "QC";
+  if (p === "BC") {
+    const { pstRate, band } =
+      lockedPstRate != null && Number.isFinite(lockedPstRate)
+        ? { pstRate: lockedPstRate, band: `Locked PST ${(lockedPstRate * 100).toFixed(0)}% (inception TRV)` }
+        : bcIcePstFromTrv(trv);
+    const gstRate = 0.05;
+    return {
+      province: "BC",
+      gstRate,
+      pstRate,
+      combinedRate: round2((gstRate + pstRate) * 1e6) / 1e6,
+      trv: round2(trv),
+      trvBand: band,
+      isBc: true,
+    };
+  }
+  const combined = taxRateForProvince(p);
+  return {
+    province: p,
+    gstRate: combined,
+    pstRate: 0,
+    combinedRate: combined,
+    trv: round2(trv),
+    trvBand: "",
+    isBc: false,
+  };
+}
+
+/** GST + PST on an amount (BC rounds each tax separately). */
+export function taxSplitOnAmount(
+  amount: number,
+  rates: LeaseTaxRates,
+): { gst: number; pst: number; total: number } {
+  const a = Math.max(0, amount || 0);
+  if (rates.isBc) {
+    const gst = round2(a * rates.gstRate);
+    const pst = round2(a * rates.pstRate);
+    return { gst, pst, total: round2(gst + pst) };
+  }
+  const total = round2(a * rates.combinedRate);
+  return { gst: total, pst: 0, total };
+}
+
+
 export function daysInCalendarMonth(year: number, monthIndex0: number): number {
   return new Date(year, monthIndex0 + 1, 0).getDate();
 }
@@ -194,7 +298,11 @@ function parseLooseDate(s: string): Date | null {
 
 export function calcLeaseOption(
   input: LeaseOptionInput,
-  taxRate: number,
+  /**
+   * Province code (preferred, e.g. "BC") or legacy combined tax rate number.
+   * When a number is passed, BC TRV logic is skipped.
+   */
+  provinceOrTaxRate: string | number,
   fees: {
     admin: number;
     tracker: number;
@@ -203,6 +311,8 @@ export function calcLeaseOption(
     tireTax: number;
   },
   proRataCtx?: { startDate: string; daysLeftOverride?: number | null },
+  /** Keep inception PST when reopening a saved BC quote. */
+  locked?: { pstRate?: number | null },
 ): LeaseOptionResult {
   const cost = Math.max(0, input.cost || 0);
   const extra = input.extra || 0; // always 0 in new UI
@@ -230,7 +340,31 @@ export function calcLeaseOption(
   const interest = round2(payment - depreciation - handling);
   // Yield = effective annual rate of the full payment (interest rate + handling)
   const yieldPct = yieldPctFromPayment(termMonths, payment, financed, residual);
-  const taxOnPayment = round2(payment * taxRate);
+
+  // --- Tax (BC: lock PST from TRV = gross cap cost; GST 5% always) ---
+  const trv = grossCapitalizedCost({ cost, extra, profit });
+  let rates: LeaseTaxRates;
+  if (typeof provinceOrTaxRate === "number") {
+    const r = provinceOrTaxRate;
+    rates = {
+      province: "—",
+      gstRate: r,
+      pstRate: 0,
+      combinedRate: r,
+      trv,
+      trvBand: "",
+      isBc: false,
+    };
+  } else {
+    rates = resolveLeaseTaxRates(
+      provinceOrTaxRate,
+      trv,
+      locked?.pstRate ?? null,
+    );
+  }
+
+  const payTax = taxSplitOnAmount(payment, rates);
+  const taxOnPayment = payTax.total;
   const totalPayment = round2(payment + taxOnPayment);
 
   const admin = fees.admin || 0;
@@ -252,14 +386,16 @@ export function calcLeaseOption(
     daysInMonth > 0
       ? round2(payment * (daysLeftMonth / daysInMonth))
       : payment;
-  const proRataTax = round2(proRata * taxRate);
+  const proRataTax = taxSplitOnAmount(proRata, rates).total;
 
-  const downpaymentTax = round2(deposit * taxRate);
-  const adminTax = round2(admin * taxRate);
-  const trackerTax = round2(tracker * taxRate);
-  const lienTax = round2(lienPpsa * taxRate);
-  const licenseTax = round2(license * taxRate);
-  const tireTaxTax = round2(tireTax * taxRate);
+  // Cash-down / cap cost reduction: full GST + locked PST due at delivery
+  const downpaymentTax = taxSplitOnAmount(deposit, rates).total;
+  // Doc / prep / freight-style fees: both GST and locked PST (BC)
+  const adminTax = taxSplitOnAmount(admin, rates).total;
+  const trackerTax = taxSplitOnAmount(tracker, rates).total;
+  const lienTax = taxSplitOnAmount(lienPpsa, rates).total;
+  const licenseTax = taxSplitOnAmount(license, rates).total;
+  const tireTaxTax = taxSplitOnAmount(tireTax, rates).total;
 
   const dueSubtotal = round2(
     deposit + proRata + admin + tracker + lienPpsa + license + tireTax,
@@ -268,6 +404,9 @@ export function calcLeaseOption(
     downpaymentTax + proRataTax + adminTax + trackerTax + lienTax + licenseTax + tireTaxTax,
   );
   const dueTotal = round2(dueSubtotal + dueTax);
+
+  // Lease-end buyout: original locked PST (+ GST), not residual-based bracket
+  const residualSplit = taxSplitOnAmount(residual, rates);
 
   return {
     cost,
@@ -307,6 +446,17 @@ export function calcLeaseOption(
     dueSubtotal,
     dueTax,
     dueTotal,
+    taxProvince: rates.province,
+    gstRate: rates.gstRate,
+    pstRate: rates.pstRate,
+    taxCombinedRate: rates.combinedRate,
+    trv: rates.trv,
+    trvBand: rates.trvBand,
+    gstOnPayment: payTax.gst,
+    pstOnPayment: payTax.pst,
+    residualTax: residualSplit.total,
+    residualGst: residualSplit.gst,
+    residualPst: residualSplit.pst,
   };
 }
 
@@ -380,7 +530,7 @@ export function buildRetailQuoteHtml(
           <tr><td>Residual</td><td class="num">${formatMoney(o.residual)} <span class="pct">(${o.residualPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Int. Rate</td><td class="num">${o.ratePct.toFixed(2)}%</td></tr>
           <tr><td>Lease Payment</td><td class="num">${formatMoney(o.payment)}</td></tr>
-          <tr><td>Taxes (${escapeHtml((client.province || "QC").toUpperCase())})</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
+          <tr><td>Taxes (${escapeHtml((client.province || "QC").toUpperCase())}${o.taxProvince === "BC" ? ` GST ${((o.gstRate || 0) * 100).toFixed(0)}% + PST ${((o.pstRate || 0) * 100).toFixed(0)}%` : ""})</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
           <tr class="total"><td>Total Payment</td><td class="num">${formatMoney(o.totalPayment)}</td></tr>
           <tr><td>Due on delivery</td><td class="num">${formatMoney(o.dueTotal)}</td></tr>
           <tr><td>Pro-rata (${o.daysLeftMonth}/${o.daysInMonth} d)</td><td class="num">${formatMoney(o.proRata)}</td></tr>

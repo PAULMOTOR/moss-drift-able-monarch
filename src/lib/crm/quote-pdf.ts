@@ -205,6 +205,10 @@ export async function buildRetailQuotePdf(
       font: fontBold,
       color: teal,
     });
+    const taxLabel =
+      province === "BC"
+        ? `GST 5%+PST ${(((o.pstRate ?? 0) * 100) || 0).toFixed(0)}%`
+        : `Taxes (${province})`;
     const lines: [string, string, boolean?][] = [
       ["Price", money(o.cost + o.extra + o.profit)],
       ["Trade-In", money(o.tradeIn)],
@@ -214,7 +218,7 @@ export async function buildRetailQuotePdf(
       ["Residual", `${money(o.residual)} (${o.residualPct.toFixed(1)}%)`],
       ["Int. Rate", `${o.ratePct.toFixed(2)}%`],
       ["Lease Pmt", money(o.payment)],
-      [`Taxes (${province})`, money(o.taxOnPayment)],
+      [taxLabel, money(o.taxOnPayment)],
       ["Total Pmt", money(o.totalPayment), true],
       ["Due deliv.", money(o.dueTotal)],
       [
