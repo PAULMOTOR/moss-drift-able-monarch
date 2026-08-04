@@ -281,14 +281,9 @@ function LeadDetail() {
       reader.readAsDataURL(file);
     });
     await patch({
-      quote_sent: true,
-      quote_sent_at: lead?.quote_sent_at || new Date().toISOString(),
       quote_pdf_name: file.name,
       quote_pdf_data: dataUrl,
-      stage:
-        lead && (lead.stage === "new" || lead.stage === "contacted")
-          ? "quote_sent"
-          : lead?.stage,
+      // Stage unchanged — Quote Sent only via Share quote, stage dropdown, or pipeline
     });
   }
 

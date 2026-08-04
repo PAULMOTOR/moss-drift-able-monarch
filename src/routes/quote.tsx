@@ -230,9 +230,10 @@ function QuotePage() {
         setOptions(
           payload.options.map((o) => ({
             cost: o.cost,
-            extra: o.extra,
+            extra: 0,
             profit: o.profit,
             tradeIn: o.tradeIn,
+            tradeInLien: o.tradeInLien ?? 0,
             deposit: o.deposit,
             termMonths: o.termMonths,
             ratePct: o.ratePct,
@@ -316,7 +317,7 @@ function QuotePage() {
 
   function vehicleTotalForOption(i: number) {
     const o = options[i];
-    return Math.max(0, (o.cost || 0) + (o.extra || 0) + (o.profit || 0));
+    return Math.max(0, (o.cost || 0) + (o.profit || 0));
   }
 
   /** Dollar amount drives % (and vice versa) against cost+extra+profit. */
@@ -374,7 +375,60 @@ function QuotePage() {
     toast.message(`Option ${i + 1} cleared`);
   }
 
-  async function onSave(asNew = true) {
+  function openPdfData(dataUrl: string, fileName = "quote.pdf") {
+    if (!dataUrl?.startsWith("data:")) {
+      toast.error("No PDF generated");
+      return;
+    }
+    try {
+      const comma = dataUrl.indexOf(",");
+      const header = comma >= 0 ? dataUrl.slice(0, comma) : "data:application/pdf;base64";
+      const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+      const mime = header.match(/data:([^;]+)/)?.[1] || "application/pdf";
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, "_blank");
+      if (!w) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        toast.message("Download started (popup blocked)");
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not open PDF");
+    }
+  }
+
+  /** Silent save (no Quote Sent). Used by Update draft + Back to lead. */
+  async function silentSave(asNew = false): Promise<string | null> {
+    if (!client.clientName.trim()) {
+      toast.error("Client name is required");
+      return null;
+    }
+    const res = await save({
+      data: {
+        leadId: leadId || null,
+        client: { ...client, salesman: client.salesman || salesman },
+        options: calculated,
+        selectedOption: 1,
+        status: "draft",
+        existingId: asNew ? null : quoteId,
+        title: `${client.clientName} · ${client.year || ""} ${client.make} ${client.model}`.trim(),
+        markQuoteSent: false,
+      },
+    });
+    setQuoteId(res.id);
+    await refreshSaved();
+    return res.id;
+  }
+
+  /** Share quote: save + open PDF + set stage Quote Sent. */
+  async function onShare() {
     if (!client.clientName.trim()) {
       toast.error("Client name is required");
       return;
@@ -387,24 +441,34 @@ function QuotePage() {
           client: { ...client, salesman: client.salesman || salesman },
           options: calculated,
           selectedOption: 1,
-          status: "draft",
-          existingId: asNew ? null : quoteId,
+          status: "shared",
+          existingId: quoteId,
           title: `${client.clientName} · ${client.year || ""} ${client.make} ${client.model}`.trim(),
+          markQuoteSent: true,
         },
       });
       setQuoteId(res.id);
-      toast.success(asNew ? "Quote instance saved" : "Quote updated");
       await refreshSaved();
-      if (res.html) {
-        const w = window.open("", "_blank");
-        if (w) {
-          w.document.write(res.html);
-          w.document.close();
-        }
+      openPdfData(res.pdfData, res.pdfName || "quote.pdf");
+      toast.success(leadId ? "Quote PDF opened · status set to Quote Sent" : "Quote PDF opened");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Share failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onBackToLead() {
+    if (!leadId) return;
+    setBusy(true);
+    try {
+      if (client.clientName.trim()) {
+        await silentSave(false);
+        toast.success("Quote saved");
       }
+      window.location.href = `/leads/${leadId}`;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Save failed");
-    } finally {
       setBusy(false);
     }
   }
@@ -426,6 +490,7 @@ function QuotePage() {
             selectedOption: optionNumber,
             status: "draft",
             title: `${client.clientName} · Opt ${optionNumber}`,
+            markQuoteSent: false,
           },
         });
         setQuoteId(res.id);
@@ -505,14 +570,24 @@ function QuotePage() {
               type="button"
               variant="outline"
               disabled={busy}
-              onClick={() => void onSave(false)}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const id = await silentSave(false);
+                  if (id) toast.success("Draft saved");
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Save failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
             >
               <Save className="size-4" />
-              Update
+              Update draft
             </Button>
-            <Button type="button" disabled={busy} onClick={() => void onSave(true)}>
-              <Save className="size-4" />
-              {busy ? "Saving…" : "Save quote"}
+            <Button type="button" disabled={busy} onClick={() => void onShare()}>
+              <Printer className="size-4" />
+              {busy ? "Working…" : "Share quote"}
             </Button>
           </div>
         }
@@ -740,9 +815,13 @@ function QuotePage() {
             </CardHeader>
             <CardContent className="space-y-2">
               <MoneyField label="Cost / price" value={options[i].cost} onChange={(v) => patchOption(i, { cost: v })} />
-              <MoneyField label="Extra" value={options[i].extra} onChange={(v) => patchOption(i, { extra: v })} />
               <MoneyField label="Profit" value={options[i].profit} onChange={(v) => patchOption(i, { profit: v })} />
               <MoneyField label="Trade-in" value={options[i].tradeIn} onChange={(v) => patchOption(i, { tradeIn: v })} />
+              <MoneyField
+                label="Trade-in lien amount"
+                value={options[i].tradeInLien || 0}
+                onChange={(v) => patchOption(i, { tradeInLien: v })}
+              />
               <div className="grid grid-cols-2 gap-2">
                 <MoneyField
                   label="Deposit $ (cash down)"
@@ -782,11 +861,14 @@ function QuotePage() {
               <MoneyField label="Handling $ (default 0)" value={options[i].handling} onChange={(v) => patchOption(i, { handling: v })} />
 
               <div className="mt-3 space-y-1 rounded-sm border border-border bg-muted/40 p-3 text-xs">
-                <Row label="Financed" value={formatMoney(o.financed)} />
+                <Row
+                  label="Trade equity (trade − lien)"
+                  value={formatMoney((options[i].tradeIn || 0) - (options[i].tradeInLien || 0))}
+                />
+                <Row label="Financed (cap. cost)" value={formatMoney(o.financed)} bold />
                 <Row label="Deposit %" value={`${o.depositPct.toFixed(1)}%`} />
                 <Row label="Residual %" value={`${o.residualPct.toFixed(1)}%`} />
                 <Row label="Int. rate" value={`${o.ratePct.toFixed(2)}%`} />
-                <Row label="Yield %" value={`${o.yieldPct.toFixed(2)}%`} bold />
                 <Row label="Depreciation" value={formatMoney(o.depreciation)} />
                 <Row label="Interest" value={formatMoney(o.interest)} />
                 <Row label="Lease payment" value={formatMoney(o.payment)} bold />
@@ -811,15 +893,21 @@ function QuotePage() {
       </div>
 
       <p className="text-center text-xs text-muted-foreground">
-        Save creates a re-openable instance. Accept attaches the option PDF on the lead and builds
-        the ENG/FR contract + 1st invoice. Push to Drive creates the Drive folder.
+        Share quote opens a customer PDF and sets the lead to Quote Sent.
+        Update draft / Back to lead save without changing stage.
+        Accept builds contract + invoice. Push to Drive is on the lead page.
       </p>
       {leadId ? (
         <div className="mt-6 flex justify-center">
-          <Button asChild size="lg" variant="default" className="min-w-[220px] text-base font-semibold">
-            <Link to="/leads/$leadId" params={{ leadId }}>
-              ← Back to lead
-            </Link>
+          <Button
+            type="button"
+            size="lg"
+            variant="default"
+            className="min-w-[220px] text-base font-semibold"
+            disabled={busy}
+            onClick={() => void onBackToLead()}
+          >
+            ← Back to lead
           </Button>
         </div>
       ) : null}

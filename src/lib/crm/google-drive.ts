@@ -381,23 +381,33 @@ export function buildQuotePdfFileName(parts: {
   make?: string;
   model?: string;
 }): string {
-  // Short, unique names: PMC_YYMMDD_Last_OptN.pdf (or stock if present)
-  const d = (parts.quoteDate || new Date().toISOString().slice(0, 10)).replace(
-    /[^0-9]/g,
-    "",
-  );
-  const yymmdd = d.length >= 8 ? d.slice(2, 8) : d.slice(-6);
+  // Short: Q-YYMMDD-Last-O1.pdf  (or stock instead of last name)
+  const now = new Date();
+  let dt = now;
+  const raw = (parts.quoteDate || "").trim();
+  if (raw) {
+    const parsed = Date.parse(raw);
+    if (!Number.isNaN(parsed)) dt = new Date(parsed);
+    else {
+      const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (m) dt = new Date(Number(m[3]), Number(m[1]) - 1, Number(m[2]));
+    }
+  }
+  const yy = String(dt.getFullYear()).slice(2);
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const yymmdd = `${yy}${mm}${dd}`;
   const last = (parts.clientName || "Client")
     .trim()
     .split(/\s+/)
     .filter(Boolean)
     .slice(-1)[0] || "Client";
-  const client = last.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "Client";
+  const client = last.replace(/[^a-zA-Z0-9]/g, "").slice(0, 10) || "Client";
   const stock = parts.stock
-    ? parts.stock.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 10)
+    ? parts.stock.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 8)
     : "";
-  if (stock) return `PMC_${yymmdd}_${stock}_O${parts.option}.pdf`;
-  return `PMC_${yymmdd}_${client}_O${parts.option}.pdf`;
+  const tag = stock || client;
+  return `Q-${yymmdd}-${tag}-O${parts.option}.pdf`;
 }
 
 export async function probeDrive(): Promise<{

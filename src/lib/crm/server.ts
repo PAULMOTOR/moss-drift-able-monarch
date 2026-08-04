@@ -1062,11 +1062,7 @@ export const bookTestDrive = createServerFn({ method: "POST" })
       )
     `;
     await sql`
-      update leads set stage = case when stage in ('new','contacted','paused') then 'quote_sent' else stage end,
-        stage_entered_at = case when stage in ('new','contacted','paused') then now() else stage_entered_at end,
-        pause_until = case when stage = 'paused' then null else pause_until end,
-        pause_note = case when stage = 'paused' then null else pause_note end,
-        stage_before_pause = case when stage = 'paused' then null else stage_before_pause end,
+      update leads set
         updated_at = now()
       where id = ${data.lead_id}
     `;
@@ -1587,6 +1583,8 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
       status?: string;
       title?: string;
       existingId?: string | null;
+      /** Only Share quote should set Quote Sent (not silent save / back-to-lead). */
+      markQuoteSent?: boolean;
     }) => data,
   )
   .handler(async ({ context, data }) => {
@@ -1653,33 +1651,45 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
 
     if (data.leadId) {
       const primary = data.options[(data.selectedOption ?? 1) - 1] || data.options[0];
-      await sql`
-        update leads set
-          quote_sent = true,
-          quote_sent_at = coalesce(quote_sent_at, now()),
-          quote_notes = ${`Lease quote · payment ${primary ? primary.totalPayment : ""}`},
-          guarantor = ${data.client.guarantor || null},
-          stage = case when stage in ('new','contacted','paused') then 'quote_sent' else stage end,
-          updated_at = now()
-        where id = ${data.leadId}
-      `;
-      // Append to multi-quote file list
-      await sql`
-        insert into lead_quote_files (
-          id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
-        ) values (
-          ${id()}, ${data.leadId}, ${quoteId}, ${data.selectedOption ?? 1},
-          ${pdfName}, ${pdfData}, 'application/pdf', 'crm_quote', ${me.id}
-        )
-      `;
-      await sql`
-        insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
-        values (
-          ${id()}, ${data.leadId}, 'quote',
-          ${`Saved lease quote instance (${data.options.filter((o) => o.cost > 0 || o.payment > 0).length} option(s)). Open from Saved quotes.`},
-          ${me.id}, ${me.name}
-        )
-      `;
+      if (data.markQuoteSent) {
+        await sql`
+          update leads set
+            quote_sent = true,
+            quote_sent_at = coalesce(quote_sent_at, now()),
+            quote_notes = ${`Lease quote shared · payment ${primary ? primary.totalPayment : ""}`},
+            guarantor = ${data.client.guarantor || null},
+            stage = case when stage in ('new','contacted','paused') then 'quote_sent' else stage end,
+            stage_entered_at = case when stage in ('new','contacted','paused') then now() else stage_entered_at end,
+            updated_at = now()
+          where id = ${data.leadId}
+        `;
+        await sql`
+          insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+          values (
+            ${id()}, ${data.leadId}, 'quote',
+            ${`Quote shared with customer (PDF) · ${title}`},
+            ${me.id}, ${me.name}
+          )
+        `;
+      } else {
+        await sql`
+          update leads set
+            guarantor = ${data.client.guarantor || null},
+            updated_at = now()
+          where id = ${data.leadId}
+        `;
+      }
+      // File list entry only when Share quote (not silent save / Back to lead)
+      if (data.markQuoteSent) {
+        await sql`
+          insert into lead_quote_files (
+            id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
+          ) values (
+            ${id()}, ${data.leadId}, ${quoteId}, ${data.selectedOption ?? 1},
+            ${pdfName}, ${pdfData}, 'application/pdf', 'shared_quote', ${me.id}
+          )
+        `;
+      }
     }
     return { ok: true as const, id: quoteId, html, pdfName, pdfData };
   });
@@ -1878,12 +1888,10 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
       await sql`
         update leads set
           accepted_quote_id = ${data.quoteId},
-          quote_sent = true,
           quote_pdf_name = ${pdfName},
           quote_pdf_data = ${pdfData},
           guarantor = ${payload.client.guarantor || null},
           estimated_value = ${opt.cost + opt.extra + opt.profit},
-          stage = case when stage in ('new','contacted','paused','quote_sent') then 'quote_sent' else stage end,
           updated_at = now()
         where id = ${row.lead_id}
       `;

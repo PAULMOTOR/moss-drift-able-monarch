@@ -31,9 +31,12 @@ export const PROVINCE_TAX: Record<string, number> = {
 
 export type LeaseOptionInput = {
   cost: number;
+  /** Deprecated — kept 0 for backward compatibility; not shown in UI. */
   extra: number;
   profit: number;
   tradeIn: number;
+  /** Outstanding lien / loan on trade-in. Net equity = tradeIn - tradeInLien (can be negative). */
+  tradeInLien: number;
   deposit: number;
   termMonths: number;
   ratePct: number;
@@ -202,9 +205,10 @@ export function calcLeaseOption(
   proRataCtx?: { startDate: string; daysLeftOverride?: number | null },
 ): LeaseOptionResult {
   const cost = Math.max(0, input.cost || 0);
-  const extra = input.extra || 0;
+  const extra = input.extra || 0; // always 0 in new UI
   const profit = input.profit || 0;
   const tradeIn = input.tradeIn || 0;
+  const tradeInLien = Math.max(0, input.tradeInLien || 0);
   const deposit = input.deposit || 0;
   const termMonths = Math.max(1, Math.round(input.termMonths || 1));
   const ratePct = Math.max(0, input.ratePct || 0);
@@ -212,7 +216,10 @@ export function calcLeaseOption(
   const handling = Math.max(0, input.handling || 0);
 
   const vehicleTotal = cost + extra + profit;
-  const financed = round2(Math.max(0, vehicleTotal - tradeIn - deposit));
+  // Net trade equity (can be negative = negative equity added to cap cost)
+  const tradeNet = round2(tradeIn - tradeInLien);
+  // Cap cost: price - trade equity - deposit  (negative equity increases financed)
+  const financed = round2(Math.max(0, vehicleTotal - tradeNet - deposit));
   const depositPct = vehicleTotal > 0 ? round2((deposit / vehicleTotal) * 100) : 0;
   const residualPct = vehicleTotal > 0 ? round2((residual / vehicleTotal) * 100) : 0;
 
@@ -267,6 +274,7 @@ export function calcLeaseOption(
     extra,
     profit,
     tradeIn,
+    tradeInLien,
     deposit,
     termMonths,
     ratePct,
@@ -308,6 +316,7 @@ export function emptyOption(partial?: Partial<LeaseOptionInput>): LeaseOptionInp
     extra: 0,
     profit: 0,
     tradeIn: 0,
+    tradeInLien: 0,
     deposit: 0,
     termMonths: 36,
     ratePct: 6.99,
@@ -365,11 +374,11 @@ export function buildRetailQuoteHtml(
         <table>
           <tr><td>Price</td><td class="num">${formatMoney(o.cost + o.extra + o.profit)}</td></tr>
           <tr><td>Trade-In</td><td class="num">${formatMoney(o.tradeIn)}</td></tr>
+          <tr><td>Trade-In Lien</td><td class="num">${formatMoney(o.tradeInLien || 0)}</td></tr>
           <tr><td>Cash-down</td><td class="num">${formatMoney(o.deposit)} <span class="pct">(${o.depositPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Term</td><td class="num">${o.termMonths} mo</td></tr>
           <tr><td>Residual</td><td class="num">${formatMoney(o.residual)} <span class="pct">(${o.residualPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Int. Rate</td><td class="num">${o.ratePct.toFixed(2)}%</td></tr>
-          <tr><td>Yield</td><td class="num">${o.yieldPct.toFixed(2)}%</td></tr>
           <tr><td>Lease Payment</td><td class="num">${formatMoney(o.payment)}</td></tr>
           <tr><td>Taxes</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
           <tr class="total"><td>Total Payment</td><td class="num">${formatMoney(o.totalPayment)}</td></tr>
