@@ -3,6 +3,7 @@ import {
   BarChart3,
   Calculator,
   Columns3,
+  HelpCircle,
   LayoutDashboard,
   Menu,
   Package,
@@ -29,6 +30,7 @@ const baseNav = [
   { to: "/quote", label: "Lease quote", icon: Calculator },
   { to: "/inventory", label: "Inventory", icon: Package },
   { to: "/data-analysis", label: "Data analysis", icon: BarChart3 },
+  { to: "/help", label: "Help", icon: HelpCircle },
 ] as const;
 
 
