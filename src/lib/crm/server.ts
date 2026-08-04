@@ -1915,9 +1915,14 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
     const me = await requireProfile(context.userId);
     const sql = await boot();
     const leadRows = await sql.query<Record<string, unknown>>(
-      `select ${leadSelect} from leads l where l.id = $1 limit 1`,
+      `select ${leadSelect}
+       from leads l
+       left join profiles p on p.id = l.assigned_to
+       left join inventory i on i.id = l.inventory_id
+       where l.id = $1 limit 1`,
       [data.leadId],
     );
+
     if (!leadRows[0]) throw new Error("Lead not found");
     const lead = mapLead(leadRows[0]);
 
