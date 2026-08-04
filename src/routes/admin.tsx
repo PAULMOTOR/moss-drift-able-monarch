@@ -794,7 +794,7 @@ function AdminPage() {
             Save contract template
           </Button>
           <div className="rounded-sm border border-border bg-muted/30 p-3 text-xs">
-            <p className="font-semibold">Google Drive (Ready for BC)</p>
+            <p className="font-semibold">Google Drive (Push to Drive)</p>
             <p className="text-muted-foreground">
               {driveStatus == null
                 ? "—"

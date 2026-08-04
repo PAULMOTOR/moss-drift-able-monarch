@@ -1729,6 +1729,37 @@ export const listLeaseQuotes = createServerFn({ method: "GET" })
     `;
   });
 
+
+export const deleteLeaseQuote = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { id: string }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const rows = await sql<{ id: string; lead_id: string | null; title: string | null }>`
+      select id, lead_id, title from lease_quotes where id = ${data.id} limit 1
+    `;
+    if (!rows[0]) throw new Error("Quote not found");
+    const q = rows[0];
+    await sql`delete from lead_quote_files where quote_id = ${data.id}`;
+    await sql`
+      update leads set accepted_quote_id = null
+      where accepted_quote_id = ${data.id}
+    `;
+    await sql`delete from lease_quotes where id = ${data.id}`;
+    if (q.lead_id) {
+      await sql`
+        insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+        values (
+          ${id()}, ${q.lead_id}, 'note',
+          ${`Deleted quote: ${q.title || data.id.slice(0, 8)}`},
+          ${me.id}, ${me.name}
+        )
+      `;
+    }
+    return { ok: true as const };
+  });
+
 export const getLeaseQuote = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .validator((data: { id: string }) => data)
@@ -1958,7 +1989,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       quoteId = q[0]?.id || null;
     }
     if (!quoteId) {
-      throw new Error("Save and accept a lease quote before Ready for Business Central.");
+      throw new Error("Save and accept a lease quote before Push to Drive.");
     }
     const qrows = await sql<{
       id: string;
@@ -2057,7 +2088,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${id()}, ${data.leadId}, 'stage',
-        ${`Ready for Business Central · Drive folder: ${folder.path}`},
+        ${`Push to Drive · Drive folder: ${folder.path}`},
         ${me.id}, ${me.name}
       )
     `;

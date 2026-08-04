@@ -34,11 +34,12 @@ import {
   listLeaseQuotes,
   listLeads,
   saveLeaseQuote,
+  deleteLeaseQuote,
 } from "@/lib/crm/server";
 import type { InventoryItem, Lead } from "@/lib/crm/types";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { getMyProfile } from "@/lib/crm/server";
-import { Check, Calculator, FolderOpen, Printer, Save } from "lucide-react";
+import { Check, Calculator, FolderOpen, Printer, Save, Trash2 } from "lucide-react";
 
 type QuoteSearch = { leadId?: string; quoteId?: string };
 
@@ -68,6 +69,7 @@ function QuotePage() {
   const save = useServerFn(saveLeaseQuote);
   const acceptFn = useServerFn(acceptLeaseQuoteOption);
   const getQuoteFn = useServerFn(getLeaseQuote);
+  const deleteQuoteFn = useServerFn(deleteLeaseQuote);
   const { user } = useCurrentUserState();
   const [busy, setBusy] = useState(false);
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -112,7 +114,7 @@ function QuotePage() {
     deliveryDate: todayIso(),
     startDate: todayIso(),
     notes: "This quote is valid for one week.",
-    adminFee: 499,
+    adminFee: 999,
     trackerFee: 495,
     lienPpsa: 0,
     license: 0,
@@ -193,7 +195,7 @@ function QuotePage() {
                 ? {
                     ...o,
                     cost: lead.estimated_value || o.cost,
-                    handling: suggestHandling(lead.estimated_value || 0, 0, 0),
+                    handling: 0,
                     residual: Math.round((lead.estimated_value || 0) * 0.55),
                     deposit: Math.round((lead.estimated_value || 0) * 0.2),
                   }
@@ -260,13 +262,17 @@ function QuotePage() {
     }));
     const price = inv.price || 0;
     setOptions((opts) =>
-      opts.map((o, idx) => ({
-        ...o,
-        cost: price,
-        handling: suggestHandling(price, o.extra, o.profit),
-        residual: o.residual || Math.round(price * (0.6 - idx * 0.05)),
-        deposit: o.deposit || Math.round(price * 0.2),
-      })),
+      opts.map((o, idx) =>
+        idx === 0
+          ? {
+              ...o,
+              cost: price,
+              handling: 0,
+              residual: o.residual || Math.round(price * 0.55),
+              deposit: o.deposit || Math.round(price * 0.2),
+            }
+          : o,
+      ),
     );
   }
 
@@ -303,15 +309,48 @@ function QuotePage() {
   function patchOption(i: number, patch: Partial<LeaseOptionInput>) {
     setOptions((prev) => {
       const next = [...prev];
-      const merged = { ...next[i], ...patch };
-      if ("cost" in patch || "extra" in patch || "profit" in patch) {
-        if (next[i].handling === 0 || "cost" in patch) {
-          merged.handling = suggestHandling(merged.cost, merged.extra, merged.profit);
-        }
-      }
-      next[i] = merged;
+      next[i] = { ...next[i], ...patch };
       return next;
     });
+  }
+
+  function vehicleTotalForOption(i: number) {
+    const o = options[i];
+    return Math.max(0, (o.cost || 0) + (o.extra || 0) + (o.profit || 0));
+  }
+
+  /** Dollar amount drives % (and vice versa) against cost+extra+profit. */
+  function setDepositDollar(i: number, dollars: number) {
+    const vt = vehicleTotalForOption(i);
+    patchOption(i, { deposit: dollars });
+  }
+  function setDepositPct(i: number, pct: number) {
+    const vt = vehicleTotalForOption(i);
+    const dollars = vt > 0 ? Math.round((pct / 100) * vt * 100) / 100 : 0;
+    patchOption(i, { deposit: dollars });
+  }
+  function setResidualDollar(i: number, dollars: number) {
+    patchOption(i, { residual: dollars });
+  }
+  function setResidualPct(i: number, pct: number) {
+    const vt = vehicleTotalForOption(i);
+    const dollars = vt > 0 ? Math.round((pct / 100) * vt * 100) / 100 : 0;
+    patchOption(i, { residual: dollars });
+  }
+
+  async function onDeleteQuote(id: string) {
+    if (!confirm("Delete this saved quote permanently?")) return;
+    setBusy(true);
+    try {
+      await deleteQuoteFn({ data: { id } });
+      if (quoteId === id) setQuoteId(null);
+      toast.success("Quote deleted");
+      await refreshSaved();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** Copy all inputs from the column immediately to the left (Opt2←Opt1, Opt3←Opt2). */
@@ -503,15 +542,28 @@ function QuotePage() {
                       {q.pdf_name ? ` · ${q.pdf_name}` : ""}
                     </p>
                   </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void loadQuote(q.id)}
-                  >
-                    <FolderOpen className="size-4" />
-                    Reopen
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void loadQuote(q.id)}
+                    >
+                      <FolderOpen className="size-4" />
+                      Reopen
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive"
+                      disabled={busy}
+                      onClick={() => void onDeleteQuote(q.id)}
+                    >
+                      <Trash2 className="size-4" />
+                      Delete
+                    </Button>
+                  </div>
                 </div>
               ))
             )}
@@ -593,6 +645,16 @@ function QuotePage() {
             <Field label="KM" value={client.km?.toString() || ""} onChange={(v) => setClient((c) => ({ ...c, km: v ? Number(v) : null }))} />
             <Field label="VIN" value={client.vin} onChange={(v) => setClient((c) => ({ ...c, vin: v }))} />
             <Field label="Stock #" value={client.stock} onChange={(v) => setClient((c) => ({ ...c, stock: v }))} />
+            <Field
+              label="KM allowance (per year)"
+              value={String(client.kmPerYear || "")}
+              onChange={(v) => setClient((c) => ({ ...c, kmPerYear: v ? Number(v) || 0 : 0 }))}
+            />
+            <Field
+              label="Excess KM fee ($/km)"
+              value={String(client.excessKmFee || "")}
+              onChange={(v) => setClient((c) => ({ ...c, excessKmFee: v ? Number(v) || 0 : 0 }))}
+            />
             <Field label="Lease start date" value={client.startDate} onChange={(v) => setClient((c) => ({ ...c, startDate: v }))} />
             <Field
               label={`Days left in month (auto ${daysInfo.daysLeft}/${daysInfo.daysInMonth})`}
@@ -681,13 +743,43 @@ function QuotePage() {
               <MoneyField label="Extra" value={options[i].extra} onChange={(v) => patchOption(i, { extra: v })} />
               <MoneyField label="Profit" value={options[i].profit} onChange={(v) => patchOption(i, { profit: v })} />
               <MoneyField label="Trade-in" value={options[i].tradeIn} onChange={(v) => patchOption(i, { tradeIn: v })} />
-              <MoneyField label="Deposit (cash down)" value={options[i].deposit} onChange={(v) => patchOption(i, { deposit: v })} />
+              <div className="grid grid-cols-2 gap-2">
+                <MoneyField
+                  label="Deposit $ (cash down)"
+                  value={options[i].deposit}
+                  onChange={(v) => setDepositDollar(i, v)}
+                />
+                <MoneyField
+                  label="Deposit %"
+                  value={
+                    vehicleTotalForOption(i) > 0
+                      ? Math.round((options[i].deposit / vehicleTotalForOption(i)) * 1000) / 10
+                      : 0
+                  }
+                  onChange={(v) => setDepositPct(i, v)}
+                />
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <MoneyField label="Term (mo)" value={options[i].termMonths} onChange={(v) => patchOption(i, { termMonths: Math.round(v) })} />
                 <MoneyField label="Rate %" value={options[i].ratePct} onChange={(v) => patchOption(i, { ratePct: v })} />
               </div>
-              <MoneyField label="Residual" value={options[i].residual} onChange={(v) => patchOption(i, { residual: v })} />
-              <MoneyField label="Handling $" value={options[i].handling} onChange={(v) => patchOption(i, { handling: v })} />
+              <div className="grid grid-cols-2 gap-2">
+                <MoneyField
+                  label="Residual $"
+                  value={options[i].residual}
+                  onChange={(v) => setResidualDollar(i, v)}
+                />
+                <MoneyField
+                  label="Residual %"
+                  value={
+                    vehicleTotalForOption(i) > 0
+                      ? Math.round((options[i].residual / vehicleTotalForOption(i)) * 1000) / 10
+                      : 0
+                  }
+                  onChange={(v) => setResidualPct(i, v)}
+                />
+              </div>
+              <MoneyField label="Handling $ (default 0)" value={options[i].handling} onChange={(v) => patchOption(i, { handling: v })} />
 
               <div className="mt-3 space-y-1 rounded-sm border border-border bg-muted/40 p-3 text-xs">
                 <Row label="Financed" value={formatMoney(o.financed)} />
@@ -720,14 +812,16 @@ function QuotePage() {
 
       <p className="text-center text-xs text-muted-foreground">
         Save creates a re-openable instance. Accept attaches the option PDF on the lead and builds
-        the ENG/FR contract + 1st invoice. Ready for Business Central creates the Drive folder.
+        the ENG/FR contract + 1st invoice. Push to Drive creates the Drive folder.
       </p>
       {leadId ? (
-        <p className="mt-2 text-center text-xs">
-          <Link to="/leads/$leadId" params={{ leadId }} className="text-primary underline-offset-4 hover:underline">
-            Back to lead
-          </Link>
-        </p>
+        <div className="mt-6 flex justify-center">
+          <Button asChild size="lg" variant="default" className="min-w-[220px] text-base font-semibold">
+            <Link to="/leads/$leadId" params={{ leadId }}>
+              ← Back to lead
+            </Link>
+          </Button>
+        </div>
       ) : null}
     </>
   );

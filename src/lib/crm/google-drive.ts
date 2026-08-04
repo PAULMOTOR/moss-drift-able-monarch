@@ -7,11 +7,14 @@ function env(key: string): string | undefined {
 }
 
 /** Parent folder: Paul Motor lease apps root (user-provided). */
+const DRIVE_PARENT_NEW = "1-z1m4cfJdCacDqjMQYf3PlW2kPqJxnlU";
+const DRIVE_PARENT_OLD = "1i1GWsg6P_Va5yfyScVfFLmgcP9ruHvCL";
+
 export function driveParentFolderId(): string {
-  return (
-    env("GOOGLE_DRIVE_PARENT_FOLDER_ID") ||
-    "1-z1m4cfJdCacDqjMQYf3PlW2kPqJxnlU"
-  );
+  const e = env("GOOGLE_DRIVE_PARENT_FOLDER_ID");
+  // Ignore stale Vercel env still pointing at the previous lease-apps root
+  if (!e || e === DRIVE_PARENT_OLD) return DRIVE_PARENT_NEW;
+  return e;
 }
 
 export function isDriveConfigured(): boolean {
@@ -254,20 +257,23 @@ export function buildQuotePdfFileName(parts: {
   make?: string;
   model?: string;
 }): string {
+  // Short, unique names: PMC_YYMMDD_Last_OptN.pdf (or stock if present)
   const d = (parts.quoteDate || new Date().toISOString().slice(0, 10)).replace(
     /[^0-9]/g,
     "",
   );
-  const client = (parts.clientName || "Client")
-    .replace(/[^a-zA-Z0-9]+/g, "_")
-    .slice(0, 40);
-  const veh = [parts.year, parts.make, parts.model]
+  const yymmdd = d.length >= 8 ? d.slice(2, 8) : d.slice(-6);
+  const last = (parts.clientName || "Client")
+    .trim()
+    .split(/\s+/)
     .filter(Boolean)
-    .join("_")
-    .replace(/[^a-zA-Z0-9_]+/g, "")
-    .slice(0, 30);
-  const stock = parts.stock ? `_Stk${parts.stock.replace(/[^a-zA-Z0-9-]/g, "")}` : "";
-  return `PMC_Quote_${d}_${client}${veh ? `_${veh}` : ""}${stock}_Opt${parts.option}.pdf`;
+    .slice(-1)[0] || "Client";
+  const client = last.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "Client";
+  const stock = parts.stock
+    ? parts.stock.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 10)
+    : "";
+  if (stock) return `PMC_${yymmdd}_${stock}_O${parts.option}.pdf`;
+  return `PMC_${yymmdd}_${client}_O${parts.option}.pdf`;
 }
 
 export async function probeDrive(): Promise<{

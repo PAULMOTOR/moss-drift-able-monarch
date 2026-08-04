@@ -32,6 +32,7 @@ import {
   getLeadQuoteFile,
   readyForBusinessCentral,
   getLeaseQuote,
+  deleteLeaseQuote,
 } from "@/lib/crm/server";
 import {
   LEAD_TYPES,
@@ -163,6 +164,7 @@ function LeadDetail() {
     created_at: string;
   }>>([]);
   const readyBc = useServerFn(readyForBusinessCentral);
+  const deleteQuote = useServerFn(deleteLeaseQuote);
   const getQuoteFile = useServerFn(getLeadQuoteFile);
   const getQuote = useServerFn(getLeaseQuote);
 
@@ -331,7 +333,7 @@ function LeadDetail() {
                 setBusy(true);
                 try {
                   const r = await readyBc({ data: { leadId: lead.id } });
-                  toast.success("Drive folder ready");
+                  toast.success("Pushed to Drive");
                   if (r.folderUrl) window.open(r.folderUrl, "_blank");
                   await load();
                 } catch (e) {
@@ -341,7 +343,7 @@ function LeadDetail() {
                 }
               }}
             >
-              Ready for BC
+              Push to Drive
             </Button>
             <span
               className={cn(
@@ -550,6 +552,27 @@ function LeadDetail() {
                         }}
                       >
                         View PDF
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive"
+                        disabled={busy}
+                        onClick={async () => {
+                          if (!confirm("Delete this quote permanently?")) return;
+                          setBusy(true);
+                          try {
+                            await deleteQuote({ data: { id: q.id } });
+                            toast.success("Quote deleted");
+                            await load();
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : "Delete failed");
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        Delete
                       </Button>
                     </div>
                   </div>
