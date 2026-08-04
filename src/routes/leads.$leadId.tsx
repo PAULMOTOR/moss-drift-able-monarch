@@ -53,6 +53,64 @@ import {
   toLocalInputValue,
 } from "@/lib/utils";
 
+
+/** Open HTML or PDF data URLs in a new tab (Blob URLs — browsers block huge data: PDFs as about:blank). */
+function openFileDataUrl(dataUrl: string, fileName = "quote.pdf") {
+  if (!dataUrl) {
+    toast.error("No file data");
+    return;
+  }
+  if (dataUrl.startsWith("data:text/html")) {
+    const b64 = dataUrl.split(",")[1] || "";
+    let html = "";
+    try {
+      html = decodeURIComponent(escape(atob(b64)));
+    } catch {
+      html = atob(b64);
+    }
+    const w = window.open("", "_blank");
+    if (!w) {
+      toast.error("Popup blocked — allow popups for this site");
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    return;
+  }
+
+  const comma = dataUrl.indexOf(",");
+  const header = comma >= 0 ? dataUrl.slice(0, comma) : "data:application/pdf;base64";
+  const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  const mimeMatch = header.match(/data:([^;]+)/);
+  const mime = mimeMatch?.[1] || "application/pdf";
+  try {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, "_blank");
+    if (!w) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download =
+        mime === "application/pdf" || fileName.toLowerCase().endsWith(".pdf")
+          ? fileName.replace(/\.html$/i, ".pdf")
+          : fileName;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast.message("Download started (popup was blocked)");
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : "Could not open file");
+  }
+}
+
+
 export const Route = createFileRoute("/leads/$leadId")({
   component: LeadDetail,
 });
@@ -470,11 +528,21 @@ function LeadDetail() {
                         onClick={async () => {
                           try {
                             const full = await getQuote({ data: { id: q.id } });
-                            if (full.retail_html) {
+                            if (full.pdf_data?.startsWith("data:application/pdf")) {
+                              openFileDataUrl(full.pdf_data, full.pdf_name || "quote.pdf");
+                            } else if (full.retail_html) {
                               const w = window.open("", "_blank");
-                              if (w) { w.document.write(full.retail_html); w.document.close(); }
+                              if (w) {
+                                w.document.open();
+                                w.document.write(full.retail_html);
+                                w.document.close();
+                              } else {
+                                toast.error("Popup blocked — allow popups for this site");
+                              }
                             } else if (full.pdf_data?.startsWith("data:")) {
-                              window.open(full.pdf_data, "_blank");
+                              openFileDataUrl(full.pdf_data, full.pdf_name || "quote.pdf");
+                            } else {
+                              toast.error("No PDF available for this quote");
                             }
                           } catch (e) {
                             toast.error(e instanceof Error ? e.message : "Open failed");
@@ -499,15 +567,7 @@ function LeadDetail() {
                         onClick={async () => {
                           try {
                             const file = await getQuoteFile({ data: { id: f.id } });
-                            const w = window.open("", "_blank");
-                            if (!w) return;
-                            if (file.file_data.startsWith("data:text/html")) {
-                              const b64 = file.file_data.split(",")[1] || "";
-                              w.document.write(atob(b64));
-                              w.document.close();
-                            } else {
-                              w.location.href = file.file_data;
-                            }
+                            openFileDataUrl(file.file_data, file.file_name || "quote.pdf");
                           } catch (e) {
                             toast.error(e instanceof Error ? e.message : "Open failed");
                           }
