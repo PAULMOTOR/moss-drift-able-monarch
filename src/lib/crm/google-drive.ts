@@ -1,178 +1,5 @@
-import { Readable } from "node:stream";
-import { google } from "googleapis";
-
-function env(key: string): string | undefined {
-  const v = process.env[key]?.trim();
-  return v || undefined;
-}
-
-/** Parent folder: Paul Motor lease apps root (user-provided). */
-const DRIVE_PARENT_NEW = "1-z1m4cfJdCacDqjMQYf3PlW2kPqJxnlU";
-const DRIVE_PARENT_OLD = "1i1GWsg6P_Va5yfyScVfFLmgcP9ruHvCL";
-
-export function driveParentFolderId(): string {
-  const e = env("GOOGLE_DRIVE_PARENT_FOLDER_ID");
-  // Ignore stale Vercel env still pointing at the previous lease-apps root
-  if (!e || e === DRIVE_PARENT_OLD) return DRIVE_PARENT_NEW;
-  return e;
-}
-
-export function isDriveConfigured(): boolean {
-  return Boolean(
-    env("GMAIL_CLIENT_ID") &&
-      env("GMAIL_CLIENT_SECRET") &&
-      (env("GOOGLE_DRIVE_REFRESH_TOKEN") || env("GMAIL_REFRESH_TOKEN")),
-  );
-}
-
-function getAuth(prefer: "drive" | "gmail" | "auto" = "auto") {
-  const clientId = env("GMAIL_CLIENT_ID");
-  const clientSecret = env("GMAIL_CLIENT_SECRET");
-  const driveTok = env("GOOGLE_DRIVE_REFRESH_TOKEN");
-  const gmailTok = env("GMAIL_REFRESH_TOKEN");
-  let refreshToken: string | undefined;
-  // Prefer Gmail token (usually the one just re-authed with full drive scope).
-  if (prefer === "drive") refreshToken = driveTok || gmailTok;
-  else if (prefer === "gmail") refreshToken = gmailTok || driveTok;
-  else refreshToken = gmailTok || driveTok;
-  if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error(
-      "Google Drive not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and a refresh token with Drive scope (GOOGLE_DRIVE_REFRESH_TOKEN or GMAIL_REFRESH_TOKEN).",
-    );
-  }
-  const oauth2 = new google.auth.OAuth2(clientId, clientSecret);
-  oauth2.setCredentials({ refresh_token: refreshToken });
-  return oauth2;
-}
-
-function driveClient(prefer: "drive" | "gmail" | "auto" = "auto") {
-  return google.drive({ version: "v3", auth: getAuth(prefer) });
-}
-
-const FOLDER_MIME = "application/vnd.google-apps.folder";
-
-async function findChildFolder(
-  parentId: string,
-  name: string,
-): Promise<string | null> {
-  const drive = driveClient();
-  const q = [
-    `'${parentId}' in parents`,
-    `name = '${name.replace(/'/g, "\\'")}'`,
-    `mimeType = '${FOLDER_MIME}'`,
-    "trashed = false",
-  ].join(" and ");
-  const res = await drive.files.list({
-    q,
-    fields: "files(id, name)",
-    pageSize: 5,
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
-  });
-  return res.data.files?.[0]?.id || null;
-}
-
-async function createFolder(parentId: string, name: string): Promise<string> {
-  const drive = driveClient();
-  const res = await drive.files.create({
-    requestBody: {
-      name,
-      mimeType: FOLDER_MIME,
-      parents: [parentId],
-    },
-    fields: "id, webViewLink",
-    supportsAllDrives: true,
-  });
-  if (!res.data.id) throw new Error("Drive folder create failed");
-  return res.data.id;
-}
-
-export async function ensureFolder(
-  parentId: string,
-  name: string,
-): Promise<string> {
-  const existing = await findChildFolder(parentId, name);
-  if (existing) return existing;
-  return createFolder(parentId, name);
-}
-
-
-/** Verify OAuth account can read the parent folder (full drive scope required). */
-export async function assertParentFolderAccessible(parentId?: string): Promise<{
-  id: string;
-  name: string;
-  accountEmail?: string;
-}> {
-  const parent = parentId || driveParentFolderId();
-  if (!isDriveConfigured()) {
-    throw new Error(
-      "Google Drive is not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN (with Drive access).",
-    );
-  }
-
-  const gmailTok = env("GMAIL_REFRESH_TOKEN");
-  const driveTok = env("GOOGLE_DRIVE_REFRESH_TOKEN");
-  const attempts: { label: string; prefer: "gmail" | "drive" }[] = [];
-  if (gmailTok) attempts.push({ label: "GMAIL_REFRESH_TOKEN", prefer: "gmail" });
-  if (driveTok && driveTok !== gmailTok) {
-    attempts.push({ label: "GOOGLE_DRIVE_REFRESH_TOKEN", prefer: "drive" });
-  } else if (driveTok && !gmailTok) {
-    attempts.push({ label: "GOOGLE_DRIVE_REFRESH_TOKEN", prefer: "drive" });
-  }
-  if (attempts.length === 0) {
-    throw new Error(
-      "No Drive refresh token set (GMAIL_REFRESH_TOKEN / GOOGLE_DRIVE_REFRESH_TOKEN).",
-    );
-  }
-
-  let lastError = "";
-  let accountEmail: string | undefined;
-
-  for (const attempt of attempts) {
-    try {
-      const drive = driveClient(attempt.prefer);
-      try {
-        const about = await drive.about.get({
-          fields: "user(emailAddress,displayName)",
-        });
-        accountEmail = about.data.user?.emailAddress || undefined;
-      } catch {
-        /* optional */
-      }
-      const meta = await drive.files.get({
-        fileId: parent,
-        fields: "id, name, mimeType, capabilities",
-        supportsAllDrives: true,
-      });
-      return {
-        id: parent,
-        name: meta.data.name || parent,
-        accountEmail,
-      };
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : String(e);
-    }
-  }
-
-  const who =
-    accountEmail ||
-    "the Google account used for OAuth (usually client@paulmotorcompany.com)";
-  if (/not found|404|File not found/i.test(lastError)) {
-    throw new Error(
-      `Drive parent folder not found for ${who}. Folder id: ${parent}. ` +
-        `Fix: (1) Open the folder while logged in as ${who}. ` +
-        `(2) Share the folder with ${who} as Editor if needed. ` +
-        `(3) Re-run OAuth with FULL Drive scope (https://www.googleapis.com/auth/drive, not drive.file only) as ${who}, ` +
-        `update GMAIL_REFRESH_TOKEN + GOOGLE_DRIVE_REFRESH_TOKEN in Vercel, Redeploy. ` +
-        `Google returns "File not found" when the token cannot see the folder (scope or sharing).`,
-    );
-  }
-  throw new Error(
-    `Cannot open Drive parent folder ${parent} as ${who}: ${lastError.slice(0, 300)}`,
-  );
-}
-
 /** YEAR / Month / deal folder under parent.
+ * Path: parent / 0. SALES - ALL / 2026 / August 2026 / deal
  * Month folders match existing Drive convention: "August 2026"
  * (also reuses "08-August" or similar if already present).
  */
@@ -181,6 +8,7 @@ export async function ensureDealFolder(params: {
   monthIndex: number; // 0-11
   folderName: string;
 }): Promise<{ folderId: string; folderUrl: string; path: string }> {
+  const SALES_FOLDER = "0. SALES - ALL";
   const monthLong = [
     "January",
     "February",
@@ -210,9 +38,56 @@ export async function ensureDealFolder(params: {
   // Fail fast with a clear message if the OAuth account cannot see the parent.
   await assertParentFolderAccessible(root);
 
-  let yearId = await findChildFolder(root, yearName);
-  if (!yearId) yearId = await findChildFolder(root, `Year ${yearName}`);
-  if (!yearId) yearId = await createFolder(root, yearName);
+  // parent / 0. SALES - ALL / …
+  const salesAliases = [
+    SALES_FOLDER,
+    "0. SALES-ALL",
+    "0.SALES - ALL",
+    "SALES - ALL",
+    "SALES",
+  ];
+  let salesId: string | null = null;
+  let salesNameUsed = SALES_FOLDER;
+  for (const alias of salesAliases) {
+    const found = await findChildFolder(root, alias);
+    if (found) {
+      salesId = found;
+      salesNameUsed = alias;
+      break;
+    }
+  }
+  if (!salesId) {
+    // Case-insensitive scan for a SALES folder under parent
+    const drive = driveClient();
+    const listed = await drive.files.list({
+      q: `'${root}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`,
+      fields: "files(id, name)",
+      pageSize: 100,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    const hit = (listed.data.files || []).find((f) => {
+      const n = (f.name || "").toLowerCase().trim();
+      return (
+        n === SALES_FOLDER.toLowerCase() ||
+        n.includes("sales - all") ||
+        n === "sales" ||
+        (n.includes("sales") && n.includes("0."))
+      );
+    });
+    if (hit?.id) {
+      salesId = hit.id;
+      salesNameUsed = hit.name || SALES_FOLDER;
+    }
+  }
+  if (!salesId) {
+    salesId = await createFolder(root, SALES_FOLDER);
+    salesNameUsed = SALES_FOLDER;
+  }
+
+  let yearId = await findChildFolder(salesId, yearName);
+  if (!yearId) yearId = await findChildFolder(salesId, `Year ${yearName}`);
+  if (!yearId) yearId = await createFolder(salesId, yearName);
 
   let monthId: string | null = null;
   let monthNameUsed = preferredMonth;
@@ -265,174 +140,6 @@ export async function ensureDealFolder(params: {
     folderUrl:
       meta.data.webViewLink ||
       `https://drive.google.com/drive/folders/${dealId}`,
-    path: `${yearName}/${monthNameUsed}/${params.folderName}`,
+    path: `${salesNameUsed}/${yearName}/${monthNameUsed}/${params.folderName}`,
   };
-}
-
-export async function uploadFileToFolder(params: {
-  folderId: string;
-  fileName: string;
-  mimeType: string;
-  /** raw base64 (no data: prefix) or full data URL */
-  data: string;
-}): Promise<{ fileId: string; fileUrl: string }> {
-  const drive = driveClient();
-  let b64 = params.data;
-  if (b64.startsWith("data:")) {
-    b64 = b64.split(",")[1] || "";
-  }
-  const body = Buffer.from(b64, "base64");
-  const res = await drive.files.create({
-    requestBody: {
-      name: params.fileName,
-      parents: [params.folderId],
-    },
-    media: {
-      mimeType: params.mimeType,
-      body: ReadableFrom(body),
-    },
-    fields: "id, webViewLink",
-    supportsAllDrives: true,
-  });
-  if (!res.data.id) throw new Error("Drive file upload failed");
-  return {
-    fileId: res.data.id,
-    fileUrl:
-      res.data.webViewLink ||
-      `https://drive.google.com/file/d/${res.data.id}/view`,
-  };
-}
-
-/** Minimal readable stream from Buffer without importing stream types awkwardly. */
-function ReadableFrom(buf: Buffer) {
-  return Readable.from(buf);
-}
-
-export function buildDealFolderName(parts: {
-  year: number | null | undefined;
-  make: string;
-  model: string;
-  trim: string;
-  lessee: string;
-  guarantor: string;
-}): string {
-  const vehicle = [parts.year, parts.make, parts.model, parts.trim]
-    .map((x) => (x == null ? "" : String(x).trim()))
-    .filter(Boolean)
-    .join(" ");
-  const lessee = (parts.lessee || "Client").trim();
-  const guar = (parts.guarantor || "").trim();
-  const right =
-    guar && guar.toUpperCase() !== "N/A" ? `${lessee} (${guar})` : lessee;
-  return `${vehicle || "Vehicle"} - ${right}`.replace(/\s+/g, " ").trim();
-}
-
-export function buildQuotePdfFileName(parts: {
-  quoteDate: string;
-  clientName: string;
-  option: number;
-  stock?: string;
-  year?: number | null;
-  make?: string;
-  model?: string;
-}): string {
-  // Short, unique names: PMC_YYMMDD_Last_OptN.pdf (or stock if present)
-  const d = (parts.quoteDate || new Date().toISOString().slice(0, 10)).replace(
-    /[^0-9]/g,
-    "",
-  );
-  const yymmdd = d.length >= 8 ? d.slice(2, 8) : d.slice(-6);
-  const last = (parts.clientName || "Client")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(-1)[0] || "Client";
-  const client = last.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "Client";
-  const stock = parts.stock
-    ? parts.stock.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 10)
-    : "";
-  if (stock) return `PMC_${yymmdd}_${stock}_O${parts.option}.pdf`;
-  return `PMC_${yymmdd}_${client}_O${parts.option}.pdf`;
-}
-
-export async function probeDrive(): Promise<{
-  ok: boolean;
-  error?: string;
-  parentId?: string;
-  parentName?: string;
-  accountEmail?: string;
-  tokenUsed?: string;
-}> {
-  try {
-    if (!isDriveConfigured()) {
-      return { ok: false, error: "missing_oauth_env" };
-    }
-    const parent = driveParentFolderId();
-    const gmailTok = env("GMAIL_REFRESH_TOKEN");
-    const driveTok = env("GOOGLE_DRIVE_REFRESH_TOKEN");
-    const attempts: { label: string; prefer: "gmail" | "drive" }[] = [];
-    if (gmailTok) attempts.push({ label: "GMAIL_REFRESH_TOKEN", prefer: "gmail" });
-    if (driveTok && driveTok !== gmailTok) {
-      attempts.push({ label: "GOOGLE_DRIVE_REFRESH_TOKEN", prefer: "drive" });
-    } else if (driveTok && !gmailTok) {
-      attempts.push({ label: "GOOGLE_DRIVE_REFRESH_TOKEN", prefer: "drive" });
-    }
-    if (attempts.length === 0) {
-      return { ok: false, error: "missing_oauth_env", parentId: parent };
-    }
-
-    let lastError = "";
-    let accountEmail: string | undefined;
-    let tokenUsed: string | undefined;
-
-    for (const attempt of attempts) {
-      try {
-        const drive = driveClient(attempt.prefer);
-        tokenUsed = attempt.label;
-        try {
-          const about = await drive.about.get({
-            fields: "user(emailAddress,displayName)",
-          });
-          accountEmail = about.data.user?.emailAddress || undefined;
-        } catch {
-          /* optional */
-        }
-        const meta = await drive.files.get({
-          fileId: parent,
-          fields: "id, name, mimeType, driveId",
-          supportsAllDrives: true,
-        });
-        return {
-          ok: true,
-          parentId: parent,
-          parentName: meta.data.name || undefined,
-          accountEmail,
-          tokenUsed,
-        };
-      } catch (e) {
-        lastError = e instanceof Error ? e.message : String(e);
-      }
-    }
-
-    let hint = lastError;
-    if (/not found|404|File not found/i.test(lastError)) {
-      hint =
-        `Parent folder ${parent} not visible to the OAuth account` +
-        (accountEmail ? ` (${accountEmail})` : " (unknown email)") +
-        ". Share with client@ as Editor; use full Drive scope; align GMAIL_REFRESH_TOKEN and GOOGLE_DRIVE_REFRESH_TOKEN.";
-    }
-    return {
-      ok: false,
-      error: hint,
-      parentId: parent,
-      accountEmail,
-      tokenUsed,
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      error: e instanceof Error ? e.message : String(e),
-      parentId: driveParentFolderId(),
-    };
-  }
 }
