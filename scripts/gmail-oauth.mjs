@@ -29,8 +29,11 @@ if (!clientId || !clientSecret) {
 const REDIRECT = "http://127.0.0.1:53682/oauth2callback";
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/drive.file",
+  // Full Drive (not drive.file): app must create folders under an existing company parent
+  // that was not created by this OAuth client. drive.file cannot see that parent.
+  "https://www.googleapis.com/auth/drive",
 ];
+
 
 const oauth2 = new google.auth.OAuth2(clientId, clientSecret, REDIRECT);
 const url = oauth2.generateAuthUrl({
