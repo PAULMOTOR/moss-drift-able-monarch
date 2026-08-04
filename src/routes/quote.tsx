@@ -869,6 +869,7 @@ function QuotePage() {
                 <Row label="Deposit %" value={`${o.depositPct.toFixed(1)}%`} />
                 <Row label="Residual %" value={`${o.residualPct.toFixed(1)}%`} />
                 <Row label="Int. rate" value={`${o.ratePct.toFixed(2)}%`} />
+                <Row label="Yield %" value={`${o.yieldPct.toFixed(2)}%`} bold />
                 <Row label="Depreciation" value={formatMoney(o.depreciation)} />
                 <Row label="Interest" value={formatMoney(o.interest)} />
                 <Row label="Lease payment" value={formatMoney(o.payment)} bold />
