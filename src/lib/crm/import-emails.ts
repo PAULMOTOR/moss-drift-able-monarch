@@ -16,6 +16,21 @@ import {
 } from "./gmail";
 import type { LeadType } from "./types";
 
+
+async function resolveLucasProfileId(sql: Sql): Promise<string | null> {
+  const rows = await sql<{ id: string }>`
+    select id from profiles
+    where active = true
+      and (
+        lower(email) = 'lucasl@paulmotorcompany.com'
+        or lower(name) like 'lucas%'
+      )
+    order by case when lower(email) = 'lucasl@paulmotorcompany.com' then 0 else 1 end
+    limit 1
+  `;
+  return rows[0]?.id ?? null;
+}
+
 function uid() {
   return crypto.randomUUID();
 }
@@ -316,6 +331,7 @@ async function processMessage(
   }
 
   const leadId = uid();
+  const lucasId = leadType === "inventory" ? await resolveLucasProfileId(sql) : null;
   await sql`
     insert into leads (
       id, name, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
@@ -331,7 +347,7 @@ async function processMessage(
       ${notes},
       ${vehicle || null},
       ${inv?.id ?? null},
-      null,
+      ${lucasId},
       'new',
       now(),
       false,

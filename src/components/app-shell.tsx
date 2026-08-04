@@ -29,7 +29,6 @@ const baseNav = [
   { to: "/pipeline", label: "Pipeline", icon: Columns3 },
   { to: "/quote", label: "Lease quote", icon: Calculator },
   { to: "/inventory", label: "Inventory", icon: Package },
-  { to: "/data-analysis", label: "Data analysis", icon: BarChart3 },
   { to: "/help", label: "Help", icon: HelpCircle },
 ] as const;
 
@@ -46,7 +45,10 @@ export function AppShell({
   const nav = [
     ...baseNav,
     ...(profile.role === "admin"
-      ? ([{ to: "/admin", label: "Admin", icon: Shield, primary: false }] as const)
+      ? ([
+          { to: "/data-analysis", label: "Data analysis", icon: BarChart3, primary: false },
+          { to: "/admin", label: "Admin", icon: Shield, primary: false },
+        ] as const)
       : []),
   ];
 

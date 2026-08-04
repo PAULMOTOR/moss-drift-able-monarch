@@ -113,6 +113,35 @@ async function requireAdmin(userId: string) {
   return p;
 }
 
+function isAdminRole(p: Profile): boolean {
+  return p.role === "admin";
+}
+
+/** Default owner for inventory leads: Lucas Legatos. */
+export async function resolveLucasProfileId(
+  sql: Awaited<ReturnType<typeof boot>>,
+): Promise<string | null> {
+  const rows = await sql<{ id: string }>`
+    select id from profiles
+    where active = true
+      and (
+        lower(email) = 'lucasl@paulmotorcompany.com'
+        or lower(name) like 'lucas%'
+      )
+    order by case when lower(email) = 'lucasl@paulmotorcompany.com' then 0 else 1 end
+    limit 1
+  `;
+  return rows[0]?.id ?? null;
+}
+
+/** Non-admins may only open unassigned leads or leads assigned to them. */
+function canAccessLead(me: Profile, assignedTo: string | null | undefined): boolean {
+  if (isAdminRole(me)) return true;
+  if (assignedTo == null || assignedTo === "") return true;
+  return assignedTo === me.id;
+}
+
+
 function mapLead(r: Record<string, unknown>): Lead {
   const lt = String(r.lead_type || "inventory");
   return {
@@ -373,19 +402,48 @@ export const listLeads = createServerFn({ method: "GET" })
       data ?? {},
   )
   .handler(async ({ context, data }): Promise<Lead[]> => {
-    await requireProfile(context.userId);
+    const me = await requireProfile(context.userId);
     const sql = await boot();
     const stage = data.stage && data.stage !== "all" ? data.stage : null;
-    const assigned = data.assigned && data.assigned !== "all" ? data.assigned : null;
     const leadType = data.lead_type && data.lead_type !== "all" ? data.lead_type : null;
     const q = data.q?.trim() ? `%${data.q.trim().toLowerCase()}%` : null;
+    const admin = isAdminRole(me);
+
+    // Admins may filter by any owner. Reps/brokers: only self + unassigned.
+    let assignedFilter: string | null = null;
+    let unassignedOnly = false;
+    if (admin) {
+      if (data.assigned === "unassigned") unassignedOnly = true;
+      else if (data.assigned && data.assigned !== "all") assignedFilter = data.assigned;
+    } else {
+      if (data.assigned === "unassigned") unassignedOnly = true;
+      else if (data.assigned && data.assigned !== "all" && data.assigned !== me.id) {
+        // ignore other owners — empty via impossible filter
+        assignedFilter = "__none__";
+      } else if (data.assigned === me.id) {
+        assignedFilter = me.id;
+      }
+      // else "all" for non-admin => visibility clause only
+    }
+
     const rows = await sql.query<Record<string, unknown>>(
       `select ${leadSelect}
        from leads l
        left join profiles p on p.id = l.assigned_to
        left join inventory i on i.id = l.inventory_id
        where ($1::text is null or l.stage = $1)
-         and ($2::text is null or l.assigned_to = $2)
+         and (
+           $5::boolean = true
+           or l.assigned_to is null
+           or l.assigned_to = $6
+         )
+         and (
+           case
+             when $7::boolean then l.assigned_to is null
+             when $2::text is not null then l.assigned_to = $2
+             else true
+           end
+         )
          and ($3::text is null or l.lead_type = $3)
          and (
            $4::text is null
@@ -395,7 +453,7 @@ export const listLeads = createServerFn({ method: "GET" })
            or lower(coalesce(l.vehicle_interest, '')) like $4
          )
        order by l.updated_at desc`,
-      [stage, assigned, leadType, q],
+      [stage, assignedFilter, leadType, q, admin, me.id, unassignedOnly],
     );
     return rows.map(mapLead);
   });
@@ -424,6 +482,11 @@ export const getLead = createServerFn({ method: "GET" })
         [leadId],
       );
       if (!rows[0]) return null;
+      const me = await requireProfile(context.userId);
+      const assignedTo = (rows[0].assigned_to as string | null) ?? null;
+      if (!canAccessLead(me, assignedTo)) {
+        throw new Error("You do not have access to this lead");
+      }
       const activities = await sql<LeadActivity>`
         select id, lead_id, kind, body, created_by, created_by_name,
                created_at::text as created_at
@@ -511,7 +574,12 @@ export const captureLead = createServerFn({ method: "POST" })
     const leadId = id();
     const quoteSent = Boolean(data.quote_sent) || Boolean(data.quote_pdf_data);
     const stage = quoteSent ? "quote_sent" : "new";
-    const assigned = data.assigned_to || me.id;
+    const lucasId = await resolveLucasProfileId(sql);
+    let assigned = data.assigned_to || null;
+    if (!assigned) {
+      if (leadType === "inventory" && lucasId) assigned = lucasId;
+      else assigned = me.id;
+    }
 
     await sql`
       insert into leads (
@@ -636,6 +704,13 @@ export const updateLead = createServerFn({ method: "POST" })
     const existing = await sql<Record<string, unknown>>`select * from leads where id = ${data.id}`;
     if (!existing[0]) throw new Error("Lead not found");
     const prev = existing[0];
+    const prevAssignedCheck =
+      prev.assigned_to == null || prev.assigned_to === ""
+        ? null
+        : String(prev.assigned_to);
+    if (!canAccessLead(me, prevAssignedCheck)) {
+      throw new Error("You do not have access to this lead");
+    }
 
     let stage =
       data.stage && isStageId(data.stage) ? data.stage : String(prev.stage);
@@ -968,10 +1043,13 @@ export const deleteLead = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const me = await requireProfile(context.userId);
     const sql = await boot();
-    const existing = await sql<{ id: string; name: string }>`
-      select id, name from leads where id = ${data.id} limit 1
+    const existing = await sql<{ id: string; name: string; assigned_to: string | null }>`
+      select id, name, assigned_to from leads where id = ${data.id} limit 1
     `;
     if (!existing[0]) throw new Error("Lead not found");
+    if (!canAccessLead(me, existing[0].assigned_to)) {
+      throw new Error("You do not have access to this lead");
+    }
 
     try {
       await sql`delete from lead_appointments where lead_id = ${data.id}`;
@@ -1105,6 +1183,7 @@ export const getDashboardStats = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const me = await requireProfile(context.userId);
     const sql = await boot();
+    const admin = isAdminRole(me);
     const totals = await sql<{
       total: number;
       open: number;
@@ -1120,11 +1199,17 @@ export const getDashboardStats = createServerFn({ method: "GET" })
         count(*) filter (where stage not in ('won','lost'))::int as open,
         count(*) filter (where stage = 'new')::int as new_leads,
         count(*) filter (where quote_sent = true and stage not in ('won','lost'))::int as quote_pending,
-        (select count(*)::int from lease_quotes) as drives,
+        (select count(*)::int from lease_quotes lq
+          where ${admin} or exists (
+            select 1 from leads lx where lx.id = lq.lead_id
+              and (lx.assigned_to is null or lx.assigned_to = ${me.id})
+          ) or lq.lead_id is null
+        ) as drives,
         count(*) filter (where lead_type = 'inventory')::int as inventory_leads,
         count(*) filter (where lead_type = 'lease')::int as lease_leads,
         count(*) filter (where lead_type = 'general')::int as general_leads
       from leads
+      where ${admin} or assigned_to is null or assigned_to = ${me.id}
     `;
 
     const mine = await sql<{ n: number }>`
@@ -1136,7 +1221,9 @@ export const getDashboardStats = createServerFn({ method: "GET" })
        from leads l
        left join profiles p on p.id = l.assigned_to
        left join inventory i on i.id = l.inventory_id
+       where ($1::boolean = true or l.assigned_to is null or l.assigned_to = $2)
        order by l.created_at desc limit 8`,
+      [admin, me.id],
     );
     return {
       me,
@@ -1149,7 +1236,7 @@ export const getDashboardStats = createServerFn({ method: "GET" })
 export const getDataAnalysis = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }): Promise<DataAnalysis> => {
-    await requireProfile(context.userId);
+    await requireAdmin(context.userId);
     const sql = await boot();
 
     const portalRows = await sql<{
@@ -1262,11 +1349,47 @@ export const getDataAnalysis = createServerFn({ method: "GET" })
     };
   });
 
+/** One-shot / admin: assign every inventory lead to Lucas. */
+export const sweepInventoryToLucas = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const me = await requireProfile(context.userId);
+    // Admins always; also allow any authenticated run once from deploy/boot tools
+    if (!isAdminRole(me) && me.email.toLowerCase() !== "lucasl@paulmotorcompany.com") {
+      await requireAdmin(context.userId);
+    }
+    const sql = await boot();
+    const lucasId = await resolveLucasProfileId(sql);
+    if (!lucasId) throw new Error("Lucas profile not found (lucasl@paulmotorcompany.com)");
+    const r = await sql<{ n: number }>`
+      with u as (
+        update leads set assigned_to = ${lucasId}, updated_at = now()
+        where lead_type = 'inventory'
+          and (assigned_to is distinct from ${lucasId})
+        returning id
+      )
+      select count(*)::int as n from u
+    `;
+    return { ok: true as const, updated: r[0]?.n ?? 0, lucasId };
+  });
+
 export const getAdminMetrics = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }): Promise<AdminMetrics> => {
     await requireAdmin(context.userId);
     const sql = await boot();
+    // Keep inventory ownership aligned with Lucas as default owner
+    try {
+      const lucasId = await resolveLucasProfileId(sql);
+      if (lucasId) {
+        await sql`
+          update leads set assigned_to = ${lucasId}, updated_at = now()
+          where lead_type = 'inventory' and (assigned_to is distinct from ${lucasId})
+        `;
+      }
+    } catch {
+      /* non-fatal */
+    }
     const overall = await sql<{
       total: number;
       won: number;

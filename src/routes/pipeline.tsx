@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { listLeads, listProfiles, updateLead } from "@/lib/crm/server";
+import { listLeads, listProfiles, updateLead, getMyProfile } from "@/lib/crm/server";
 import {
   STAGES,
   daysInStage,
@@ -34,24 +34,39 @@ export const Route = createFileRoute("/pipeline")({
 function PipelinePage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [me, setMe] = useState<Profile | null>(null);
   const [assigned, setAssigned] = useState("all");
   const [dragging, setDragging] = useState<string | null>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const boardRef = useRef<HTMLDivElement>(null);
   const update = useServerFn(updateLead);
+  const isAdmin = me?.role === "admin";
 
   async function load(filter = assigned) {
-    const [rows, people] = await Promise.all([
+    const [rows, people, profile] = await Promise.all([
       listLeads({ data: { assigned: filter } }),
       listProfiles({ data: {} }),
+      getMyProfile().catch(() => null),
     ]);
     setLeads(rows);
     setProfiles(people);
+    if (profile) setMe(profile);
   }
 
   useEffect(() => {
-    void load();
+    void (async () => {
+      const profile = await getMyProfile().catch(() => null);
+      if (profile) {
+        setMe(profile);
+        // Non-admins: own + unassigned only (server enforces; use "all" meaning visible scope)
+        const filter = profile.role === "admin" ? "all" : "all";
+        setAssigned(filter);
+        await load(filter);
+      } else {
+        await load();
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -122,28 +137,35 @@ function PipelinePage() {
     <>
       <PageHeader
         title="Pipeline"
-        description="Drag cards across stages. Filter by rep or broker. Use the arrows or scrollbar to move sideways."
+        description={
+          isAdmin
+            ? "Drag cards across stages. Filter by owner. Use the arrows or scrollbar to move sideways."
+            : "Your pipeline — leads assigned to you and unassigned leads you can claim."
+        }
         actions={
           <div className="flex flex-wrap gap-2">
-            <Select
-              value={assigned}
-              onValueChange={(v) => {
-                setAssigned(v);
-                void load(v);
-              }}
-            >
-              <SelectTrigger className="w-44">
-                <SelectValue placeholder="Owner" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All owners</SelectItem>
-                {profiles.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {isAdmin ? (
+              <Select
+                value={assigned}
+                onValueChange={(v) => {
+                  setAssigned(v);
+                  void load(v);
+                }}
+              >
+                <SelectTrigger className="w-44">
+                  <SelectValue placeholder="Owner" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All owners</SelectItem>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  {profiles.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
             <Button asChild>
               <Link to="/capture">
                 <Zap className="size-4" />

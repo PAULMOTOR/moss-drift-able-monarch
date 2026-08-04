@@ -18,9 +18,24 @@ export const Route = createFileRoute("/data-analysis")({
 function DataAnalysisPage() {
   const [data, setData] = useState<DataAnalysis | null>(null);
 
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
-    void getDataAnalysis().then(setData).catch(console.error);
+    void getDataAnalysis()
+      .then(setData)
+      .catch((e) => setError(e instanceof Error ? e.message : "Access denied"));
   }, []);
+
+  if (error) {
+    return (
+      <div className="rounded-sm border border-border bg-card p-8 text-center">
+        <p className="font-semibold">Admin only</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Data analysis is restricted to administrators.
+        </p>
+      </div>
+    );
+  }
 
   if (!data) {
     return <div className="h-48 animate-pulse rounded-2xl bg-muted" />;
