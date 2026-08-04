@@ -45,6 +45,8 @@ export type LeaseOptionResult = LeaseOptionInput & {
   financed: number;
   depositPct: number;
   residualPct: number;
+  /** Effective annual yield % (Excel RATE on payment incl. handling) — interest + handling combined. */
+  yieldPct: number;
   depreciation: number;
   interest: number;
   payment: number;
@@ -117,6 +119,30 @@ export function pmt(rate: number, nper: number, pv: number, fv = 0): number {
   if (Math.abs(rate) < 1e-15) return -(pv + fv) / nper;
   const pow = Math.pow(1 + rate, nper);
   return -((rate * (pv * pow + fv)) / (pow - 1));
+}
+
+/**
+ * Excel RATE-style inverse of PMT — annual yield % implied by a payment that
+ * already includes handling (so yield > contract rate when handling > 0).
+ * Matches sheet “Yield” as interest + handling combined into an effective rate.
+ */
+export function yieldPctFromPayment(
+  termMonths: number,
+  payment: number,
+  financed: number,
+  residual: number,
+): number {
+  if (termMonths <= 0 || payment <= 0 || financed <= 0) return 0;
+  // Binary search monthly rate r where pmt(r, n, -financed, residual) ≈ payment
+  let lo = 0;
+  let hi = 0.5; // 50% monthly cap
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    const calc = pmt(mid, termMonths, -financed, residual);
+    if (calc > payment) hi = mid;
+    else lo = mid;
+  }
+  return round2(lo * 12 * 100);
 }
 
 export function suggestHandling(cost: number, extra: number, profit: number): number {
@@ -195,6 +221,8 @@ export function calcLeaseOption(
   const payment = round2(basePmt + handling);
   const depreciation = round2((financed - residual) / termMonths);
   const interest = round2(payment - depreciation - handling);
+  // Yield = effective annual rate of the full payment (interest rate + handling)
+  const yieldPct = yieldPctFromPayment(termMonths, payment, financed, residual);
   const taxOnPayment = round2(payment * taxRate);
   const totalPayment = round2(payment + taxOnPayment);
 
@@ -247,6 +275,7 @@ export function calcLeaseOption(
     financed,
     depositPct,
     residualPct,
+    yieldPct,
     depreciation,
     interest,
     payment,
@@ -336,10 +365,11 @@ export function buildRetailQuoteHtml(
         <table>
           <tr><td>Price</td><td class="num">${formatMoney(o.cost + o.extra + o.profit)}</td></tr>
           <tr><td>Trade-In</td><td class="num">${formatMoney(o.tradeIn)}</td></tr>
-          <tr><td>Cash-down</td><td class="num">${formatMoney(o.deposit)}</td></tr>
+          <tr><td>Cash-down</td><td class="num">${formatMoney(o.deposit)} <span class="pct">(${o.depositPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Term</td><td class="num">${o.termMonths} mo</td></tr>
-          <tr><td>Residual</td><td class="num">${formatMoney(o.residual)}</td></tr>
+          <tr><td>Residual</td><td class="num">${formatMoney(o.residual)} <span class="pct">(${o.residualPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Int. Rate</td><td class="num">${o.ratePct.toFixed(2)}%</td></tr>
+          <tr><td>Yield</td><td class="num">${o.yieldPct.toFixed(2)}%</td></tr>
           <tr><td>Lease Payment</td><td class="num">${formatMoney(o.payment)}</td></tr>
           <tr><td>Taxes</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
           <tr class="total"><td>Total Payment</td><td class="num">${formatMoney(o.totalPayment)}</td></tr>
@@ -389,6 +419,7 @@ export function buildRetailQuoteHtml(
   td { padding: 3px 0; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   tr.total td { font-weight: 700; border-top: 1px solid #edebe9; padding-top: 8px; }
+  .pct { color: #605e5c; font-size: 11px; font-weight: 400; }
   .smallprint { font-size: 10px; color: #605e5c; margin: 8px 0 0; line-height: 1.35; }
   footer { margin-top: 28px; font-size: 11px; color: #605e5c; border-top: 1px solid #edebe9; padding-top: 12px; }
   @media print {

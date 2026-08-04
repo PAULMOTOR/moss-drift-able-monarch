@@ -34,6 +34,7 @@ export function onlyAcceptedOptions(
           proRata: 0,
           dueSubtotal: 0,
           dueTax: 0,
+          yieldPct: 0,
         },
   );
 }
@@ -169,7 +170,7 @@ export async function buildRetailQuotePdf(
 
   const singleMode = Boolean(acceptedOption) && active.length === 1;
   const boxW = singleMode ? Math.min(contentW, 320) : (contentW - 16) / 2;
-  const boxH = 210;
+  const boxH = 230;
 
   function drawOption(num: number, x: number, top: number) {
     const found = active.find((a) => a.i === num);
@@ -195,10 +196,11 @@ export async function buildRetailQuotePdf(
     const lines: [string, string, boolean?][] = [
       ["Price", money(o.cost + o.extra + o.profit)],
       ["Trade-In", money(o.tradeIn)],
-      ["Cash-down", money(o.deposit)],
+      ["Cash-down", `${money(o.deposit)} (${o.depositPct.toFixed(1)}%)`],
       ["Term", `${o.termMonths} mo`],
-      ["Residual", money(o.residual)],
+      ["Residual", `${money(o.residual)} (${o.residualPct.toFixed(1)}%)`],
       ["Int. Rate", `${o.ratePct.toFixed(2)}%`],
+      ["Yield", `${o.yieldPct.toFixed(2)}%`, true],
       ["Lease Payment", money(o.payment)],
       ["Taxes", money(o.taxOnPayment)],
       ["Total Payment", money(o.totalPayment), true],
