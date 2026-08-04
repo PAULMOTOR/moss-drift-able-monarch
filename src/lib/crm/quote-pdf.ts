@@ -3,26 +3,9 @@
  * When acceptedOption is set, only that option is drawn (Drive / accepted packet).
  */
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
 import type { ClientQuoteInfo, LeaseOptionResult } from "./lease-quote";
 import { formatMoney } from "./lease-quote";
-
-function loadLogoBytes(): Uint8Array | null {
-  const candidates = [
-    join(process.cwd(), "public", "palmetto-logo.jpg"),
-    join(process.cwd(), "public", "palmetto.jpg"),
-    join(process.cwd(), "public", "palmetto.png"),
-  ];
-  for (const p of candidates) {
-    try {
-      if (existsSync(p)) return new Uint8Array(readFileSync(p));
-    } catch {
-      /* next */
-    }
-  }
-  return null;
-}
+import { palmettoLogoJpegBytes } from "./palmetto-logo-bytes";
 
 function money(n: number) {
   return formatMoney(n);
@@ -81,26 +64,22 @@ export async function buildRetailQuotePdf(
 
   let y = 750;
 
-  const logoBytes = loadLogoBytes();
+  // Logo top-left (embedded asset — works on Vercel)
   let textX = margin;
-  if (logoBytes) {
-    try {
-      const isPng = logoBytes[0] === 0x89;
-      const img = isPng
-        ? await doc.embedPng(logoBytes)
-        : await doc.embedJpg(logoBytes);
-      const logoH = 48;
-      const logoW = (img.width / img.height) * logoH;
-      page.drawImage(img, {
-        x: margin,
-        y: y - logoH + 8,
-        width: logoW,
-        height: logoH,
-      });
-      textX = margin + logoW + 12;
-    } catch {
-      /* skip logo */
-    }
+  try {
+    const logoBytes = palmettoLogoJpegBytes();
+    const img = await doc.embedJpg(logoBytes);
+    const logoH = 52;
+    const logoW = (img.width / img.height) * logoH;
+    page.drawImage(img, {
+      x: margin,
+      y: y - logoH + 6,
+      width: logoW,
+      height: logoH,
+    });
+    textX = margin + logoW + 14;
+  } catch (e) {
+    console.error("[quote-pdf] logo embed failed", e);
   }
 
   const mainTitle = acceptedOption
@@ -109,7 +88,7 @@ export async function buildRetailQuotePdf(
   page.drawText(mainTitle, {
     x: textX,
     y: y - 8,
-    size: acceptedOption ? 14 : 18,
+    size: acceptedOption ? 13 : 18,
     font: fontBold,
     color: teal,
   });
@@ -124,7 +103,7 @@ export async function buildRetailQuotePdf(
     },
   );
 
-  y -= 56;
+  y -= 62;
   page.drawLine({
     start: { x: margin, y },
     end: { x: pageW - margin, y },
@@ -188,7 +167,6 @@ export async function buildRetailQuotePdf(
     .map((o, i) => ({ o, i: i + 1 }))
     .filter(({ o }) => o.cost > 0 || o.payment > 0);
 
-  // Single accepted option: full width; multi: 2-col grid
   const singleMode = Boolean(acceptedOption) && active.length === 1;
   const boxW = singleMode ? Math.min(contentW, 320) : (contentW - 16) / 2;
   const boxH = 210;
@@ -205,7 +183,8 @@ export async function buildRetailQuotePdf(
       borderColor: rgb(0.78, 0.77, 0.77),
       borderWidth: 0.8,
     });
-    const heading = acceptedOption === num ? `Option ${num} — ACCEPTED` : `Option ${num}`;
+    const heading =
+      acceptedOption === num ? `Option ${num} — ACCEPTED` : `Option ${num}`;
     page.drawText(heading, {
       x: x + 10,
       y: top - 16,
