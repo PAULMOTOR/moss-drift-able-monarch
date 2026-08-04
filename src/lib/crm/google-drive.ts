@@ -10,7 +10,7 @@ function env(key: string): string | undefined {
 export function driveParentFolderId(): string {
   return (
     env("GOOGLE_DRIVE_PARENT_FOLDER_ID") ||
-    "1i1GWsg6P_Va5yfyScVfFLmgcP9ruHvCL"
+    "1-z1m4cfJdCacDqjMQYf3PlW2kPqJxnlU"
   );
 }
 
