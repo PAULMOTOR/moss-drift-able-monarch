@@ -51,9 +51,12 @@ async function makeQuotePdfData(
   client: ClientQuoteInfo,
   options: LeaseOptionResult[],
   taxRate: number,
+  opts?: { acceptedOption?: number | null },
 ): Promise<string> {
   const { buildRetailQuotePdf, pdfDataUrl } = await import("./quote-pdf");
-  const buf = await buildRetailQuotePdf(client, options, taxRate);
+  const buf = await buildRetailQuotePdf(client, options, taxRate, {
+    acceptedOption: opts?.acceptedOption ?? null,
+  });
   return pdfDataUrl(buf);
 }
 
@@ -1822,7 +1825,9 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
       make: payload.client.make,
       model: payload.client.model,
     });
-    const pdfData = await makeQuotePdfData(payload.client, payload.options, taxRate);
+    const pdfData = await makeQuotePdfData(payload.client, payload.options, taxRate, {
+      acceptedOption: data.optionNumber,
+    });
 
     await sql`
       update lease_quotes set
@@ -2008,27 +2013,20 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       make: client.make,
       model: client.model,
     });
+    // Always rebuild Drive PDF with ONLY the accepted option (never all 3).
+    const taxRate = taxRateForProvince(client.province || "QC");
+    const pdfData = await makeQuotePdfData(client, payload.options, taxRate, {
+      acceptedOption: optNum,
+    });
+    const mimeType = "application/pdf";
+    await sql`
+      update lease_quotes set
+        pdf_name = ${fileName},
+        pdf_data = ${pdfData},
+        updated_at = now()
+      where id = ${quoteId}
+    `;
     let fileMeta: { fileId: string; fileUrl: string } | null = null;
-    // Prefer real PDF already stored; regenerate from payload if old HTML quotes
-    let pdfData = quote.pdf_data;
-    let mimeType = "application/pdf";
-    if (pdfData?.startsWith("data:text/html") || !pdfData) {
-      pdfData = await makeQuotePdfData(
-        client,
-        payload.options,
-        taxRateForProvince(client.province || "QC"),
-      );
-      mimeType = "application/pdf";
-      await sql`
-        update lease_quotes set
-          pdf_name = ${fileName},
-          pdf_data = ${pdfData},
-          updated_at = now()
-        where id = ${quoteId}
-      `;
-    } else if (pdfData.startsWith("data:application/pdf")) {
-      mimeType = "application/pdf";
-    }
     if (pdfData) {
       fileMeta = await uploadFileToFolder({
         folderId: folder.folderId,

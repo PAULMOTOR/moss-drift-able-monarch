@@ -1,5 +1,6 @@
 /**
  * Generate a real PDF buffer for a Paul Motor lease quote (pdf-lib — pure JS, Vercel-safe).
+ * When acceptedOption is set, only that option is drawn (Drive / accepted packet).
  */
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { readFileSync, existsSync } from "node:fs";
@@ -27,11 +28,45 @@ function money(n: number) {
   return formatMoney(n);
 }
 
+/** Zero out non-selected options so the multi-col filter hides them. */
+export function onlyAcceptedOptions(
+  options: LeaseOptionResult[],
+  acceptedOption: number,
+): LeaseOptionResult[] {
+  return options.map((o, i) =>
+    i === acceptedOption - 1
+      ? o
+      : {
+          ...o,
+          cost: 0,
+          extra: 0,
+          profit: 0,
+          tradeIn: 0,
+          deposit: 0,
+          residual: 0,
+          payment: 0,
+          taxOnPayment: 0,
+          totalPayment: 0,
+          dueTotal: 0,
+          proRata: 0,
+          dueSubtotal: 0,
+          dueTax: 0,
+        },
+  );
+}
+
 export async function buildRetailQuotePdf(
   client: ClientQuoteInfo,
   options: LeaseOptionResult[],
   _taxRate: number,
+  opts?: { acceptedOption?: number | null; titleSuffix?: string },
 ): Promise<Buffer> {
+  const acceptedOption = opts?.acceptedOption ?? null;
+  const drawOptions =
+    acceptedOption && acceptedOption >= 1 && acceptedOption <= 3
+      ? onlyAcceptedOptions(options, acceptedOption)
+      : options;
+
   const doc = await PDFDocument.create();
   const page = doc.addPage([612, 792]); // LETTER
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -46,7 +81,6 @@ export async function buildRetailQuotePdf(
 
   let y = 750;
 
-  // Logo
   const logoBytes = loadLogoBytes();
   let textX = margin;
   if (logoBytes) {
@@ -69,15 +103,18 @@ export async function buildRetailQuotePdf(
     }
   }
 
-  page.drawText("LEASE QUOTE", {
+  const mainTitle = acceptedOption
+    ? `LEASE QUOTE — OPTION ${acceptedOption} ACCEPTED`
+    : "LEASE QUOTE";
+  page.drawText(mainTitle, {
     x: textX,
     y: y - 8,
-    size: 18,
+    size: acceptedOption ? 14 : 18,
     font: fontBold,
     color: teal,
   });
   page.drawText(
-    `PAUL MOTOR CO. · Valid for one week · ${client.quoteDate || ""}`,
+    `PAUL MOTOR CO. · Valid for one week · ${client.quoteDate || ""}${opts?.titleSuffix ? ` · ${opts.titleSuffix}` : ""}`,
     {
       x: textX,
       y: y - 26,
@@ -147,12 +184,14 @@ export async function buildRetailQuotePdf(
 
   y -= 8;
 
-  const active = options
+  const active = drawOptions
     .map((o, i) => ({ o, i: i + 1 }))
     .filter(({ o }) => o.cost > 0 || o.payment > 0);
 
-  const boxW = (contentW - 16) / 2;
-  const boxH = 195;
+  // Single accepted option: full width; multi: 2-col grid
+  const singleMode = Boolean(acceptedOption) && active.length === 1;
+  const boxW = singleMode ? Math.min(contentW, 320) : (contentW - 16) / 2;
+  const boxH = 210;
 
   function drawOption(num: number, x: number, top: number) {
     const found = active.find((a) => a.i === num);
@@ -166,7 +205,8 @@ export async function buildRetailQuotePdf(
       borderColor: rgb(0.78, 0.77, 0.77),
       borderWidth: 0.8,
     });
-    page.drawText(`Option ${num}`, {
+    const heading = acceptedOption === num ? `Option ${num} — ACCEPTED` : `Option ${num}`;
+    page.drawText(heading, {
       x: x + 10,
       y: top - 16,
       size: 11,
@@ -203,9 +243,9 @@ export async function buildRetailQuotePdf(
       });
       ly -= 13;
     }
-    if (num === 3) {
+    if (num === 3 || acceptedOption === num) {
       const note = `Rate/residual subject to credit approval. Valid one week. Excess km: ${money(client.excessKmFee)}/km over ${(client.kmPerYear || 0).toLocaleString("en-CA")} km/yr.`;
-      page.drawText(note.slice(0, 90), {
+      page.drawText(note.slice(0, 95), {
         x: x + 10,
         y: top - boxH + 22,
         size: 6.5,
@@ -213,23 +253,28 @@ export async function buildRetailQuotePdf(
         color: muted,
         maxWidth: boxW - 20,
       });
-      page.drawText(note.slice(90), {
-        x: x + 10,
-        y: top - boxH + 12,
-        size: 6.5,
-        font,
-        color: muted,
-        maxWidth: boxW - 20,
-      });
+      if (note.length > 95) {
+        page.drawText(note.slice(95), {
+          x: x + 10,
+          y: top - boxH + 12,
+          size: 6.5,
+          font,
+          color: muted,
+          maxWidth: boxW - 20,
+        });
+      }
     }
   }
 
   const optTop = y;
-  drawOption(1, margin, optTop);
-  drawOption(2, margin + boxW + 16, optTop);
-  drawOption(3, margin, optTop - boxH - 12);
+  if (singleMode && acceptedOption) {
+    drawOption(acceptedOption, margin, optTop);
+  } else {
+    drawOption(1, margin, optTop);
+    drawOption(2, margin + boxW + 16, optTop);
+    drawOption(3, margin, optTop - boxH - 12);
+  }
 
-  // Footer
   page.drawLine({
     start: { x: margin, y: 52 },
     end: { x: pageW - margin, y: 52 },
