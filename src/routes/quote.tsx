@@ -123,9 +123,9 @@ function QuotePage() {
   });
 
   const [options, setOptions] = useState<LeaseOptionInput[]>([
-    emptyOption({ termMonths: 24, ratePct: 6.99 }),
     emptyOption({ termMonths: 36, ratePct: 6.99 }),
-    emptyOption({ termMonths: 48, ratePct: 6.99 }),
+    emptyOption({ termMonths: 0, ratePct: 0 }), // clear by default — use Copy from left
+    emptyOption({ termMonths: 0, ratePct: 0 }),
   ]);
 
   async function refreshSaved(forLead = leadId) {
@@ -312,6 +312,27 @@ function QuotePage() {
       next[i] = merged;
       return next;
     });
+  }
+
+  /** Copy all inputs from the column immediately to the left (Opt2←Opt1, Opt3←Opt2). */
+  function copyFromLeft(i: number) {
+    if (i <= 0) return;
+    setOptions((prev) => {
+      const next = [...prev];
+      next[i] = { ...prev[i - 1] };
+      return next;
+    });
+    toast.success(`Option ${i + 1} copied from Option ${i}`);
+  }
+
+  /** Clear all variables on this option column. */
+  function clearOption(i: number) {
+    setOptions((prev) => {
+      const next = [...prev];
+      next[i] = emptyOption({ termMonths: 0, ratePct: 0 });
+      return next;
+    });
+    toast.message(`Option ${i + 1} cleared`);
   }
 
   async function onSave(asNew = true) {
@@ -625,11 +646,35 @@ function QuotePage() {
       <div className="mb-4 grid gap-3 lg:grid-cols-3">
         {calculated.map((o, i) => (
           <Card key={i}>
-            <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-semibold text-primary">
-                Option {i + 1}
-              </CardTitle>
-              <Calculator className="size-4 text-muted-foreground" />
+            <CardHeader className="space-y-2 pb-2">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm font-semibold text-primary">
+                  Option {i + 1}
+                </CardTitle>
+                <Calculator className="size-4 shrink-0 text-muted-foreground" />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {i > 0 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => copyFromLeft(i)}
+                  >
+                    Copy from left
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs text-muted-foreground"
+                  onClick={() => clearOption(i)}
+                >
+                  Clear
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-2">
               <MoneyField label="Cost / price" value={options[i].cost} onChange={(v) => patchOption(i, { cost: v })} />
