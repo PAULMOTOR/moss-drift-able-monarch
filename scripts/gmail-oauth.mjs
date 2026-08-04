@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 /**
- * One-time helper: get a Gmail OAuth refresh token for client@paulmotorcompany.com
+ * One-time helper: Gmail + Drive OAuth refresh token for client@paulmotorcompany.com
  *
  * Prerequisites:
- *  1. Google Cloud project with Gmail API enabled
- *  2. OAuth Client ID (Desktop app) — download client id + secret
+ *  1. Google Cloud project with Gmail API + Google Drive API enabled
+ *  2. OAuth Client ID (Desktop app) — client id + secret
+ *  3. Data Access scopes: gmail.readonly + drive.file
  *
- * Usage:
+ * Usage (on your Mac, in the repo folder):
  *   GMAIL_CLIENT_ID=xxx.apps.googleusercontent.com \
  *   GMAIL_CLIENT_SECRET=yyy \
  *   node scripts/gmail-oauth.mjs
  *
- * Then paste the code from the browser. Copy the printed refresh_token into Vercel.
+ * Sign in as client@paulmotorcompany.com when the browser asks.
+ * Copy the printed tokens into Vercel, then redeploy.
  */
 import { createServer } from "node:http";
 import { google } from "googleapis";
@@ -25,7 +27,10 @@ if (!clientId || !clientSecret) {
 }
 
 const REDIRECT = "http://127.0.0.1:53682/oauth2callback";
-const SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/drive.file",
+];
 
 const oauth2 = new google.auth.OAuth2(clientId, clientSecret, REDIRECT);
 const url = oauth2.generateAuthUrl({
@@ -36,9 +41,10 @@ const url = oauth2.generateAuthUrl({
   include_granted_scopes: true,
 });
 
-console.log("\n1. Open this URL in a browser (sign in as client@paulmotorcompany.com):\n");
+console.log("\n1. Open this URL in a browser.");
+console.log("   IMPORTANT: sign in as client@paulmotorcompany.com (not Jeremy).\n");
 console.log(url);
-console.log("\n2. Approve access. This script will capture the redirect automatically.\n");
+console.log("\n2. Approve Gmail + Drive. This script will capture the redirect automatically.\n");
 
 const server = createServer(async (req, res) => {
   try {
@@ -59,12 +65,20 @@ const server = createServer(async (req, res) => {
     res.end(
       "<h1>Success</h1><p>You can close this tab and return to the terminal.</p>",
     );
-    console.log("\n=== Paste these into Vercel Environment Variables ===\n");
+    console.log("\n=== Paste these into Vercel Environment Variables (Production) ===\n");
     console.log(`GMAIL_CLIENT_ID=${clientId}`);
     console.log(`GMAIL_CLIENT_SECRET=${clientSecret}`);
-    console.log(`GMAIL_REFRESH_TOKEN=${tokens.refresh_token || "(none — revoke access and retry with prompt=consent)"}`);
+    console.log(
+      `GMAIL_REFRESH_TOKEN=${tokens.refresh_token || "(none — revoke access at myaccount.google.com/permissions and retry)"}`,
+    );
+    console.log(
+      `GOOGLE_DRIVE_REFRESH_TOKEN=${tokens.refresh_token || "(same as above if one token)"}`,
+    );
     console.log(`GMAIL_USER=client@paulmotorcompany.com`);
-    console.log("\nAlso set a random CRON_SECRET (openssl rand -hex 24)\n");
+    console.log(
+      `GOOGLE_DRIVE_PARENT_FOLDER_ID=1i1GWsg6P_Va5yfyScVfFLmgcP9ruHvCL`,
+    );
+    console.log("\nThen Redeploy Production on Vercel.\n");
     server.close();
     process.exit(0);
   } catch (e) {
