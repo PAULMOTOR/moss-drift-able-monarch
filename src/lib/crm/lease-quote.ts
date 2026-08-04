@@ -380,7 +380,7 @@ export function buildRetailQuoteHtml(
           <tr><td>Residual</td><td class="num">${formatMoney(o.residual)} <span class="pct">(${o.residualPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Int. Rate</td><td class="num">${o.ratePct.toFixed(2)}%</td></tr>
           <tr><td>Lease Payment</td><td class="num">${formatMoney(o.payment)}</td></tr>
-          <tr><td>Taxes</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
+          <tr><td>Taxes (${escapeHtml((client.province || "QC").toUpperCase())})</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
           <tr class="total"><td>Total Payment</td><td class="num">${formatMoney(o.totalPayment)}</td></tr>
           <tr><td>Due on delivery</td><td class="num">${formatMoney(o.dueTotal)}</td></tr>
           <tr><td>Pro-rata (${o.daysLeftMonth}/${o.daysInMonth} d)</td><td class="num">${formatMoney(o.proRata)}</td></tr>
@@ -426,7 +426,7 @@ export function buildRetailQuoteHtml(
   .opt h3 { margin: 0 0 8px; font-size: 14px; color: #008272; font-weight: 700; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   td { padding: 3px 0; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num { text-align: left; font-variant-numeric: tabular-nums; }
   tr.total td { font-weight: 700; border-top: 1px solid #edebe9; padding-top: 8px; }
   .pct { color: #605e5c; font-size: 11px; font-weight: 400; }
   .smallprint { font-size: 10px; color: #605e5c; margin: 8px 0 0; line-height: 1.35; }
@@ -442,7 +442,7 @@ export function buildRetailQuoteHtml(
     <img src="${PALMETTO_DATA_URI}" alt="Paul Motor Co." width="64" height="64"/>
     <div>
       <h1>LEASE QUOTE</h1>
-      <p class="sub">PAUL MOTOR CO. · Valid for one week · ${escapeHtml(client.quoteDate)}</p>
+      <p class="sub">PAUL MOTOR LEASING · Valid for one week · ${escapeHtml(client.quoteDate)}</p>
     </div>
   </div>
   <div class="grid">
