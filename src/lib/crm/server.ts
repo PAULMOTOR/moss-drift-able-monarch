@@ -17,7 +17,6 @@ import {
   taxRateForProvince,
   wrapPrintable,
 } from "./lease-quote";
-import { buildRetailQuotePdf, pdfDataUrl } from "./quote-pdf";
 import {
   buildDealFolderName,
   buildQuotePdfFileName,
@@ -45,6 +44,17 @@ import {
 
 function id() {
   return crypto.randomUUID();
+}
+
+/** Lazy-load PDF lib so a packaging issue never takes down all CRM server functions. */
+async function makeQuotePdfData(
+  client: ClientQuoteInfo,
+  options: LeaseOptionResult[],
+  taxRate: number,
+): Promise<string> {
+  const { buildRetailQuotePdf, pdfDataUrl } = await import("./quote-pdf");
+  const buf = await buildRetailQuotePdf(client, options, taxRate);
+  return pdfDataUrl(buf);
 }
 
 function num(v: unknown): number | null {
@@ -1600,8 +1610,7 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
       make: data.client.make,
       model: data.client.model,
     });
-    const pdfBuf = await buildRetailQuotePdf(data.client, data.options, taxRate);
-    const pdfData = pdfDataUrl(pdfBuf);
+    const pdfData = await makeQuotePdfData(data.client, data.options, taxRate);
 
     if (data.existingId) {
       await sql`
@@ -1813,8 +1822,7 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
       make: payload.client.make,
       model: payload.client.model,
     });
-    const pdfBuf = await buildRetailQuotePdf(payload.client, payload.options, taxRate);
-    const pdfData = pdfDataUrl(pdfBuf);
+    const pdfData = await makeQuotePdfData(payload.client, payload.options, taxRate);
 
     await sql`
       update lease_quotes set
@@ -2005,12 +2013,11 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
     let pdfData = quote.pdf_data;
     let mimeType = "application/pdf";
     if (pdfData?.startsWith("data:text/html") || !pdfData) {
-      const pdfBuf = await buildRetailQuotePdf(
+      pdfData = await makeQuotePdfData(
         client,
         payload.options,
         taxRateForProvince(client.province || "QC"),
       );
-      pdfData = pdfDataUrl(pdfBuf);
       mimeType = "application/pdf";
       await sql`
         update lease_quotes set
