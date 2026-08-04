@@ -5,7 +5,7 @@
  * Prerequisites:
  *  1. Google Cloud project with Gmail API + Google Drive API enabled
  *  2. OAuth Client ID (Desktop app) — client id + secret
- *  3. Data Access scopes: gmail.readonly + drive.file
+ *  3. Data Access scopes: gmail.readonly + drive (FULL Drive, not drive.file)
  *
  * Usage (on your Mac, in the repo folder):
  *   GMAIL_CLIENT_ID=xxx.apps.googleusercontent.com \
@@ -47,7 +47,8 @@ const url = oauth2.generateAuthUrl({
 console.log("\n1. Open this URL in a browser.");
 console.log("   IMPORTANT: sign in as client@paulmotorcompany.com (not Jeremy).\n");
 console.log(url);
-console.log("\n2. Approve Gmail + Drive. This script will capture the redirect automatically.\n");
+console.log("\n2. Approve Gmail + FULL Drive access (not drive.file only).");
+console.log("   If Google Cloud only has drive.file, add https://www.googleapis.com/auth/drive first.\n");
 
 const server = createServer(async (req, res) => {
   try {

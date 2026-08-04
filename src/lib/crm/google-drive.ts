@@ -96,6 +96,82 @@ export async function ensureFolder(
   return createFolder(parentId, name);
 }
 
+
+/** Verify OAuth account can read the parent folder (full drive scope required). */
+export async function assertParentFolderAccessible(parentId?: string): Promise<{
+  id: string;
+  name: string;
+  accountEmail?: string;
+}> {
+  const parent = parentId || driveParentFolderId();
+  if (!isDriveConfigured()) {
+    throw new Error(
+      "Google Drive is not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN (with Drive access).",
+    );
+  }
+
+  const gmailTok = env("GMAIL_REFRESH_TOKEN");
+  const driveTok = env("GOOGLE_DRIVE_REFRESH_TOKEN");
+  const attempts: { label: string; prefer: "gmail" | "drive" }[] = [];
+  if (gmailTok) attempts.push({ label: "GMAIL_REFRESH_TOKEN", prefer: "gmail" });
+  if (driveTok && driveTok !== gmailTok) {
+    attempts.push({ label: "GOOGLE_DRIVE_REFRESH_TOKEN", prefer: "drive" });
+  } else if (driveTok && !gmailTok) {
+    attempts.push({ label: "GOOGLE_DRIVE_REFRESH_TOKEN", prefer: "drive" });
+  }
+  if (attempts.length === 0) {
+    throw new Error(
+      "No Drive refresh token set (GMAIL_REFRESH_TOKEN / GOOGLE_DRIVE_REFRESH_TOKEN).",
+    );
+  }
+
+  let lastError = "";
+  let accountEmail: string | undefined;
+
+  for (const attempt of attempts) {
+    try {
+      const drive = driveClient(attempt.prefer);
+      try {
+        const about = await drive.about.get({
+          fields: "user(emailAddress,displayName)",
+        });
+        accountEmail = about.data.user?.emailAddress || undefined;
+      } catch {
+        /* optional */
+      }
+      const meta = await drive.files.get({
+        fileId: parent,
+        fields: "id, name, mimeType, capabilities",
+        supportsAllDrives: true,
+      });
+      return {
+        id: parent,
+        name: meta.data.name || parent,
+        accountEmail,
+      };
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  const who =
+    accountEmail ||
+    "the Google account used for OAuth (usually client@paulmotorcompany.com)";
+  if (/not found|404|File not found/i.test(lastError)) {
+    throw new Error(
+      `Drive parent folder not found for ${who}. Folder id: ${parent}. ` +
+        `Fix: (1) Open the folder while logged in as ${who}. ` +
+        `(2) Share the folder with ${who} as Editor if needed. ` +
+        `(3) Re-run OAuth with FULL Drive scope (https://www.googleapis.com/auth/drive, not drive.file only) as ${who}, ` +
+        `update GMAIL_REFRESH_TOKEN + GOOGLE_DRIVE_REFRESH_TOKEN in Vercel, Redeploy. ` +
+        `Google returns "File not found" when the token cannot see the folder (scope or sharing).`,
+    );
+  }
+  throw new Error(
+    `Cannot open Drive parent folder ${parent} as ${who}: ${lastError.slice(0, 300)}`,
+  );
+}
+
 /** YEAR / Month / deal folder under parent.
  * Month folders match existing Drive convention: "August 2026"
  * (also reuses "08-August" or similar if already present).
@@ -131,6 +207,9 @@ export async function ensureDealFolder(params: {
   ];
 
   const root = driveParentFolderId();
+  // Fail fast with a clear message if the OAuth account cannot see the parent.
+  await assertParentFolderAccessible(root);
+
   let yearId = await findChildFolder(root, yearName);
   if (!yearId) yearId = await findChildFolder(root, `Year ${yearName}`);
   if (!yearId) yearId = await createFolder(root, yearName);
