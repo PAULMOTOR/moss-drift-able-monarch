@@ -22,6 +22,13 @@ export const Route = createFileRoute("/api/health")({
           hasClientId: Boolean(process.env.GMAIL_CLIENT_ID?.trim()),
           hasClientSecret: Boolean(process.env.GMAIL_CLIENT_SECRET?.trim()),
           hasRefreshToken: Boolean(process.env.GMAIL_REFRESH_TOKEN?.trim()),
+          hasDriveRefreshToken: Boolean(
+            process.env.GOOGLE_DRIVE_REFRESH_TOKEN?.trim() ||
+              process.env.GMAIL_REFRESH_TOKEN?.trim(),
+          ),
+          hasDriveParentFolder: Boolean(
+            process.env.GOOGLE_DRIVE_PARENT_FOLDER_ID?.trim(),
+          ),
           user: process.env.GMAIL_USER?.trim() || null,
           hasCronSecret: Boolean(process.env.CRON_SECRET?.trim()),
           configured: Boolean(
@@ -31,6 +38,7 @@ export const Route = createFileRoute("/api/health")({
               process.env.GMAIL_USER?.trim(),
           ),
         };
+
 
         let db: {
           ok: boolean;
@@ -118,6 +126,40 @@ export const Route = createFileRoute("/api/health")({
           }
         }
 
+        // Drive probe: can we see the parent folder?
+        let driveProbe: {
+          ok: boolean;
+          error?: string;
+          parentId?: string;
+          usingToken?: string;
+        } | null = null;
+        try {
+          const { probeDrive, isDriveConfigured, driveParentFolderId } =
+            await import("@/lib/crm/google-drive");
+          if (!isDriveConfigured()) {
+            driveProbe = {
+              ok: false,
+              error: "missing_oauth_env",
+              parentId: driveParentFolderId(),
+            };
+          } else {
+            const r = await probeDrive();
+            driveProbe = {
+              ok: r.ok,
+              error: r.error,
+              parentId: r.parentId || driveParentFolderId(),
+              usingToken: process.env.GOOGLE_DRIVE_REFRESH_TOKEN?.trim()
+                ? "GOOGLE_DRIVE_REFRESH_TOKEN"
+                : "GMAIL_REFRESH_TOKEN",
+            };
+          }
+        } catch (e) {
+          driveProbe = {
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+
         const hints: string[] = [];
         if (!hasDatabaseUrl) hints.push("Missing DATABASE_URL");
         if (!gmail.configured) {
@@ -127,7 +169,12 @@ export const Route = createFileRoute("/api/health")({
         }
         if (gmail.configured && gmailProbe && !gmailProbe.ok) {
           hints.push(
-            "Gmail token invalid — re-run scripts/gmail-oauth.mjs as client@ and update GMAIL_REFRESH_TOKEN",
+            "Gmail token invalid (invalid_grant) — paste the NEW GMAIL_REFRESH_TOKEN from Terminal into Vercel Production, then Redeploy. Old tokens stop working after re-auth.",
+          );
+        }
+        if (driveProbe && !driveProbe.ok) {
+          hints.push(
+            `Drive not ready: ${driveProbe.error || "unknown"}. Need valid refresh token with drive.file + parent folder shared with client@ as Editor.`,
           );
         }
         if (db.ok && !db.email_imports_table) {
@@ -149,7 +196,11 @@ export const Route = createFileRoute("/api/health")({
         }
 
         const body = {
-          ok: db.ok && gmail.configured && (gmailProbe?.ok ?? false),
+          ok:
+            db.ok &&
+            gmail.configured &&
+            (gmailProbe?.ok ?? false) &&
+            (driveProbe?.ok ?? false),
           env: {
             hasDatabaseUrl,
             hasAuthSecret,
@@ -160,6 +211,7 @@ export const Route = createFileRoute("/api/health")({
           mail,
           gmail,
           gmailProbe,
+          driveProbe,
           db,
           seed,
           hint: hints.join(" · "),
