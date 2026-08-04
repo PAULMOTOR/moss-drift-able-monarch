@@ -359,7 +359,7 @@ export async function ensureCrmSeeded(sql: Sql) {
       email: "olivier.t@gmail.com",
       source: "email",
       lead_type: "inventory",
-      stage: "test_drive",
+      stage: "quote_sent",
       assigned: "prof-lucas",
       interest: "2025 Porsche Taycan Turbo GT Weissach",
       stock: "TAY-GT-25",
@@ -448,7 +448,7 @@ export async function ensureCrmSeeded(sql: Sql) {
       email: "aisha.patel@gmail.com",
       source: "walk_in",
       lead_type: "inventory",
-      stage: "test_drive",
+      stage: "quote_sent",
       assigned: "prof-lucas",
       interest: "2021 Porsche 718 Cayman GT4",
       stock: "18022",
@@ -562,7 +562,7 @@ export async function ensureCrmSeeded(sql: Sql) {
   }
 
   const leadRows = await sql<{ id: string; inventory_id: string | null; name: string }>`
-    select id, inventory_id, name from leads where stage in ('test_drive', 'quote_sent', 'ready_bc') limit 4
+    select id, inventory_id, name from leads where stage in ('quote_sent', 'ready_bc') limit 4
   `;
   for (let i = 0; i < leadRows.length; i++) {
     const lead = leadRows[i]!;

@@ -2,7 +2,6 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import {
   BarChart3,
   Calculator,
-  CalendarDays,
   Columns3,
   LayoutDashboard,
   Menu,
@@ -12,6 +11,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+
 
 import { useEffect, useState } from "react";
 import { UserButton } from "@/lib/auth/gates";
@@ -28,9 +28,9 @@ const baseNav = [
   { to: "/pipeline", label: "Pipeline", icon: Columns3 },
   { to: "/quote", label: "Lease quote", icon: Calculator },
   { to: "/inventory", label: "Inventory", icon: Package },
-  { to: "/test-drives", label: "Test drives", icon: CalendarDays },
   { to: "/data-analysis", label: "Data analysis", icon: BarChart3 },
 ] as const;
+
 
 export function AppShell({
   children,
@@ -227,7 +227,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <div className="my-5 h-px w-full bg-border" />
           <h1 className="text-xl font-semibold">Sign in</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Paul Motor Co. CRM — lead capture, inventory, pipeline, and test drives.
+            Paul Motor Co. CRM — lead capture, inventory, pipeline, and lease quotes.
           </p>
           <Link
             to="/login"

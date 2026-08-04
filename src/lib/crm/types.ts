@@ -5,12 +5,12 @@ export const STAGES = [
   { id: "new", label: "New Lead", short: "New" },
   { id: "contacted", label: "Contacted", short: "Contacted" },
   { id: "paused", label: "Paused", short: "Paused" },
-  { id: "test_drive", label: "Test Drive", short: "Drive" },
   { id: "quote_sent", label: "Quote Sent", short: "Quote" },
   { id: "ready_bc", label: "Ready for Business Central", short: "BC Ready" },
   { id: "won", label: "Closed Won", short: "Won" },
   { id: "lost", label: "Closed Lost", short: "Lost" },
 ] as const;
+
 
 export type StageId = (typeof STAGES)[number]["id"];
 
@@ -121,7 +121,13 @@ export type Lead = {
   quote_notes: string | null;
   quote_pdf_name: string | null;
   quote_pdf_data: string | null;
+  guarantor?: string | null;
+  legal_entity_name?: string | null;
+  drive_folder_id?: string | null;
+  drive_folder_url?: string | null;
+  accepted_quote_id?: string | null;
   source_email_raw: string | null;
+
   email_portal?: string | null;
   gmail_message_id?: string | null;
   pause_until?: string | null;

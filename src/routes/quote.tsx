@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import {
   calcLeaseOption,
+  computeDaysLeftInMonth,
   emptyOption,
   formatMoney,
   PROVINCE_TAX,
@@ -26,21 +27,25 @@ import {
   type LeaseOptionResult,
 } from "@/lib/crm/lease-quote";
 import {
+  acceptLeaseQuoteOption,
   getLead,
+  getLeaseQuote,
   listInventory,
+  listLeaseQuotes,
   listLeads,
   saveLeaseQuote,
 } from "@/lib/crm/server";
 import type { InventoryItem, Lead } from "@/lib/crm/types";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { getMyProfile } from "@/lib/crm/server";
-import { Calculator, Printer, Save } from "lucide-react";
+import { Check, Calculator, FolderOpen, Printer, Save } from "lucide-react";
 
-type QuoteSearch = { leadId?: string };
+type QuoteSearch = { leadId?: string; quoteId?: string };
 
 export const Route = createFileRoute("/quote")({
   validateSearch: (s: Record<string, unknown>): QuoteSearch => ({
     leadId: typeof s.leadId === "string" ? s.leadId : undefined,
+    quoteId: typeof s.quoteId === "string" ? s.quoteId : undefined,
   }),
   component: () => (
     <AuthGate>
@@ -54,14 +59,32 @@ function num(v: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function QuotePage() {
   const search = useSearch({ from: "/quote" });
   const save = useServerFn(saveLeaseQuote);
+  const acceptFn = useServerFn(acceptLeaseQuoteOption);
+  const getQuoteFn = useServerFn(getLeaseQuote);
   const { user } = useCurrentUserState();
   const [busy, setBusy] = useState(false);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [saved, setSaved] = useState<
+    Array<{
+      id: string;
+      title: string | null;
+      client_name: string;
+      status: string;
+      accepted_option: number | null;
+      created_at: string;
+      pdf_name: string | null;
+    }>
+  >([]);
   const [leadId, setLeadId] = useState(search.leadId || "");
+  const [quoteId, setQuoteId] = useState<string | null>(search.quoteId || null);
   const [salesman, setSalesman] = useState("");
 
   const [client, setClient] = useState<ClientQuoteInfo>({
@@ -86,13 +109,17 @@ function QuotePage() {
     kmPerYear: 16000,
     excessKmFee: 0.9,
     quoteDate: new Date().toLocaleDateString("en-CA"),
-    deliveryDate: "",
+    deliveryDate: todayIso(),
+    startDate: todayIso(),
     notes: "This quote is valid for one week.",
     adminFee: 499,
     trackerFee: 495,
     lienPpsa: 0,
     license: 0,
     tireTax: 0,
+    daysLeftOverride: null,
+    contractStyle: "qc_individual_en",
+    partyType: "individual",
   });
 
   const [options, setOptions] = useState<LeaseOptionInput[]>([
@@ -100,6 +127,15 @@ function QuotePage() {
     emptyOption({ termMonths: 36, ratePct: 6.99 }),
     emptyOption({ termMonths: 48, ratePct: 6.99 }),
   ]);
+
+  async function refreshSaved(forLead = leadId) {
+    if (!forLead) {
+      setSaved([]);
+      return;
+    }
+    const rows = await listLeaseQuotes({ data: { leadId: forLead } });
+    setSaved(rows);
+  }
 
   useEffect(() => {
     void Promise.all([
@@ -117,6 +153,17 @@ function QuotePage() {
   }, [user?.id]);
 
   useEffect(() => {
+    void refreshSaved(leadId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leadId]);
+
+  useEffect(() => {
+    if (!search.quoteId) return;
+    void loadQuote(search.quoteId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.quoteId]);
+
+  useEffect(() => {
     if (!leadId) return;
     void getLead({ data: leadId })
       .then((res) => {
@@ -128,6 +175,7 @@ function QuotePage() {
           phone: lead.phone || c.phone,
           email: lead.email || c.email,
           notes: lead.notes || c.notes,
+          guarantor: lead.guarantor || c.guarantor,
         }));
         if (lead.inventory_id) {
           const inv = inventory.find((i) => i.id === lead.inventory_id);
@@ -157,6 +205,45 @@ function QuotePage() {
       .catch(() => toast.error("Could not load lead"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId, inventory.length]);
+
+  async function loadQuote(id: string) {
+    try {
+      const q = await getQuoteFn({ data: { id } });
+      setQuoteId(q.id);
+      if (q.lead_id) setLeadId(q.lead_id);
+      const payload = JSON.parse(q.payload) as {
+        client: ClientQuoteInfo;
+        options: LeaseOptionResult[];
+      };
+      if (payload.client) {
+        setClient({
+          ...payload.client,
+          startDate: payload.client.startDate || todayIso(),
+          daysLeftOverride: payload.client.daysLeftOverride ?? null,
+          contractStyle: payload.client.contractStyle || "qc_individual_en",
+          partyType: payload.client.partyType || "individual",
+        });
+      }
+      if (payload.options?.length) {
+        setOptions(
+          payload.options.map((o) => ({
+            cost: o.cost,
+            extra: o.extra,
+            profit: o.profit,
+            tradeIn: o.tradeIn,
+            deposit: o.deposit,
+            termMonths: o.termMonths,
+            ratePct: o.ratePct,
+            residual: o.residual,
+            handling: o.handling,
+          })),
+        );
+      }
+      toast.success("Quote reopened");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not open quote");
+    }
+  }
 
   function applyInventory(inv: InventoryItem) {
     setClient((c) => ({
@@ -191,28 +278,35 @@ function QuotePage() {
     license: client.license,
     tireTax: client.tireTax,
   };
+  const proRataCtx = {
+    startDate: client.startDate || todayIso(),
+    daysLeftOverride: client.daysLeftOverride,
+  };
+  const daysInfo = computeDaysLeftInMonth(proRataCtx.startDate);
 
   const calculated: LeaseOptionResult[] = useMemo(
-    () => options.map((o) => calcLeaseOption(o, taxRate, fees)),
+    () => options.map((o) => calcLeaseOption(o, taxRate, fees, proRataCtx)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [options, taxRate, client.adminFee, client.trackerFee, client.lienPpsa, client.license, client.tireTax],
+    [
+      options,
+      taxRate,
+      client.adminFee,
+      client.trackerFee,
+      client.lienPpsa,
+      client.license,
+      client.tireTax,
+      client.startDate,
+      client.daysLeftOverride,
+    ],
   );
 
   function patchOption(i: number, patch: Partial<LeaseOptionInput>) {
     setOptions((prev) => {
       const next = [...prev];
       const merged = { ...next[i], ...patch };
-      // Auto-suggest handling when vehicle price changes and handling still 0
-      if (
-        ("cost" in patch || "extra" in patch || "profit" in patch) &&
-        (next[i].handling === 0 || patch.cost !== undefined)
-      ) {
+      if ("cost" in patch || "extra" in patch || "profit" in patch) {
         if (next[i].handling === 0 || "cost" in patch) {
-          merged.handling = suggestHandling(
-            merged.cost,
-            merged.extra,
-            merged.profit,
-          );
+          merged.handling = suggestHandling(merged.cost, merged.extra, merged.profit);
         }
       }
       next[i] = merged;
@@ -220,7 +314,7 @@ function QuotePage() {
     });
   }
 
-  async function onSave() {
+  async function onSave(asNew = true) {
     if (!client.clientName.trim()) {
       toast.error("Client name is required");
       return;
@@ -234,14 +328,19 @@ function QuotePage() {
           options: calculated,
           selectedOption: 1,
           status: "draft",
+          existingId: asNew ? null : quoteId,
+          title: `${client.clientName} · ${client.year || ""} ${client.make} ${client.model}`.trim(),
         },
       });
-      toast.success("Lease quote saved");
-      // Open printable retail quote
-      const w = window.open("", "_blank");
-      if (w && res.html) {
-        w.document.write(res.html);
-        w.document.close();
+      setQuoteId(res.id);
+      toast.success(asNew ? "Quote instance saved" : "Quote updated");
+      await refreshSaved();
+      if (res.html) {
+        const w = window.open("", "_blank");
+        if (w) {
+          w.document.write(res.html);
+          w.document.close();
+        }
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Save failed");
@@ -250,15 +349,84 @@ function QuotePage() {
     }
   }
 
-  function onPrint() {
+  async function onAccept(optionNumber: number) {
+    if (!quoteId) {
+      // auto-save first
+      if (!client.clientName.trim()) {
+        toast.error("Save the quote first (client name required)");
+        return;
+      }
+      setBusy(true);
+      try {
+        const res = await save({
+          data: {
+            leadId: leadId || null,
+            client: { ...client, salesman: client.salesman || salesman },
+            options: calculated,
+            selectedOption: optionNumber,
+            status: "draft",
+            title: `${client.clientName} · Opt ${optionNumber}`,
+          },
+        });
+        setQuoteId(res.id);
+        const acc = await acceptFn({
+          data: {
+            quoteId: res.id,
+            optionNumber,
+            contractStyle: client.contractStyle,
+          },
+        });
+        toast.success(`Option ${optionNumber} accepted · contract + invoice ready`);
+        await refreshSaved();
+        openHtml(acc.retailHtml);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Accept failed");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    setBusy(true);
+    try {
+      // refresh save then accept
+      await save({
+        data: {
+          leadId: leadId || null,
+          client: { ...client, salesman: client.salesman || salesman },
+          options: calculated,
+          selectedOption: optionNumber,
+          status: "draft",
+          existingId: quoteId,
+        },
+      });
+      const acc = await acceptFn({
+        data: {
+          quoteId,
+          optionNumber,
+          contractStyle: client.contractStyle,
+        },
+      });
+      toast.success(`Option ${optionNumber} accepted`);
+      await refreshSaved();
+      openHtml(acc.contractHtml);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Accept failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openHtml(html: string) {
     const w = window.open("", "_blank");
     if (!w) return;
-    // Build via same server path - client-side quick print from calculated
+    w.document.write(html);
+    w.document.close();
+  }
+
+  function onPrint() {
     void import("@/lib/crm/lease-quote").then(({ buildRetailQuoteHtml }) => {
-      const html = buildRetailQuoteHtml(client, calculated, taxRate);
-      w.document.write(html);
-      w.document.close();
-      setTimeout(() => w.print(), 300);
+      openHtml(buildRetailQuoteHtml(client, calculated, taxRate));
+      // user uses browser print → PDF
     });
   }
 
@@ -266,20 +434,69 @@ function QuotePage() {
     <>
       <PageHeader
         title="Lease quote"
-        description="Paul Motor spreadsheet engine — three options, provincial tax, due on delivery."
+        description="Spreadsheet engine · save instances · accept one of 3 options · print PDF"
         actions={
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="outline" onClick={onPrint}>
               <Printer className="size-4" />
               Print / PDF
             </Button>
-            <Button type="button" disabled={busy} onClick={() => void onSave()}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void onSave(false)}
+            >
+              <Save className="size-4" />
+              Update
+            </Button>
+            <Button type="button" disabled={busy} onClick={() => void onSave(true)}>
               <Save className="size-4" />
               {busy ? "Saving…" : "Save quote"}
             </Button>
           </div>
         }
       />
+
+      {leadId ? (
+        <Card className="mb-4">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold">Saved quotes on this lead</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {saved.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No saved quotes yet.</p>
+            ) : (
+              saved.map((q) => (
+                <div
+                  key={q.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border px-3 py-2 text-sm"
+                >
+                  <div>
+                    <p className="font-medium">
+                      {q.title || q.client_name || q.id.slice(0, 8)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {new Date(q.created_at).toLocaleString()} · {q.status}
+                      {q.accepted_option ? ` · accepted Opt ${q.accepted_option}` : ""}
+                      {q.pdf_name ? ` · ${q.pdf_name}` : ""}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void loadQuote(q.id)}
+                  >
+                    <FolderOpen className="size-4" />
+                    Reopen
+                  </Button>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="mb-4 grid gap-3 lg:grid-cols-3">
         <Card className="lg:col-span-2">
@@ -307,59 +524,24 @@ function QuotePage() {
                 </SelectContent>
               </Select>
             </div>
-            <Field
-              label="Client name"
-              value={client.clientName}
-              onChange={(v) => setClient((c) => ({ ...c, clientName: v }))}
-            />
-            <Field
-              label="Phone"
-              value={client.phone}
-              onChange={(v) => setClient((c) => ({ ...c, phone: v }))}
-            />
-            <Field
-              label="Email"
-              value={client.email}
-              onChange={(v) => setClient((c) => ({ ...c, email: v }))}
-            />
-            <Field
-              label="Guarantor"
-              value={client.guarantor}
-              onChange={(v) => setClient((c) => ({ ...c, guarantor: v }))}
-            />
-            <Field
-              label="Address"
-              value={client.address}
-              onChange={(v) => setClient((c) => ({ ...c, address: v }))}
-            />
-            <Field
-              label="City"
-              value={client.city}
-              onChange={(v) => setClient((c) => ({ ...c, city: v }))}
-            />
+            <Field label="Client / lessee" value={client.clientName} onChange={(v) => setClient((c) => ({ ...c, clientName: v }))} />
+            <Field label="Guarantor(s)" value={client.guarantor} onChange={(v) => setClient((c) => ({ ...c, guarantor: v }))} />
+            <Field label="Phone" value={client.phone} onChange={(v) => setClient((c) => ({ ...c, phone: v }))} />
+            <Field label="Email" value={client.email} onChange={(v) => setClient((c) => ({ ...c, email: v }))} />
+            <Field label="Address" value={client.address} onChange={(v) => setClient((c) => ({ ...c, address: v }))} />
+            <Field label="City" value={client.city} onChange={(v) => setClient((c) => ({ ...c, city: v }))} />
             <div className="grid gap-1.5">
               <Label>Province (tax)</Label>
-              <Select
-                value={client.province}
-                onValueChange={(v) => setClient((c) => ({ ...c, province: v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+              <Select value={client.province} onValueChange={(v) => setClient((c) => ({ ...c, province: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {Object.keys(PROVINCE_TAX).map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p} ({(PROVINCE_TAX[p] * 100).toFixed(3)}%)
-                    </SelectItem>
+                    <SelectItem key={p} value={p}>{p} ({(PROVINCE_TAX[p] * 100).toFixed(3)}%)</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            <Field
-              label="Postal code"
-              value={client.postalCode}
-              onChange={(v) => setClient((c) => ({ ...c, postalCode: v }))}
-            />
+            <Field label="Postal code" value={client.postalCode} onChange={(v) => setClient((c) => ({ ...c, postalCode: v }))} />
             <div className="sm:col-span-2 grid gap-1.5">
               <Label>Inventory vehicle</Label>
               <Select
@@ -369,9 +551,7 @@ function QuotePage() {
                   if (inv) applyInventory(inv);
                 }}
               >
-                <SelectTrigger>
-                  <SelectValue placeholder="Prefill from inventory" />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Prefill from inventory" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__pick__">Prefill from inventory…</SelectItem>
                   {inventory.map((i) => (
@@ -384,116 +564,59 @@ function QuotePage() {
                 </SelectContent>
               </Select>
             </div>
+            <Field label="Year" value={client.year?.toString() || ""} onChange={(v) => setClient((c) => ({ ...c, year: v ? Number(v) : null }))} />
+            <Field label="Make" value={client.make} onChange={(v) => setClient((c) => ({ ...c, make: v }))} />
+            <Field label="Model" value={client.model} onChange={(v) => setClient((c) => ({ ...c, model: v }))} />
+            <Field label="Trim" value={client.trim} onChange={(v) => setClient((c) => ({ ...c, trim: v }))} />
+            <Field label="Colour" value={client.color} onChange={(v) => setClient((c) => ({ ...c, color: v }))} />
+            <Field label="KM" value={client.km?.toString() || ""} onChange={(v) => setClient((c) => ({ ...c, km: v ? Number(v) : null }))} />
+            <Field label="VIN" value={client.vin} onChange={(v) => setClient((c) => ({ ...c, vin: v }))} />
+            <Field label="Stock #" value={client.stock} onChange={(v) => setClient((c) => ({ ...c, stock: v }))} />
+            <Field label="Lease start date" value={client.startDate} onChange={(v) => setClient((c) => ({ ...c, startDate: v }))} />
             <Field
-              label="Year"
-              value={client.year?.toString() || ""}
+              label={`Days left in month (auto ${daysInfo.daysLeft}/${daysInfo.daysInMonth})`}
+              value={client.daysLeftOverride != null ? String(client.daysLeftOverride) : ""}
               onChange={(v) =>
-                setClient((c) => ({ ...c, year: v ? Number(v) : null }))
+                setClient((c) => ({
+                  ...c,
+                  daysLeftOverride: v.trim() ? num(v) : null,
+                }))
               }
             />
-            <Field
-              label="Make"
-              value={client.make}
-              onChange={(v) => setClient((c) => ({ ...c, make: v }))}
-            />
-            <Field
-              label="Model"
-              value={client.model}
-              onChange={(v) => setClient((c) => ({ ...c, model: v }))}
-            />
-            <Field
-              label="Trim"
-              value={client.trim}
-              onChange={(v) => setClient((c) => ({ ...c, trim: v }))}
-            />
-            <Field
-              label="Colour"
-              value={client.color}
-              onChange={(v) => setClient((c) => ({ ...c, color: v }))}
-            />
-            <Field
-              label="KM"
-              value={client.km?.toString() || ""}
-              onChange={(v) =>
-                setClient((c) => ({ ...c, km: v ? Number(v) : null }))
-              }
-            />
-            <Field
-              label="VIN"
-              value={client.vin}
-              onChange={(v) => setClient((c) => ({ ...c, vin: v }))}
-            />
-            <Field
-              label="Stock #"
-              value={client.stock}
-              onChange={(v) => setClient((c) => ({ ...c, stock: v }))}
-            />
-            <Field
-              label="KM / year"
-              value={String(client.kmPerYear)}
-              onChange={(v) =>
-                setClient((c) => ({ ...c, kmPerYear: num(v) || 16000 }))
-              }
-            />
-            <Field
-              label="$ / KM over"
-              value={String(client.excessKmFee)}
-              onChange={(v) =>
-                setClient((c) => ({ ...c, excessKmFee: num(v) }))
-              }
-            />
-            <Field
-              label="Salesman"
-              value={client.salesman}
-              onChange={(v) => setClient((c) => ({ ...c, salesman: v }))}
-            />
-            <Field
-              label="Quote date"
-              value={client.quoteDate}
-              onChange={(v) => setClient((c) => ({ ...c, quoteDate: v }))}
-            />
+            <Field label="Salesman" value={client.salesman} onChange={(v) => setClient((c) => ({ ...c, salesman: v }))} />
+            <div className="grid gap-1.5">
+              <Label>Contract style</Label>
+              <Select
+                value={client.contractStyle}
+                onValueChange={(v) => setClient((c) => ({ ...c, contractStyle: v }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="qc_individual_en">QC Individual EN</SelectItem>
+                  <SelectItem value="qc_individual_fr">QC Individual FR</SelectItem>
+                  <SelectItem value="qc_business_en">QC Business EN</SelectItem>
+                  <SelectItem value="qc_business_fr">QC Business FR</SelectItem>
+                  <SelectItem value="ca_business_en">Canada Business</SelectItem>
+                  <SelectItem value="ca_individual_en">Canada Individual</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold">
-              Fees (due on delivery)
-            </CardTitle>
+            <CardTitle className="text-sm font-semibold">Fees (due on delivery)</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-3">
-            <Field
-              label="Admin / document"
-              value={String(client.adminFee)}
-              onChange={(v) => setClient((c) => ({ ...c, adminFee: num(v) }))}
-            />
-            <Field
-              label="Tracker / anti-theft"
-              value={String(client.trackerFee)}
-              onChange={(v) => setClient((c) => ({ ...c, trackerFee: num(v) }))}
-            />
-            <Field
-              label="Lien / PPSA"
-              value={String(client.lienPpsa)}
-              onChange={(v) => setClient((c) => ({ ...c, lienPpsa: num(v) }))}
-            />
-            <Field
-              label="License"
-              value={String(client.license)}
-              onChange={(v) => setClient((c) => ({ ...c, license: num(v) }))}
-            />
-            <Field
-              label="Tire tax"
-              value={String(client.tireTax)}
-              onChange={(v) => setClient((c) => ({ ...c, tireTax: num(v) }))}
-            />
+            <MoneyField label="Admin / document" value={client.adminFee} onChange={(v) => setClient((c) => ({ ...c, adminFee: v }))} />
+            <MoneyField label="Tracker / anti-theft" value={client.trackerFee} onChange={(v) => setClient((c) => ({ ...c, trackerFee: v }))} />
+            <MoneyField label="Lien / PPSA" value={client.lienPpsa} onChange={(v) => setClient((c) => ({ ...c, lienPpsa: v }))} />
+            <MoneyField label="License" value={client.license} onChange={(v) => setClient((c) => ({ ...c, license: v }))} />
+            <MoneyField label="Tire tax" value={client.tireTax} onChange={(v) => setClient((c) => ({ ...c, tireTax: v }))} />
             <p className="text-xs text-muted-foreground">
-              Tax rate: <strong>{(taxRate * 100).toFixed(3)}%</strong> (
-              {client.province})
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Formula: Excel <code>PMT(rate/12, term, −financed, residual)</code>{" "}
-              + handling — matches your Google Sheet samples.
+              Pro-rata = payment × (days left ÷ days in month). Tax:{" "}
+              <strong>{(taxRate * 100).toFixed(3)}%</strong>
             </p>
           </CardContent>
         </Card>
@@ -509,91 +632,50 @@ function QuotePage() {
               <Calculator className="size-4 text-muted-foreground" />
             </CardHeader>
             <CardContent className="space-y-2">
-              <MoneyField
-                label="Cost / price"
-                value={options[i].cost}
-                onChange={(v) => patchOption(i, { cost: v })}
-              />
-              <MoneyField
-                label="Extra"
-                value={options[i].extra}
-                onChange={(v) => patchOption(i, { extra: v })}
-              />
-              <MoneyField
-                label="Profit"
-                value={options[i].profit}
-                onChange={(v) => patchOption(i, { profit: v })}
-              />
-              <MoneyField
-                label="Trade-in"
-                value={options[i].tradeIn}
-                onChange={(v) => patchOption(i, { tradeIn: v })}
-              />
-              <MoneyField
-                label="Deposit (cash down)"
-                value={options[i].deposit}
-                onChange={(v) => patchOption(i, { deposit: v })}
-              />
+              <MoneyField label="Cost / price" value={options[i].cost} onChange={(v) => patchOption(i, { cost: v })} />
+              <MoneyField label="Extra" value={options[i].extra} onChange={(v) => patchOption(i, { extra: v })} />
+              <MoneyField label="Profit" value={options[i].profit} onChange={(v) => patchOption(i, { profit: v })} />
+              <MoneyField label="Trade-in" value={options[i].tradeIn} onChange={(v) => patchOption(i, { tradeIn: v })} />
+              <MoneyField label="Deposit (cash down)" value={options[i].deposit} onChange={(v) => patchOption(i, { deposit: v })} />
               <div className="grid grid-cols-2 gap-2">
-                <MoneyField
-                  label="Term (mo)"
-                  value={options[i].termMonths}
-                  onChange={(v) => patchOption(i, { termMonths: Math.round(v) })}
-                />
-                <MoneyField
-                  label="Rate %"
-                  value={options[i].ratePct}
-                  onChange={(v) => patchOption(i, { ratePct: v })}
-                />
+                <MoneyField label="Term (mo)" value={options[i].termMonths} onChange={(v) => patchOption(i, { termMonths: Math.round(v) })} />
+                <MoneyField label="Rate %" value={options[i].ratePct} onChange={(v) => patchOption(i, { ratePct: v })} />
               </div>
-              <MoneyField
-                label="Residual"
-                value={options[i].residual}
-                onChange={(v) => patchOption(i, { residual: v })}
-              />
-              <MoneyField
-                label="Handling $"
-                value={options[i].handling}
-                onChange={(v) => patchOption(i, { handling: v })}
-              />
+              <MoneyField label="Residual" value={options[i].residual} onChange={(v) => patchOption(i, { residual: v })} />
+              <MoneyField label="Handling $" value={options[i].handling} onChange={(v) => patchOption(i, { handling: v })} />
 
               <div className="mt-3 space-y-1 rounded-sm border border-border bg-muted/40 p-3 text-xs">
                 <Row label="Financed" value={formatMoney(o.financed)} />
-                <Row label={`Deposit %`} value={`${o.depositPct}%`} />
-                <Row label={`Residual %`} value={`${o.residualPct}%`} />
                 <Row label="Depreciation" value={formatMoney(o.depreciation)} />
                 <Row label="Interest" value={formatMoney(o.interest)} />
-                <Row label="Handling" value={formatMoney(o.handling)} />
                 <Row label="Lease payment" value={formatMoney(o.payment)} bold />
                 <Row label="Taxes" value={formatMoney(o.taxOnPayment)} />
-                <Row
-                  label="Total payment"
-                  value={formatMoney(o.totalPayment)}
-                  bold
-                />
-                <Row
-                  label="Due on delivery"
-                  value={formatMoney(o.dueTotal)}
-                  bold
-                />
+                <Row label="Total payment" value={formatMoney(o.totalPayment)} bold />
+                <Row label={`Pro-rata (${o.daysLeftMonth}/${o.daysInMonth}d)`} value={formatMoney(o.proRata)} />
+                <Row label="Due on delivery" value={formatMoney(o.dueTotal)} bold />
               </div>
+
+              <Button
+                type="button"
+                className="mt-2 w-full"
+                disabled={busy || !(o.cost > 0 || o.payment > 0)}
+                onClick={() => void onAccept(i + 1)}
+              >
+                <Check className="size-4" />
+                Quote Accepted (Option {i + 1})
+              </Button>
             </CardContent>
           </Card>
         ))}
       </div>
 
       <p className="text-center text-xs text-muted-foreground">
-        Save attaches the quote to the lead (stage → Quote Sent) and opens a
-        printable retail quote. Email/SMS send comes next once Resend domain is
-        verified.
+        Save creates a re-openable instance. Accept attaches the option PDF on the lead and builds
+        the ENG/FR contract + 1st invoice. Ready for Business Central creates the Drive folder.
       </p>
       {leadId ? (
         <p className="mt-2 text-center text-xs">
-          <Link
-            to="/leads/$leadId"
-            params={{ leadId }}
-            className="text-primary underline-offset-4 hover:underline"
-          >
+          <Link to="/leads/$leadId" params={{ leadId }} className="text-primary underline-offset-4 hover:underline">
             Back to lead
           </Link>
         </p>
@@ -614,11 +696,7 @@ function Field({
   return (
     <div className="grid gap-1.5">
       <Label>{label}</Label>
-      <Input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-9 rounded-sm"
-      />
+      <Input value={value} onChange={(e) => onChange(e.target.value)} className="h-9 rounded-sm" />
     </div>
   );
 }
@@ -646,19 +724,9 @@ function MoneyField({
   );
 }
 
-function Row({
-  label,
-  value,
-  bold,
-}: {
-  label: string;
-  value: string;
-  bold?: boolean;
-}) {
+function Row({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
   return (
-    <div
-      className={`flex justify-between gap-2 ${bold ? "font-semibold text-foreground" : "text-muted-foreground"}`}
-    >
+    <div className={`flex justify-between gap-2 ${bold ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
       <span>{label}</span>
       <span className="tabular text-foreground">{value}</span>
     </div>

@@ -7,7 +7,6 @@ const map: Record<
 > = {
   new: "new",
   contacted: "contacted",
-  test_drive: "qualified",
   quote_sent: "proposal",
   ready_bc: "negotiation",
   paused: "outline",

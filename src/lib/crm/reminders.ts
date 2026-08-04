@@ -179,8 +179,7 @@ export async function runDailyRepBatch(sql: Sql) {
         case stage
           when 'new' then 0
           when 'contacted' then 1
-          when 'test_drive' then 2
-          when 'quote_sent' then 3
+                    when 'quote_sent' then 3
           when 'ready_bc' then 4
           else 5
         end,

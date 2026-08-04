@@ -7,8 +7,24 @@ import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
 import { sendCrmEmail } from "./mail";
-import type { ClientQuoteInfo, LeaseOptionResult } from "./lease-quote";
-import { buildRetailQuoteHtml, taxRateForProvince } from "./lease-quote";
+import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
+import {
+  buildFirstInvoiceHtml,
+  buildRetailQuoteHtml,
+  CONTRACT_STYLE_META,
+  defaultContractBody,
+  renderContractTemplate,
+  taxRateForProvince,
+  wrapPrintable,
+} from "./lease-quote";
+import {
+  buildDealFolderName,
+  buildQuotePdfFileName,
+  ensureDealFolder,
+  isDriveConfigured,
+  probeDrive,
+  uploadFileToFolder,
+} from "./google-drive";
 import {
   type AdminMetrics,
   type DataAnalysis,
@@ -104,6 +120,11 @@ function mapLead(r: Record<string, unknown>): Lead {
     quote_notes: (r.quote_notes as string) ?? null,
     quote_pdf_name: (r.quote_pdf_name as string) ?? null,
     quote_pdf_data: (r.quote_pdf_data as string) ?? null,
+    guarantor: (r.guarantor as string) ?? null,
+    legal_entity_name: (r.legal_entity_name as string) ?? null,
+    drive_folder_id: (r.drive_folder_id as string) ?? null,
+    drive_folder_url: (r.drive_folder_url as string) ?? null,
+    accepted_quote_id: (r.accepted_quote_id as string) ?? null,
     source_email_raw: (r.source_email_raw as string) ?? null,
     email_portal: (r.email_portal as string) ?? null,
     gmail_message_id: (r.gmail_message_id as string) ?? null,
@@ -128,6 +149,7 @@ const leadSelect = `
   l.stage_entered_at::text as stage_entered_at,
   l.quote_sent, l.quote_sent_at::text as quote_sent_at,
   l.quote_link, l.quote_notes, l.quote_pdf_name, l.quote_pdf_data, l.source_email_raw,
+  l.guarantor, l.legal_entity_name, l.drive_folder_id, l.drive_folder_url, l.accepted_quote_id,
   l.email_portal, l.gmail_message_id,
   l.pause_until::text as pause_until, l.pause_note, l.stage_before_pause,
   l.google_review_status,
@@ -1026,7 +1048,7 @@ export const bookTestDrive = createServerFn({ method: "POST" })
       )
     `;
     await sql`
-      update leads set stage = case when stage in ('new','contacted','paused') then 'test_drive' else stage end,
+      update leads set stage = case when stage in ('new','contacted','paused') then 'quote_sent' else stage end,
         stage_entered_at = case when stage in ('new','contacted','paused') then now() else stage_entered_at end,
         pause_until = case when stage = 'paused' then null else pause_until end,
         pause_note = case when stage = 'paused' then null else pause_note end,
@@ -1088,12 +1110,13 @@ export const getDashboardStats = createServerFn({ method: "GET" })
         count(*) filter (where stage not in ('won','lost'))::int as open,
         count(*) filter (where stage = 'new')::int as new_leads,
         count(*) filter (where quote_sent = true and stage not in ('won','lost'))::int as quote_pending,
-        (select count(*)::int from test_drives where status = 'scheduled' and scheduled_at >= now()) as drives,
+        (select count(*)::int from lease_quotes) as drives,
         count(*) filter (where lead_type = 'inventory')::int as inventory_leads,
         count(*) filter (where lead_type = 'lease')::int as lease_leads,
         count(*) filter (where lead_type = 'general')::int as general_leads
       from leads
     `;
+
     const mine = await sql<{ n: number }>`
       select count(*)::int as n from leads
       where assigned_to = ${me.id} and stage not in ('won','lost')
@@ -1538,6 +1561,7 @@ export const adminClearAllLeads = createServerFn({ method: "POST" })
   });
 
 
+
 export const saveLeaseQuote = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
@@ -1547,6 +1571,8 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
       options: LeaseOptionResult[];
       selectedOption?: number;
       status?: string;
+      title?: string;
+      existingId?: string | null;
     }) => data,
   )
   .handler(async ({ context, data }) => {
@@ -1554,48 +1580,95 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
     const sql = await boot();
     const taxRate = taxRateForProvince(data.client.province || "QC");
     const html = buildRetailQuoteHtml(data.client, data.options, taxRate);
-    const quoteId = id();
+    const quoteId = data.existingId || id();
     const payload = {
       client: data.client,
       options: data.options,
       taxRate,
       selectedOption: data.selectedOption ?? 1,
     };
-    await sql`
-      insert into lease_quotes (
-        id, lead_id, created_by, client_name, payload, retail_html, selected_option, status
-      ) values (
-        ${quoteId},
-        ${data.leadId || null},
-        ${me.id},
-        ${data.client.clientName || ""},
-        ${JSON.stringify(payload)}::jsonb,
-        ${html},
-        ${data.selectedOption ?? 1},
-        ${data.status || "draft"}
-      )
-    `;
+    const title =
+      data.title ||
+      `Quote ${data.client.clientName || "Client"} · ${data.client.quoteDate || ""}`.trim();
+    // Store printable HTML as the "PDF" payload (print → Save as PDF)
+    const pdfName = buildQuotePdfFileName({
+      quoteDate: data.client.quoteDate,
+      clientName: data.client.clientName,
+      option: data.selectedOption ?? 1,
+      stock: data.client.stock,
+      year: data.client.year,
+      make: data.client.make,
+      model: data.client.model,
+    }).replace(/\.pdf$/i, ".html");
+    const pdfData = `data:text/html;base64,${Buffer.from(html, "utf8").toString("base64")}`;
+
+    if (data.existingId) {
+      await sql`
+        update lease_quotes set
+          lead_id = ${data.leadId || null},
+          client_name = ${data.client.clientName || ""},
+          payload = ${JSON.stringify(payload)}::jsonb,
+          retail_html = ${html},
+          selected_option = ${data.selectedOption ?? 1},
+          status = ${data.status || "draft"},
+          title = ${title},
+          pdf_name = ${pdfName},
+          pdf_data = ${pdfData},
+          updated_at = now()
+        where id = ${data.existingId}
+      `;
+    } else {
+      await sql`
+        insert into lease_quotes (
+          id, lead_id, created_by, client_name, payload, retail_html, selected_option, status,
+          title, pdf_name, pdf_data
+        ) values (
+          ${quoteId},
+          ${data.leadId || null},
+          ${me.id},
+          ${data.client.clientName || ""},
+          ${JSON.stringify(payload)}::jsonb,
+          ${html},
+          ${data.selectedOption ?? 1},
+          ${data.status || "draft"},
+          ${title},
+          ${pdfName},
+          ${pdfData}
+        )
+      `;
+    }
+
     if (data.leadId) {
       const primary = data.options[(data.selectedOption ?? 1) - 1] || data.options[0];
       await sql`
         update leads set
           quote_sent = true,
           quote_sent_at = coalesce(quote_sent_at, now()),
-          quote_notes = ${`Lease quote ${quoteId.slice(0, 8)} · payment ${primary ? primary.totalPayment : ""}`},
-          stage = case when stage in ('new','contacted','test_drive','paused') then 'quote_sent' else stage end,
+          quote_notes = ${`Lease quote · payment ${primary ? primary.totalPayment : ""}`},
+          guarantor = ${data.client.guarantor || null},
+          stage = case when stage in ('new','contacted','paused') then 'quote_sent' else stage end,
           updated_at = now()
         where id = ${data.leadId}
+      `;
+      // Append to multi-quote file list
+      await sql`
+        insert into lead_quote_files (
+          id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
+        ) values (
+          ${id()}, ${data.leadId}, ${quoteId}, ${data.selectedOption ?? 1},
+          ${pdfName}, ${pdfData}, 'text/html', 'crm_quote', ${me.id}
+        )
       `;
       await sql`
         insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
         values (
           ${id()}, ${data.leadId}, 'quote',
-          ${`Lease quote saved (${data.options.filter((o) => o.cost > 0 || o.payment > 0).length} option(s)). Primary total payment: $${primary?.totalPayment ?? "—"}.`},
+          ${`Saved lease quote instance (${data.options.filter((o) => o.cost > 0 || o.payment > 0).length} option(s)). Open from Saved quotes.`},
           ${me.id}, ${me.name}
         )
       `;
     }
-    return { ok: true as const, id: quoteId, html };
+    return { ok: true as const, id: quoteId, html, pdfName, pdfData };
   });
 
 export const listLeaseQuotes = createServerFn({ method: "GET" })
@@ -1609,11 +1682,14 @@ export const listLeaseQuotes = createServerFn({ method: "GET" })
         id: string;
         lead_id: string | null;
         client_name: string;
+        title: string | null;
         selected_option: number;
+        accepted_option: number | null;
         status: string;
+        pdf_name: string | null;
         created_at: string;
       }>`
-        select id, lead_id, client_name, selected_option, status,
+        select id, lead_id, client_name, title, selected_option, accepted_option, status, pdf_name,
                created_at::text as created_at
         from lease_quotes
         where lead_id = ${data.leadId}
@@ -1625,11 +1701,14 @@ export const listLeaseQuotes = createServerFn({ method: "GET" })
       id: string;
       lead_id: string | null;
       client_name: string;
+      title: string | null;
       selected_option: number;
+      accepted_option: number | null;
       status: string;
+      pdf_name: string | null;
       created_at: string;
     }>`
-      select id, lead_id, client_name, selected_option, status,
+      select id, lead_id, client_name, title, selected_option, accepted_option, status, pdf_name,
              created_at::text as created_at
       from lease_quotes
       order by created_at desc
@@ -1649,11 +1728,18 @@ export const getLeaseQuote = createServerFn({ method: "GET" })
       client_name: string;
       payload: string;
       retail_html: string | null;
+      contract_html: string | null;
+      invoice_html: string | null;
       selected_option: number;
+      accepted_option: number | null;
       status: string;
+      title: string | null;
+      pdf_name: string | null;
+      pdf_data: string | null;
       created_at: string;
     }>`
-      select id, lead_id, client_name, payload::text as payload, retail_html, selected_option, status,
+      select id, lead_id, client_name, payload::text as payload, retail_html, contract_html, invoice_html,
+             selected_option, accepted_option, status, title, pdf_name, pdf_data,
              created_at::text as created_at
       from lease_quotes where id = ${data.id} limit 1
     `;
@@ -1661,3 +1747,354 @@ export const getLeaseQuote = createServerFn({ method: "GET" })
     return rows[0];
   });
 
+export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: {
+      quoteId: string;
+      optionNumber: number;
+      contractStyle?: string;
+    }) => data,
+  )
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const rows = await sql<{
+      id: string;
+      lead_id: string | null;
+      payload: string;
+      retail_html: string | null;
+    }>`
+      select id, lead_id, payload::text as payload, retail_html
+      from lease_quotes where id = ${data.quoteId} limit 1
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("Quote not found");
+    let payload: {
+      client: ClientQuoteInfo;
+      options: LeaseOptionResult[];
+      taxRate: number;
+    };
+    try {
+      payload = JSON.parse(row.payload) as typeof payload;
+    } catch {
+      throw new Error("Corrupt quote payload");
+    }
+    const opt = payload.options[data.optionNumber - 1];
+    if (!opt) throw new Error("Invalid option number");
+    const taxRate = payload.taxRate || taxRateForProvince(payload.client.province || "QC");
+    const style = (data.contractStyle || payload.client.contractStyle || "qc_individual_en") as ContractStyleKey;
+    await ensureContractTemplates(sql);
+    const tplRows = await sql<{ body_html: string }>`
+      select body_html from contract_templates where style_key = ${style} limit 1
+    `;
+    const body =
+      tplRows[0]?.body_html || defaultContractBody(style);
+    const contractInner = renderContractTemplate(body, payload.client, opt, taxRate);
+    const contractHtml = wrapPrintable(`Lease Contract — ${payload.client.clientName}`, contractInner);
+    const invoiceHtml = buildFirstInvoiceHtml(payload.client, opt, taxRate);
+    // Single-option retail snapshot
+    const retailOne = buildRetailQuoteHtml(payload.client, payload.options.map((o, i) =>
+      i === data.optionNumber - 1 ? o : { ...o, cost: 0, payment: 0, deposit: 0, residual: 0 },
+    ), taxRate);
+    const pdfName = buildQuotePdfFileName({
+      quoteDate: payload.client.quoteDate,
+      clientName: payload.client.clientName,
+      option: data.optionNumber,
+      stock: payload.client.stock,
+      year: payload.client.year,
+      make: payload.client.make,
+      model: payload.client.model,
+    }).replace(/\.pdf$/i, ".html");
+    const pdfData = `data:text/html;base64,${Buffer.from(retailOne, "utf8").toString("base64")}`;
+
+    await sql`
+      update lease_quotes set
+        accepted_option = ${data.optionNumber},
+        selected_option = ${data.optionNumber},
+        status = 'accepted',
+        contract_html = ${contractHtml},
+        invoice_html = ${invoiceHtml},
+        retail_html = ${retailOne},
+        pdf_name = ${pdfName},
+        pdf_data = ${pdfData},
+        updated_at = now()
+      where id = ${data.quoteId}
+    `;
+
+    if (row.lead_id) {
+      await sql`
+        update leads set
+          accepted_quote_id = ${data.quoteId},
+          quote_sent = true,
+          quote_pdf_name = ${pdfName},
+          quote_pdf_data = ${pdfData},
+          guarantor = ${payload.client.guarantor || null},
+          estimated_value = ${opt.cost + opt.extra + opt.profit},
+          stage = case when stage in ('new','contacted','paused','quote_sent') then 'quote_sent' else stage end,
+          updated_at = now()
+        where id = ${row.lead_id}
+      `;
+      await sql`
+        insert into lead_quote_files (
+          id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
+        ) values (
+          ${id()}, ${row.lead_id}, ${data.quoteId}, ${data.optionNumber},
+          ${pdfName}, ${pdfData}, 'text/html', 'accepted_option', ${me.id}
+        )
+      `;
+      await sql`
+        insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+        values (
+          ${id()}, ${row.lead_id}, 'quote',
+          ${`Accepted Option ${data.optionNumber} · total payment ${opt.totalPayment} · contract + 1st invoice generated`},
+          ${me.id}, ${me.name}
+        )
+      `;
+    }
+    return {
+      ok: true as const,
+      quoteId: data.quoteId,
+      optionNumber: data.optionNumber,
+      contractHtml,
+      invoiceHtml,
+      retailHtml: retailOne,
+      pdfName,
+      pdfData,
+    };
+  });
+
+export const listLeadQuoteFiles = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .validator((data: { leadId: string }) => data)
+  .handler(async ({ context, data }) => {
+    await requireProfile(context.userId);
+    const sql = await boot();
+    return sql<{
+      id: string;
+      quote_id: string | null;
+      option_number: number | null;
+      file_name: string;
+      mime_type: string;
+      source: string;
+      created_at: string;
+      has_data: boolean;
+    }>`
+      select id, quote_id, option_number, file_name, mime_type, source,
+             created_at::text as created_at,
+             (file_data is not null and length(file_data) > 0) as has_data
+      from lead_quote_files
+      where lead_id = ${data.leadId}
+      order by created_at desc
+      limit 100
+    `;
+  });
+
+export const getLeadQuoteFile = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .validator((data: { id: string }) => data)
+  .handler(async ({ context, data }) => {
+    await requireProfile(context.userId);
+    const sql = await boot();
+    const rows = await sql<{
+      id: string;
+      file_name: string;
+      file_data: string;
+      mime_type: string;
+    }>`
+      select id, file_name, file_data, mime_type from lead_quote_files where id = ${data.id} limit 1
+    `;
+    if (!rows[0]) throw new Error("File not found");
+    return rows[0];
+  });
+
+export const readyForBusinessCentral = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { leadId: string; quoteId?: string | null }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const leadRows = await sql.query<Record<string, unknown>>(
+      `select ${leadSelect} from leads l where l.id = $1 limit 1`,
+      [data.leadId],
+    );
+    if (!leadRows[0]) throw new Error("Lead not found");
+    const lead = mapLead(leadRows[0]);
+
+    let quoteId = data.quoteId || lead.accepted_quote_id;
+    if (!quoteId) {
+      const q = await sql<{ id: string }>`
+        select id from lease_quotes
+        where lead_id = ${data.leadId}
+        order by case when status = 'accepted' then 0 else 1 end, created_at desc
+        limit 1
+      `;
+      quoteId = q[0]?.id || null;
+    }
+    if (!quoteId) {
+      throw new Error("Save and accept a lease quote before Ready for Business Central.");
+    }
+    const qrows = await sql<{
+      id: string;
+      payload: string;
+      pdf_name: string | null;
+      pdf_data: string | null;
+      retail_html: string | null;
+      accepted_option: number | null;
+      status: string;
+    }>`
+      select id, payload::text as payload, pdf_name, pdf_data, retail_html, accepted_option, status
+      from lease_quotes where id = ${quoteId} limit 1
+    `;
+    const quote = qrows[0];
+    if (!quote) throw new Error("Quote not found");
+    if (!quote.accepted_option) {
+      throw new Error("Accept one of the 3 quote options before creating the Drive folder.");
+    }
+    let payload: { client: ClientQuoteInfo; options: LeaseOptionResult[] };
+    try {
+      payload = JSON.parse(quote.payload) as typeof payload;
+    } catch {
+      throw new Error("Corrupt quote");
+    }
+    const client = payload.client;
+    const folderName = buildDealFolderName({
+      year: client.year,
+      make: client.make,
+      model: client.model,
+      trim: client.trim,
+      lessee: client.clientName || lead.name,
+      guarantor: client.guarantor || lead.guarantor || "",
+    });
+    const now = new Date();
+    if (!isDriveConfigured()) {
+      throw new Error(
+        "Google Drive is not configured. Re-run OAuth with Drive scope and set GOOGLE_DRIVE_REFRESH_TOKEN (or GMAIL_REFRESH_TOKEN with Drive access).",
+      );
+    }
+    const folder = await ensureDealFolder({
+      year: now.getFullYear(),
+      monthIndex: now.getMonth(),
+      folderName,
+    });
+    const optNum = quote.accepted_option || 1;
+    const fileName =
+      quote.pdf_name ||
+      buildQuotePdfFileName({
+        quoteDate: client.quoteDate,
+        clientName: client.clientName,
+        option: optNum,
+        stock: client.stock,
+        year: client.year,
+        make: client.make,
+        model: client.model,
+      }).replace(/\.pdf$/i, ".html");
+    let fileMeta: { fileId: string; fileUrl: string } | null = null;
+    const pdfData = quote.pdf_data || (quote.retail_html
+      ? `data:text/html;base64,${Buffer.from(quote.retail_html, "utf8").toString("base64")}`
+      : null);
+    if (pdfData) {
+      fileMeta = await uploadFileToFolder({
+        folderId: folder.folderId,
+        fileName,
+        mimeType: "text/html",
+        data: pdfData,
+      });
+      await sql`
+        update lease_quotes set
+          drive_file_id = ${fileMeta.fileId},
+          drive_file_url = ${fileMeta.fileUrl},
+          updated_at = now()
+        where id = ${quoteId}
+      `;
+    }
+    await sql`
+      update leads set
+        stage = 'ready_bc',
+        stage_entered_at = now(),
+        drive_folder_id = ${folder.folderId},
+        drive_folder_url = ${folder.folderUrl},
+        accepted_quote_id = ${quoteId},
+        updated_at = now()
+      where id = ${data.leadId}
+    `;
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+      values (
+        ${id()}, ${data.leadId}, 'stage',
+        ${`Ready for Business Central · Drive folder: ${folder.path}`},
+        ${me.id}, ${me.name}
+      )
+    `;
+    return {
+      ok: true as const,
+      folderId: folder.folderId,
+      folderUrl: folder.folderUrl,
+      path: folder.path,
+      fileUrl: fileMeta?.fileUrl || null,
+    };
+  });
+
+async function ensureContractTemplates(sql: Awaited<ReturnType<typeof boot>>) {
+  for (const m of CONTRACT_STYLE_META) {
+    const existing = await sql<{ id: string }>`
+      select id from contract_templates where style_key = ${m.key} limit 1
+    `;
+    if (existing[0]) continue;
+    await sql`
+      insert into contract_templates (id, style_key, label, language, jurisdiction, party_type, body_html)
+      values (
+        ${id()}, ${m.key}, ${m.label}, ${m.language}, ${m.jurisdiction}, ${m.party_type},
+        ${defaultContractBody(m.key)}
+      )
+    `;
+  }
+}
+
+export const listContractTemplates = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    await requireAdmin(context.userId);
+    const sql = await boot();
+    await ensureContractTemplates(sql);
+    return sql<{
+      id: string;
+      style_key: string;
+      label: string;
+      language: string;
+      jurisdiction: string;
+      party_type: string;
+      body_html: string;
+      updated_at: string;
+    }>`
+      select id, style_key, label, language, jurisdiction, party_type, body_html,
+             updated_at::text as updated_at
+      from contract_templates
+      order by label
+    `;
+  });
+
+export const updateContractTemplate = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { styleKey: string; bodyHtml: string; label?: string }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireAdmin(context.userId);
+    const sql = await boot();
+    await ensureContractTemplates(sql);
+    await sql`
+      update contract_templates set
+        body_html = ${data.bodyHtml},
+        label = coalesce(${data.label || null}, label),
+        updated_by = ${me.id},
+        updated_at = now()
+      where style_key = ${data.styleKey}
+    `;
+    return { ok: true as const };
+  });
+
+export const driveHealth = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    await requireProfile(context.userId);
+    return probeDrive();
+  });

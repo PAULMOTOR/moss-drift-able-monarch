@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -26,6 +27,9 @@ import {
   getAdminMetrics,
   getMyProfile,
   listProfiles,
+  listContractTemplates,
+  updateContractTemplate,
+  driveHealth,
 } from "@/lib/crm/server";
 import { STAGES, type AdminMetrics, type Profile, type Role } from "@/lib/crm/types";
 import { cn, formatCurrency } from "@/lib/utils";
@@ -50,6 +54,7 @@ type EditForm = {
 
 type ImportStatus = Awaited<ReturnType<typeof adminEmailImportStatus>>;
 
+// contract editor state helpers placed near top of module
 function emptyCreate() {
   return {
     name: "",
@@ -74,6 +79,19 @@ function AdminPage() {
   const [clearingLeads, setClearingLeads] = useState(false);
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const [importing, setImporting] = useState(false);
+  const [contracts, setContracts] = useState<Array<{
+    style_key: string;
+    label: string;
+    body_html: string;
+    language: string;
+    jurisdiction: string;
+  }>>([]);
+  const [contractKey, setContractKey] = useState("qc_individual_en");
+  const [contractBody, setContractBody] = useState("");
+  const [driveStatus, setDriveStatus] = useState<{ ok: boolean; error?: string } | null>(null);
+  const listContracts = useServerFn(listContractTemplates);
+  const saveContract = useServerFn(updateContractTemplate);
+  const driveProbe = useServerFn(driveHealth);
   const createUser = useServerFn(adminCreateUser);
   const updateUser = useServerFn(adminUpdateUser);
   const deleteUser = useServerFn(adminDeleteUser);
@@ -730,7 +748,68 @@ function AdminPage() {
           </div>
         </CardContent>
       </Card>
-    </>
+    
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="text-lg">Lease contracts (admin)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Six contract styles. Edit the HTML body. Placeholders: client_name, payment, residual, term, start_date (double curly braces).
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {contracts.map((c) => (
+              <Button
+                key={c.style_key}
+                type="button"
+                size="sm"
+                variant={contractKey === c.style_key ? "default" : "outline"}
+                onClick={() => {
+                  setContractKey(c.style_key);
+                  setContractBody(c.body_html);
+                }}
+              >
+                {c.label}
+              </Button>
+            ))}
+          </div>
+          <Textarea
+            value={contractBody}
+            onChange={(e) => setContractBody(e.target.value)}
+            className="min-h-[220px] font-mono text-xs"
+          />
+          <Button
+            type="button"
+            onClick={async () => {
+              try {
+                await saveContract({ data: { styleKey: contractKey, bodyHtml: contractBody } });
+                toast.success("Contract template saved");
+                const c = await listContracts();
+                setContracts(c);
+              } catch (e) {
+                toast.error(e instanceof Error ? e.message : "Save failed");
+              }
+            }}
+          >
+            Save contract template
+          </Button>
+          <div className="rounded-sm border border-border bg-muted/30 p-3 text-xs">
+            <p className="font-semibold">Google Drive (Ready for BC)</p>
+            <p className="text-muted-foreground">
+              {driveStatus == null
+                ? "—"
+                : driveStatus.ok
+                  ? "Connected — can create year/month/deal folders"
+                  : `Not ready: ${driveStatus.error || "check OAuth Drive scope"}`}
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              Parent folder must be shared with the Google account used for OAuth. Re-auth with Drive scope if needed
+              (GOOGLE_DRIVE_REFRESH_TOKEN).
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+</>
   );
 }
 

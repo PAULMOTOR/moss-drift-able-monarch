@@ -18,7 +18,7 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Paul Motor Co. CRM — lead capture, inventory, pipeline, and test drives (Business Central–style).",
+          "Paul Motor Co. CRM — lead capture, inventory, pipeline, and lease quotes (Business Central–style).",
       },
       { name: "theme-color", content: "#008272" },
     ],

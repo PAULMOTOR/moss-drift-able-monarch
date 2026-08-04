@@ -65,7 +65,7 @@ function HomePage() {
           <BcTile label="Open pipeline" value={data.totals.open} to="/pipeline" />
           <BcTile label="My open" value={data.mine} to="/leads" />
           <BcTile label="Quotes pending" value={data.totals.quote_pending} to="/pipeline" />
-          <BcTile label="Test drives" value={data.totals.drives} to="/test-drives" />
+          <BcTile label="Lease quotes" value={data.totals.drives ?? 0} to="/quote" />
         </div>
       </section>
 
@@ -92,9 +92,9 @@ function HomePage() {
           sub="Kanban board"
         />
         <QuickLink
-          to="/test-drives"
+          to="/quote"
           icon={<CalendarDays className="size-4" />}
-          title="Test drives"
+          title="Lease quotes"
           sub="Schedule and status"
         />
       </div>

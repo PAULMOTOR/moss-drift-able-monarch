@@ -20,7 +20,6 @@ import {
 } from "@/components/ui/select";
 import {
   addActivity,
-  bookTestDrive,
   clearLeadPause,
   deleteLead,
   getLead,
@@ -28,6 +27,11 @@ import {
   listProfiles,
   scheduleContactAppointment,
   updateLead,
+  listLeaseQuotes,
+  listLeadQuoteFiles,
+  getLeadQuoteFile,
+  readyForBusinessCentral,
+  getLeaseQuote,
 } from "@/lib/crm/server";
 import {
   LEAD_TYPES,
@@ -39,7 +43,6 @@ import {
   type Lead,
   type LeadActivity,
   type Profile,
-  type TestDrive,
 } from "@/lib/crm/types";
 import {
   cn,
@@ -63,15 +66,13 @@ function LeadDetail() {
   const updateFn = useServerFn(updateLead);
   const deleteFn = useServerFn(deleteLead);
   const noteFn = useServerFn(addActivity);
-  const bookFn = useServerFn(bookTestDrive);
   const scheduleFn = useServerFn(scheduleContactAppointment);
   const clearPauseFn = useServerFn(clearLeadPause);
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
   const [lead, setLead] = useState<Lead | null>(null);
   const [activities, setActivities] = useState<LeadActivity[]>([]);
-  const [drives, setDrives] = useState<TestDrive[]>([]);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+    const [profiles, setProfiles] = useState<Profile[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [note, setNote] = useState("");
   const [missing, setMissing] = useState(false);
@@ -80,11 +81,6 @@ function LeadDetail() {
   const [editPhone, setEditPhone] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [driveAt, setDriveAt] = useState(() => {
-    const d = new Date();
-    d.setHours(d.getHours() + 2, 0, 0, 0);
-    return toLocalInputValue(d);
-  });
   const [contactAt, setContactAt] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
@@ -93,6 +89,24 @@ function LeadDetail() {
   });
   const [contactNote, setContactNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [savedQuotes, setSavedQuotes] = useState<Array<{
+    id: string;
+    title: string | null;
+    status: string;
+    accepted_option: number | null;
+    created_at: string;
+    pdf_name: string | null;
+  }>>([]);
+  const [quoteFiles, setQuoteFiles] = useState<Array<{
+    id: string;
+    file_name: string;
+    source: string;
+    option_number: number | null;
+    created_at: string;
+  }>>([]);
+  const readyBc = useServerFn(readyForBusinessCentral);
+  const getQuoteFile = useServerFn(getLeadQuoteFile);
+  const getQuote = useServerFn(getLeaseQuote);
 
   async function load() {
     const [detail, people, inv] = await Promise.all([
@@ -113,7 +127,22 @@ function LeadDetail() {
     setEditPhone(detail.lead.phone || "");
     setEditEmail(detail.lead.email || "");
     setActivities(detail.activities);
-    setDrives(detail.drives);
+    void listLeaseQuotes({ data: { leadId } })
+      .then(setSavedQuotes)
+      .catch(() => setSavedQuotes([]));
+    void listLeadQuoteFiles({ data: { leadId } })
+      .then((rows) =>
+        setQuoteFiles(
+          rows.map((r) => ({
+            id: r.id,
+            file_name: r.file_name,
+            source: r.source,
+            option_number: r.option_number,
+            created_at: r.created_at,
+          })),
+        ),
+      )
+      .catch(() => setQuoteFiles([]));
   }
 
   useEffect(() => {
@@ -236,6 +265,25 @@ function LeadDetail() {
               <Link to="/quote" search={{ leadId: lead.id }}>
                 Lease quote
               </Link>
+            </Button>
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const r = await readyBc({ data: { leadId: lead.id } });
+                  toast.success("Drive folder ready");
+                  if (r.folderUrl) window.open(r.folderUrl, "_blank");
+                  await load();
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Drive folder failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Ready for BC
             </Button>
             <span
               className={cn(
@@ -389,67 +437,99 @@ function LeadDetail() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="font-display text-xl">Test drives</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  type="datetime-local"
-                  value={driveAt}
-                  onChange={(e) => setDriveAt(e.target.value)}
-                  className="h-11"
-                />
-                <Button
-                  type="button"
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      await bookFn({
-                        data: {
-                          lead_id: lead.id,
-                          inventory_id: lead.inventory_id,
-                          scheduled_at: new Date(driveAt).toISOString(),
-                          duration_minutes: 45,
-                        },
-                      });
-                      toast.success("Test drive booked");
-                      await load();
-                    } catch (e) {
-                      toast.error(e instanceof Error ? e.message : "Booking failed");
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  <CalendarPlus className="size-4" />
-                  Book
-                </Button>
-              </div>
-              {drives.map((d) => (
-                <div
-                  key={d.id}
-                  className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-sm"
-                >
-                  <div>
-                    <p className="font-medium">{formatDateTime(d.scheduled_at)}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {d.vehicle_label || "Vehicle TBD"} · {d.status}
-                    </p>
-                  </div>
-                </div>
-              ))}
-              {drives.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No test drives yet.</p>
-              ) : null}
-            </CardContent>
-          </Card>
         </div>
 
         <div className="space-y-4 lg:col-span-2">
+          
           <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="font-display text-lg">Saved lease quotes</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 p-4 pt-0">
+              {savedQuotes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No CRM quotes yet. Use Lease quote to create one.</p>
+              ) : (
+                savedQuotes.map((q) => (
+                  <div key={q.id} className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border px-3 py-2 text-sm">
+                    <div>
+                      <p className="font-medium">{q.title || q.pdf_name || q.id.slice(0, 8)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(q.created_at).toLocaleString()} · {q.status}
+                        {q.accepted_option ? ` · Opt ${q.accepted_option} accepted` : ""}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button asChild size="sm" variant="outline">
+                        <Link to="/quote" search={{ leadId: lead.id, quoteId: q.id }}>
+                          Reopen
+                        </Link>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={async () => {
+                          try {
+                            const full = await getQuote({ data: { id: q.id } });
+                            if (full.retail_html) {
+                              const w = window.open("", "_blank");
+                              if (w) { w.document.write(full.retail_html); w.document.close(); }
+                            } else if (full.pdf_data?.startsWith("data:")) {
+                              window.open(full.pdf_data, "_blank");
+                            }
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : "Open failed");
+                          }
+                        }}
+                      >
+                        View PDF
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+              {quoteFiles.length > 0 ? (
+                <div className="mt-3 border-t border-border pt-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Quote files</p>
+                  {quoteFiles.map((f) => (
+                    <div key={f.id} className="flex items-center justify-between gap-2 py-1 text-sm">
+                      <span className="truncate">{f.file_name} <span className="text-xs text-muted-foreground">({f.source})</span></span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={async () => {
+                          try {
+                            const file = await getQuoteFile({ data: { id: f.id } });
+                            const w = window.open("", "_blank");
+                            if (!w) return;
+                            if (file.file_data.startsWith("data:text/html")) {
+                              const b64 = file.file_data.split(",")[1] || "";
+                              w.document.write(atob(b64));
+                              w.document.close();
+                            } else {
+                              w.location.href = file.file_data;
+                            }
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : "Open failed");
+                          }
+                        }}
+                      >
+                        Open
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {lead.drive_folder_url ? (
+                <p className="pt-2 text-xs">
+                  Drive folder:{" "}
+                  <a className="text-primary underline" href={lead.drive_folder_url} target="_blank" rel="noreferrer">
+                    open in Google Drive
+                  </a>
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
+<Card>
             <CardHeader className="pb-2">
               <CardTitle className="font-display text-lg">Contact</CardTitle>
             </CardHeader>
