@@ -55,6 +55,7 @@
     "googleapis": "^173.0.0",
     "kysely": "^0.28.5",
     "lucide-react": "^0.510.0",
+    "pdfkit": "^0.19.1",
     "pg": "^8.16.3",
     "react": "^19.1.0",
     "react-day-picker": "^9.14.0",
@@ -73,6 +74,7 @@
   "devDependencies": {
     "@eslint/js": "^9.20.0",
     "@types/node": "^22.16.5",
+    "@types/pdfkit": "^0.17.6",
     "@types/pg": "^8.11.10",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",

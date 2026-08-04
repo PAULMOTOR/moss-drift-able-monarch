@@ -17,6 +17,7 @@ import {
   taxRateForProvince,
   wrapPrintable,
 } from "./lease-quote";
+import { buildRetailQuotePdf, pdfDataUrl } from "./quote-pdf";
 import {
   buildDealFolderName,
   buildQuotePdfFileName,
@@ -1590,7 +1591,6 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
     const title =
       data.title ||
       `Quote ${data.client.clientName || "Client"} · ${data.client.quoteDate || ""}`.trim();
-    // Store printable HTML as the "PDF" payload (print → Save as PDF)
     const pdfName = buildQuotePdfFileName({
       quoteDate: data.client.quoteDate,
       clientName: data.client.clientName,
@@ -1599,8 +1599,9 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
       year: data.client.year,
       make: data.client.make,
       model: data.client.model,
-    }).replace(/\.pdf$/i, ".html");
-    const pdfData = `data:text/html;base64,${Buffer.from(html, "utf8").toString("base64")}`;
+    });
+    const pdfBuf = await buildRetailQuotePdf(data.client, data.options, taxRate);
+    const pdfData = pdfDataUrl(pdfBuf);
 
     if (data.existingId) {
       await sql`
@@ -1656,7 +1657,7 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
           id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
         ) values (
           ${id()}, ${data.leadId}, ${quoteId}, ${data.selectedOption ?? 1},
-          ${pdfName}, ${pdfData}, 'text/html', 'crm_quote', ${me.id}
+          ${pdfName}, ${pdfData}, 'application/pdf', 'crm_quote', ${me.id}
         )
       `;
       await sql`
@@ -1793,10 +1794,16 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
     const contractInner = renderContractTemplate(body, payload.client, opt, taxRate);
     const contractHtml = wrapPrintable(`Lease Contract — ${payload.client.clientName}`, contractInner);
     const invoiceHtml = buildFirstInvoiceHtml(payload.client, opt, taxRate);
-    // Single-option retail snapshot
-    const retailOne = buildRetailQuoteHtml(payload.client, payload.options.map((o, i) =>
-      i === data.optionNumber - 1 ? o : { ...o, cost: 0, payment: 0, deposit: 0, residual: 0 },
-    ), taxRate);
+    // Single-option retail snapshot for contract packet
+    const retailOne = buildRetailQuoteHtml(
+      payload.client,
+      payload.options.map((o, i) =>
+        i === data.optionNumber - 1
+          ? o
+          : { ...o, cost: 0, payment: 0, deposit: 0, residual: 0 },
+      ),
+      taxRate,
+    );
     const pdfName = buildQuotePdfFileName({
       quoteDate: payload.client.quoteDate,
       clientName: payload.client.clientName,
@@ -1805,8 +1812,9 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
       year: payload.client.year,
       make: payload.client.make,
       model: payload.client.model,
-    }).replace(/\.pdf$/i, ".html");
-    const pdfData = `data:text/html;base64,${Buffer.from(retailOne, "utf8").toString("base64")}`;
+    });
+    const pdfBuf = await buildRetailQuotePdf(payload.client, payload.options, taxRate);
+    const pdfData = pdfDataUrl(pdfBuf);
 
     await sql`
       update lease_quotes set
@@ -1840,7 +1848,7 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
           id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
         ) values (
           ${id()}, ${row.lead_id}, ${data.quoteId}, ${data.optionNumber},
-          ${pdfName}, ${pdfData}, 'text/html', 'accepted_option', ${me.id}
+          ${pdfName}, ${pdfData}, 'application/pdf', 'accepted_option', ${me.id}
         )
       `;
       await sql`
@@ -1983,32 +1991,49 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       folderName,
     });
     const optNum = quote.accepted_option || 1;
-    const fileName =
-      quote.pdf_name ||
-      buildQuotePdfFileName({
-        quoteDate: client.quoteDate,
-        clientName: client.clientName,
-        option: optNum,
-        stock: client.stock,
-        year: client.year,
-        make: client.make,
-        model: client.model,
-      }).replace(/\.pdf$/i, ".html");
+    const fileName = buildQuotePdfFileName({
+      quoteDate: client.quoteDate,
+      clientName: client.clientName,
+      option: optNum,
+      stock: client.stock,
+      year: client.year,
+      make: client.make,
+      model: client.model,
+    });
     let fileMeta: { fileId: string; fileUrl: string } | null = null;
-    const pdfData = quote.pdf_data || (quote.retail_html
-      ? `data:text/html;base64,${Buffer.from(quote.retail_html, "utf8").toString("base64")}`
-      : null);
+    // Prefer real PDF already stored; regenerate from payload if old HTML quotes
+    let pdfData = quote.pdf_data;
+    let mimeType = "application/pdf";
+    if (pdfData?.startsWith("data:text/html") || !pdfData) {
+      const pdfBuf = await buildRetailQuotePdf(
+        client,
+        payload.options,
+        taxRateForProvince(client.province || "QC"),
+      );
+      pdfData = pdfDataUrl(pdfBuf);
+      mimeType = "application/pdf";
+      await sql`
+        update lease_quotes set
+          pdf_name = ${fileName},
+          pdf_data = ${pdfData},
+          updated_at = now()
+        where id = ${quoteId}
+      `;
+    } else if (pdfData.startsWith("data:application/pdf")) {
+      mimeType = "application/pdf";
+    }
     if (pdfData) {
       fileMeta = await uploadFileToFolder({
         folderId: folder.folderId,
         fileName,
-        mimeType: "text/html",
+        mimeType,
         data: pdfData,
       });
       await sql`
         update lease_quotes set
           drive_file_id = ${fileMeta.fileId},
           drive_file_url = ${fileMeta.fileUrl},
+          pdf_name = ${fileName},
           updated_at = now()
         where id = ${quoteId}
       `;

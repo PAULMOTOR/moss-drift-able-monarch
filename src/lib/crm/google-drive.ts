@@ -93,31 +93,84 @@ export async function ensureFolder(
   return createFolder(parentId, name);
 }
 
-/** YEAR / Month name / deal folder under the configured parent. */
+/** YEAR / Month / deal folder under parent.
+ * Month folders match existing Drive convention: "August 2026"
+ * (also reuses "08-August" or similar if already present).
+ */
 export async function ensureDealFolder(params: {
   year: number;
   monthIndex: number; // 0-11
   folderName: string;
 }): Promise<{ folderId: string; folderUrl: string; path: string }> {
-  const months = [
-    "01-January",
-    "02-February",
-    "03-March",
-    "04-April",
-    "05-May",
-    "06-June",
-    "07-July",
-    "08-August",
-    "09-September",
-    "10-October",
-    "11-November",
-    "12-December",
+  const monthLong = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
   ];
-  const root = driveParentFolderId();
+  const mi = params.monthIndex;
+  const mon = monthLong[mi] || monthLong[new Date().getMonth()];
   const yearName = String(params.year);
-  const monthName = months[params.monthIndex] || months[new Date().getMonth()];
-  const yearId = await ensureFolder(root, yearName);
-  const monthId = await ensureFolder(yearId, monthName);
+  const preferredMonth = `${mon} ${yearName}`;
+  const monthAliases = [
+    preferredMonth,
+    mon,
+    `${String(mi + 1).padStart(2, "0")}-${mon}`,
+    `${mon} ${String(params.year).slice(2)}`,
+  ];
+
+  const root = driveParentFolderId();
+  let yearId = await findChildFolder(root, yearName);
+  if (!yearId) yearId = await findChildFolder(root, `Year ${yearName}`);
+  if (!yearId) yearId = await createFolder(root, yearName);
+
+  let monthId: string | null = null;
+  let monthNameUsed = preferredMonth;
+  for (const alias of monthAliases) {
+    const found = await findChildFolder(yearId, alias);
+    if (found) {
+      monthId = found;
+      monthNameUsed = alias;
+      break;
+    }
+  }
+  if (!monthId) {
+    const drive = driveClient();
+    const listed = await drive.files.list({
+      q: `'${yearId}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`,
+      fields: "files(id, name)",
+      pageSize: 100,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    const monLower = mon.toLowerCase();
+    const hit = (listed.data.files || []).find((f) => {
+      const n = (f.name || "").toLowerCase().trim();
+      return (
+        n === preferredMonth.toLowerCase() ||
+        n === monLower ||
+        n.includes(`${monLower} ${params.year}`) ||
+        n === `${String(mi + 1).padStart(2, "0")}-${monLower}`
+      );
+    });
+    if (hit?.id) {
+      monthId = hit.id;
+      monthNameUsed = hit.name || preferredMonth;
+    }
+  }
+  if (!monthId) {
+    monthId = await createFolder(yearId, preferredMonth);
+    monthNameUsed = preferredMonth;
+  }
+
   const dealId = await ensureFolder(monthId, params.folderName);
   const drive = driveClient();
   const meta = await drive.files.get({
@@ -130,7 +183,7 @@ export async function ensureDealFolder(params: {
     folderUrl:
       meta.data.webViewLink ||
       `https://drive.google.com/drive/folders/${dealId}`,
-    path: `${yearName}/${monthName}/${params.folderName}`,
+    path: `${yearName}/${monthNameUsed}/${params.folderName}`,
   };
 }
 
@@ -281,7 +334,7 @@ export async function probeDrive(): Promise<{
       hint =
         `Parent folder ${parent} not visible to the OAuth account` +
         (accountEmail ? ` (${accountEmail})` : " (unknown email)") +
-        ". Fix: delete OLD GOOGLE_DRIVE_REFRESH_TOKEN in Vercel if it differs from the new GMAIL_REFRESH_TOKEN; re-auth with full .../auth/drive; open folder as that same account; use real folder ID not a shortcut.";
+        ". Share with client@ as Editor; use full Drive scope; align GMAIL_REFRESH_TOKEN and GOOGLE_DRIVE_REFRESH_TOKEN.";
     }
     return {
       ok: false,
