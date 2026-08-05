@@ -145,9 +145,16 @@ export function pmt(rate: number, nper: number, pv: number, fv = 0): number {
 }
 
 /**
- * Excel RATE-style inverse of PMT — annual yield % implied by a payment that
- * already includes handling (so yield > contract rate when handling > 0).
- * Matches sheet “Yield” as interest + handling combined into an effective rate.
+ * Excel RATE-style inverse of the lease payment — annual yield % (nominal).
+ *
+ * Uses beginning-of-period convention (Excel RATE type=1 / annuity due), which
+ * matches Dynamics 365 Business Central “Yield” on lease quotes. With that
+ * convention, yield is slightly higher than the contractual interest rate even
+ * when handling is $0 (e.g. 7.49% rate → ~7.54% yield). Handling added into
+ * the payment increases yield further (interest + handling combined).
+ *
+ * Solves monthly r where:
+ *   -financed*(1+r)^n + payment*(1+r)*((1+r)^n-1)/r + residual = 0
  */
 export function yieldPctFromPayment(
   termMonths: number,
@@ -156,14 +163,21 @@ export function yieldPctFromPayment(
   residual: number,
 ): number {
   if (termMonths <= 0 || payment <= 0 || financed <= 0) return 0;
-  // Binary search monthly rate r where pmt(r, n, -financed, residual) ≈ payment
   let lo = 0;
   let hi = 0.5; // 50% monthly cap
-  for (let i = 0; i < 80; i++) {
-    const mid = (lo + hi) / 2;
-    const calc = pmt(mid, termMonths, -financed, residual);
-    if (calc > payment) hi = mid;
-    else lo = mid;
+  for (let i = 0; i < 100; i++) {
+    const r = (lo + hi) / 2;
+    let npv: number;
+    if (Math.abs(r) < 1e-15) {
+      npv = -financed + payment * termMonths + residual;
+    } else {
+      const pow = Math.pow(1 + r, termMonths);
+      // type = 1 (beginning of period) — Dynamics BC Yield
+      npv = -financed * pow + (payment * (1 + r) * (pow - 1)) / r + residual;
+    }
+    // npv > 0 ⇒ discount rate too low
+    if (npv > 0) lo = r;
+    else hi = r;
   }
   return round2(lo * 12 * 100);
 }
