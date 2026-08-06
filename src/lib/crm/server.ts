@@ -21,10 +21,15 @@ import {
   buildDealFolderName,
   buildQuotePdfFileName,
   ensureDealFolder,
+  htmlToDataUrl,
   isDriveConfigured,
+  normalizeUploadPayload,
   probeDrive,
+  safeDriveFileName,
   uploadFileToFolder,
+  uploadOrReplaceFile,
 } from "./google-drive";
+
 import {
   type AdminMetrics,
   type DataAnalysis,
@@ -2168,19 +2173,53 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
     if (!quoteId) {
       throw new Error("Save and accept a lease quote before Push to Drive.");
     }
-    const qrows = await sql<{
+    type QuoteRow = {
       id: string;
       payload: string;
       pdf_name: string | null;
       pdf_data: string | null;
       retail_html: string | null;
+      contract_html: string | null;
+      invoice_html: string | null;
+      contract_pdf_name: string | null;
+      contract_pdf_data: string | null;
       accepted_option: number | null;
       status: string;
-    }>`
-      select id, payload::text as payload, pdf_name, pdf_data, retail_html, accepted_option, status
-      from lease_quotes where id = ${quoteId} limit 1
-    `;
-    const quote = qrows[0];
+    };
+    let quote: QuoteRow | undefined;
+    try {
+      const qrows = await sql<QuoteRow>`
+        select id, payload::text as payload, pdf_name, pdf_data, retail_html,
+               contract_html, invoice_html,
+               contract_pdf_name, contract_pdf_data,
+               accepted_option, status
+        from lease_quotes where id = ${quoteId} limit 1
+      `;
+      quote = qrows[0];
+    } catch {
+      const fallback = await sql<{
+        id: string;
+        payload: string;
+        pdf_name: string | null;
+        pdf_data: string | null;
+        retail_html: string | null;
+        contract_html: string | null;
+        invoice_html: string | null;
+        accepted_option: number | null;
+        status: string;
+      }>`
+        select id, payload::text as payload, pdf_name, pdf_data, retail_html,
+               contract_html, invoice_html, accepted_option, status
+        from lease_quotes where id = ${quoteId} limit 1
+      `;
+      if (fallback[0]) {
+        quote = {
+          ...fallback[0],
+          contract_pdf_name: null,
+          contract_pdf_data: null,
+        };
+      }
+    }
     if (!quote) throw new Error("Quote not found");
     if (!quote.accepted_option) {
       throw new Error("Accept one of the 3 quote options before creating the Drive folder.");
@@ -2212,7 +2251,34 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       folderName,
     });
     const optNum = quote.accepted_option || 1;
-    const fileName = buildQuotePdfFileName({
+    const taxRate = taxRateForProvince(client.province || "QC");
+    const uploaded: Array<{ name: string; url: string; kind: string; fileId: string }> = [];
+    const errors: string[] = [];
+
+    async function pushOne(
+      kind: string,
+      fileName: string,
+      mimeType: string,
+      data: string,
+    ) {
+      try {
+        const name = safeDriveFileName(fileName);
+        const res = await uploadOrReplaceFile({
+          folderId: folder.folderId,
+          fileName: name,
+          mimeType,
+          data,
+        });
+        uploaded.push({ name, url: res.fileUrl, kind, fileId: res.fileId });
+      } catch (e) {
+        errors.push(
+          `${kind}: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200),
+        );
+      }
+    }
+
+    // 1) Accepted quote PDF (always rebuild single-option)
+    const quoteFileName = buildQuotePdfFileName({
       quoteDate: client.quoteDate,
       clientName: client.clientName,
       option: optNum,
@@ -2221,36 +2287,266 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       make: client.make,
       model: client.model,
     });
-    // Always rebuild Drive PDF with ONLY the accepted option (never all 3).
-    const taxRate = taxRateForProvince(client.province || "QC");
     const pdfData = await makeQuotePdfData(client, payload.options, taxRate, {
       acceptedOption: optNum,
     });
-    const mimeType = "application/pdf";
-    await sql`
-      update lease_quotes set
-        pdf_name = ${fileName},
-        pdf_data = ${pdfData},
-        updated_at = now()
-      where id = ${quoteId}
-    `;
-    let fileMeta: { fileId: string; fileUrl: string } | null = null;
     if (pdfData) {
-      fileMeta = await uploadFileToFolder({
-        folderId: folder.folderId,
-        fileName,
-        mimeType,
-        data: pdfData,
-      });
       await sql`
         update lease_quotes set
-          drive_file_id = ${fileMeta.fileId},
-          drive_file_url = ${fileMeta.fileUrl},
-          pdf_name = ${fileName},
+          pdf_name = ${quoteFileName},
+          pdf_data = ${pdfData},
           updated_at = now()
         where id = ${quoteId}
       `;
+      await pushOne(
+        "quote",
+        `01-Accepted-Quote-${quoteFileName}`,
+        "application/pdf",
+        pdfData,
+      );
+      try {
+        const fileMeta = uploaded.find((u) => u.kind === "quote");
+        if (fileMeta) {
+          await sql`
+            update lease_quotes set
+              drive_file_id = ${fileMeta.fileId},
+              drive_file_url = ${fileMeta.url},
+              pdf_name = ${quoteFileName},
+              updated_at = now()
+            where id = ${quoteId}
+          `;
+        }
+      } catch {
+        /* non-fatal */
+      }
     }
+
+    // 2) Lease contract PDF / HTML
+    if (quote.contract_pdf_data) {
+      await pushOne(
+        "contract",
+        `02-Lease-Contract-${quote.contract_pdf_name || "Lease-Contract.pdf"}`,
+        "application/pdf",
+        quote.contract_pdf_data,
+      );
+    } else if (quote.contract_html) {
+      await pushOne(
+        "contract",
+        "02-Lease-Contract.html",
+        "text/html",
+        htmlToDataUrl(quote.contract_html),
+      );
+    }
+
+    // 3) First invoice
+    if (quote.invoice_html) {
+      await pushOne(
+        "invoice",
+        "03-First-Invoice.html",
+        "text/html",
+        htmlToDataUrl(quote.invoice_html),
+      );
+    }
+
+    // 4) Retail quote HTML snapshot (optional)
+    if (quote.retail_html) {
+      await pushOne(
+        "retail_html",
+        "04-Retail-Quote.html",
+        "text/html",
+        htmlToDataUrl(quote.retail_html),
+      );
+    }
+
+    // 5) All lead quote files (accepted options, manual PDFs, generated contracts)
+    try {
+      const quoteFiles = await sql<{
+        id: string;
+        file_name: string;
+        file_data: string;
+        mime_type: string;
+        source: string;
+        option_number: number | null;
+      }>`
+        select id, file_name, file_data, mime_type, source, option_number
+        from lead_quote_files
+        where lead_id = ${data.leadId}
+        order by created_at asc
+      `;
+      let i = 0;
+      for (const f of quoteFiles) {
+        i += 1;
+        if (!f.file_data) continue;
+        const norm = normalizeUploadPayload(f.file_data, f.mime_type || "application/pdf");
+        if (!norm) continue;
+        const prefix =
+          f.source === "lease_contract"
+            ? "Contract-file"
+            : f.source === "accepted_option"
+              ? "Accepted-option"
+              : f.source === "upload"
+                ? "Quote-upload"
+                : `Quote-${f.source || "file"}`;
+        await pushOne(
+          `quote_file:${f.source}`,
+          `05-${prefix}-${String(i).padStart(2, "0")}-${f.file_name || "file"}`,
+          norm.mimeType,
+          norm.dataUrl,
+        );
+      }
+    } catch {
+      /* table may be empty / missing */
+    }
+
+    // 6) Lead-level quote PDF (manual attach on lead form)
+    if (lead.quote_pdf_data) {
+      const norm = normalizeUploadPayload(
+        lead.quote_pdf_data,
+        "application/pdf",
+      );
+      if (norm) {
+        await pushOne(
+          "lead_quote_pdf",
+          `06-Lead-Quote-${lead.quote_pdf_name || "quote.pdf"}`,
+          norm.mimeType,
+          norm.dataUrl,
+        );
+      }
+    }
+
+    // 7) Credit documents (IDs, NOA, bank statements, equifax, other)
+    try {
+      const docs = await sql<{
+        id: string;
+        kind: string;
+        file_name: string;
+        mime_type: string;
+        file_data: string;
+      }>`
+        select id, kind, file_name, mime_type, file_data
+        from credit_documents
+        where lead_id = ${data.leadId}
+        order by created_at asc
+      `;
+      const kindLabel: Record<string, string> = {
+        dl_front: "ID-DL-Front",
+        dl_back: "ID-DL-Back",
+        id_second: "ID-Second",
+        noa_payslip: "Credit-NOA-Payslip",
+        bank_statement: "Credit-Bank-Statement",
+        equifax: "Credit-Equifax",
+        other: "Credit-Other",
+      };
+      let di = 0;
+      for (const d of docs) {
+        di += 1;
+        if (!d.file_data) continue;
+        const norm = normalizeUploadPayload(
+          d.file_data,
+          d.mime_type || "application/octet-stream",
+        );
+        if (!norm) continue;
+        const label = kindLabel[d.kind] || `Credit-${d.kind}`;
+        const ext =
+          d.file_name?.includes(".")
+            ? ""
+            : norm.mimeType.includes("pdf")
+              ? ".pdf"
+              : norm.mimeType.includes("png")
+                ? ".png"
+                : norm.mimeType.includes("jpeg") || norm.mimeType.includes("jpg")
+                  ? ".jpg"
+                  : "";
+        await pushOne(
+          `credit_doc:${d.kind}`,
+          `10-${label}-${String(di).padStart(2, "0")}-${d.file_name || `file${ext}`}`,
+          norm.mimeType,
+          norm.dataUrl,
+        );
+      }
+    } catch {
+      /* credit tables may not exist yet */
+    }
+
+    // 8) Equifax on credit application (if not already in documents)
+    try {
+      const apps = await sql<{
+        equifax_file_name: string | null;
+        equifax_file_data: string | null;
+      }>`
+        select equifax_file_name, equifax_file_data
+        from credit_applications
+        where lead_id = ${data.leadId}
+        order by created_at desc
+        limit 1
+      `;
+      const eq = apps[0];
+      if (eq?.equifax_file_data) {
+        const already = uploaded.some((u) => u.kind.startsWith("credit_doc:equifax"));
+        if (!already) {
+          const norm = normalizeUploadPayload(eq.equifax_file_data, "application/pdf");
+          if (norm) {
+            await pushOne(
+              "equifax_app",
+              `10-Credit-Equifax-${eq.equifax_file_name || "equifax.pdf"}`,
+              norm.mimeType,
+              norm.dataUrl,
+            );
+          }
+        }
+      }
+    } catch {
+      /* optional */
+    }
+
+    // 9) Inventory vehicle image (if we have a data URL or can fetch http)
+    if (lead.inventory_id) {
+      try {
+        const inv = await sql<{
+          image_url: string | null;
+          stock_number: string | null;
+          year: number;
+          make: string;
+          model: string;
+        }>`
+          select image_url, stock_number, year, make, model
+          from inventory where id = ${lead.inventory_id} limit 1
+        `;
+        const img = inv[0]?.image_url;
+        if (img?.startsWith("data:")) {
+          const norm = normalizeUploadPayload(img, "image/jpeg");
+          if (norm) {
+            await pushOne(
+              "vehicle_photo",
+              `20-Vehicle-Photo-${inv[0]!.stock_number || "unit"}.jpg`,
+              norm.mimeType,
+              norm.dataUrl,
+            );
+          }
+        } else if (img && /^https?:\/\//i.test(img)) {
+          try {
+            const res = await fetch(img, { signal: AbortSignal.timeout(12_000) });
+            if (res.ok) {
+              const buf = Buffer.from(await res.arrayBuffer());
+              const ct = res.headers.get("content-type") || "image/jpeg";
+              if (ct.startsWith("image/") && buf.length < 8_000_000) {
+                await pushOne(
+                  "vehicle_photo",
+                  `20-Vehicle-Photo-${inv[0]!.stock_number || "unit"}.jpg`,
+                  ct,
+                  `data:${ct};base64,${buf.toString("base64")}`,
+                );
+              }
+            }
+          } catch {
+            /* skip remote photo */
+          }
+        }
+      } catch {
+        /* optional */
+      }
+    }
+
     await sql`
       update leads set
         stage = 'ready_bc',
@@ -2261,11 +2557,14 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         updated_at = now()
       where id = ${data.leadId}
     `;
+    const summary = `Push to Drive · ${uploaded.length} file(s) → ${folder.path}${
+      errors.length ? ` · ${errors.length} skipped/error` : ""
+    }`;
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${id()}, ${data.leadId}, 'stage',
-        ${`Push to Drive · Drive folder: ${folder.path}`},
+        ${summary + (uploaded.length ? `\n` + uploaded.map((u) => `• ${u.name}`).join("\n") : "")},
         ${me.id}, ${me.name}
       )
     `;
@@ -2274,7 +2573,10 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       folderId: folder.folderId,
       folderUrl: folder.folderUrl,
       path: folder.path,
-      fileUrl: fileMeta?.fileUrl || null,
+      fileUrl: uploaded.find((u) => u.kind === "quote")?.url || uploaded[0]?.url || null,
+      uploadedCount: uploaded.length,
+      uploaded: uploaded.map((u) => ({ name: u.name, kind: u.kind, url: u.url })),
+      errors,
     };
   });
 

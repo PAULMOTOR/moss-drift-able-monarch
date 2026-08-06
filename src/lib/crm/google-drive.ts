@@ -348,6 +348,117 @@ export async function uploadFileToFolder(params: {
   };
 }
 
+/** Find a non-trashed file by exact name under a folder. */
+export async function findFileInFolder(
+  folderId: string,
+  fileName: string,
+): Promise<string | null> {
+  const drive = driveClient();
+  const q = [
+    `'${folderId}' in parents`,
+    `name = '${fileName.replace(/'/g, "\\'")}'`,
+    "trashed = false",
+  ].join(" and ");
+  const res = await drive.files.list({
+    q,
+    fields: "files(id, name)",
+    pageSize: 5,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  return res.data.files?.[0]?.id || null;
+}
+
+/**
+ * Upload a file; if the same name already exists in the folder, replace its media
+ * (keeps Push to Drive idempotent instead of stacking duplicates).
+ */
+export async function uploadOrReplaceFile(params: {
+  folderId: string;
+  fileName: string;
+  mimeType: string;
+  data: string;
+}): Promise<{ fileId: string; fileUrl: string; replaced: boolean }> {
+  const existingId = await findFileInFolder(params.folderId, params.fileName);
+  let b64 = params.data;
+  if (b64.startsWith("data:")) {
+    b64 = b64.split(",")[1] || "";
+  }
+  // Also allow plain text (HTML) when not base64-looking
+  let body: Buffer;
+  if (!params.data.startsWith("data:") && !/^[A-Za-z0-9+/=\s]+$/.test(params.data.slice(0, 80))) {
+    body = Buffer.from(params.data, "utf8");
+  } else {
+    body = Buffer.from(b64, "base64");
+  }
+
+  const drive = driveClient();
+  if (existingId) {
+    const res = await drive.files.update({
+      fileId: existingId,
+      media: {
+        mimeType: params.mimeType,
+        body: ReadableFrom(body),
+      },
+      fields: "id, webViewLink",
+      supportsAllDrives: true,
+    });
+    return {
+      fileId: res.data.id || existingId,
+      fileUrl:
+        res.data.webViewLink ||
+        `https://drive.google.com/file/d/${existingId}/view`,
+      replaced: true,
+    };
+  }
+  const created = await uploadFileToFolder({
+    folderId: params.folderId,
+    fileName: params.fileName,
+    mimeType: params.mimeType,
+    data:
+      params.data.startsWith("data:") || /^[A-Za-z0-9+/=]+$/.test(b64.slice(0, 40))
+        ? params.data.startsWith("data:")
+          ? params.data
+          : `data:${params.mimeType};base64,${b64}`
+        : `data:${params.mimeType};base64,${Buffer.from(params.data, "utf8").toString("base64")}`,
+  });
+  return { ...created, replaced: false };
+}
+
+/** Sanitize a Drive file name (no path separators). */
+export function safeDriveFileName(name: string, fallback = "file"): string {
+  const n = String(name || fallback)
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return n || fallback;
+}
+
+/** Parse data URL → { mime, base64 data URL } */
+export function normalizeUploadPayload(
+  data: string,
+  fallbackMime = "application/octet-stream",
+): { mimeType: string; dataUrl: string } | null {
+  if (!data || typeof data !== "string") return null;
+  if (data.startsWith("data:")) {
+    const m = data.match(/^data:([^;,]+)/);
+    return { mimeType: m?.[1] || fallbackMime, dataUrl: data };
+  }
+  // raw base64
+  if (data.length > 32) {
+    return {
+      mimeType: fallbackMime,
+      dataUrl: `data:${fallbackMime};base64,${data}`,
+    };
+  }
+  return null;
+}
+
+export function htmlToDataUrl(html: string): string {
+  return `data:text/html;charset=utf-8;base64,${Buffer.from(html, "utf8").toString("base64")}`;
+}
+
 /** Minimal readable stream from Buffer without importing stream types awkwardly. */
 function ReadableFrom(buf: Buffer) {
   return Readable.from(buf);

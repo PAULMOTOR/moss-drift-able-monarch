@@ -346,7 +346,12 @@ function LeadDetail() {
                 setBusy(true);
                 try {
                   const r = await readyBc({ data: { leadId: lead.id } });
-                  toast.success("Pushed to Drive");
+                  const n = (r as { uploadedCount?: number }).uploadedCount;
+                  toast.success(
+                    n != null
+                      ? `Pushed ${n} file(s) to Drive`
+                      : "Pushed to Drive",
+                  );
                   if (r.folderUrl) window.open(r.folderUrl, "_blank");
                   await load();
                 } catch (e) {

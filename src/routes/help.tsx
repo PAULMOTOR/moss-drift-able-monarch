@@ -174,17 +174,28 @@ function HelpPage() {
               On the lead, after an option is accepted, click <strong>Push to Drive</strong>.
             </li>
             <li>
-              Creates:
+              Creates the deal folder under:
               <code className="mt-1 block rounded-sm bg-muted px-2 py-1.5 text-xs">
                 … / 0. SALES - ALL / 2026 / August 2026 / YEAR Make Model - Lessee (Guarantors)
               </code>
-              and uploads the <strong>accepted-option only</strong> PDF (not all three options).
+              and uploads the <strong>full lease package</strong>:
+              <ul className="mt-1 list-disc space-y-1 pl-5">
+                <li>Accepted quote PDF (selected option only)</li>
+                <li>Lease contract + first invoice (when generated after approval)</li>
+                <li>Customer IDs (DL front/back, second ID)</li>
+                <li>Credit docs (NOA/payslips, bank statements, Equifax, etc.)</li>
+                <li>Other quote files attached on the lead</li>
+                <li>Inventory vehicle photo when available</li>
+              </ul>
+            </li>
+            <li>
+              Re-running <strong>Push to Drive</strong> updates files with the same names (avoids duplicate pile-up).
             </li>
             <li>
               Requires Google Drive access for <code className="rounded bg-muted px-1">client@</code>. If you see “File not found”, ask an admin to re-check Drive sharing.
             </li>
             <li>
-              Stage moves to <strong>Ready for Business Central</strong> when Push succeeds.
+              Stage moves to <strong>Ready for Business Central</strong> when Push succeeds. Activity log lists every file uploaded.
             </li>
           </ul>
         </Section>
