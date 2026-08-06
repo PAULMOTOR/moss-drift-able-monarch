@@ -250,7 +250,7 @@ export const requestCreditApp = createServerFn({ method: "POST" })
     `;
     const link = `${appBaseUrl()}/credit-app/${pub}`;
     const first = (lead.first_name as string) || String(lead.name).split(" ")[0] || "there";
-    await sendCrmEmail(sql, {
+    const mailResult = await sendCrmEmail(sql, {
       to: email,
       subject: "Paul Motor Leasing — Credit application & ID upload",
       kind: "credit_app_request",
@@ -272,24 +272,31 @@ You will:
 
 Your documents are only visible to authorized Paul Motor staff.
 
-— Paul Motor Co. CRM`,
+— ${me.name}
+Paul Motor Leasing`,
       html: `<div style="font-family:system-ui,sans-serif;max-width:560px;line-height:1.5">
 <p>Hi ${first},</p>
 <p><strong>Paul Motor Leasing</strong> has invited you to complete a short credit application and upload two pieces of identification for your vehicle lease.</p>
 <p><a href="${link}" style="display:inline-block;background:#008272;color:#fff;padding:12px 20px;border-radius:4px;text-decoration:none;font-weight:600">Start credit application</a></p>
 <p style="font-size:13px;color:#555">Or copy this link:<br/>${link}</p>
 <p style="font-size:13px;color:#555">No account password is required. Your documents are only visible to authorized Paul Motor staff.</p>
-<p>— Paul Motor Co.</p></div>`,
+<p>— ${String(me.name).replace(/</g, "")}<br/>Paul Motor Leasing</p></div>`,
     });
+    if (!mailResult.ok) {
+      throw new Error(
+        mailResult.error ||
+          "Email failed to send. Check RESEND_API_KEY, CRM_FROM_EMAIL, and Resend domain status.",
+      );
+    }
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'credit',
-        ${`Credit app & IDs requested → ${email}`},
+        ${`Credit app & IDs requested → ${email} (email sent)`},
         ${me.id}, ${me.name}
       )
     `;
-    return { ok: true as const, link, email };
+    return { ok: true as const, link, email, outboxId: mailResult.outboxId };
   });
 
 /** Get Credit Approval — notify credit manager */
@@ -523,7 +530,7 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
     const label =
       data.kind === "noa_payslip" ? "NOA / payslips" : "Bank / financial statements";
     const link = `${appBaseUrl()}/credit-docs/${docTok}?kind=${data.kind}`;
-    await sendCrmEmail(sql, {
+    const mailResult = await sendCrmEmail(sql, {
       to: email,
       subject: `Paul Motor Leasing — please upload ${label}`,
       kind: "lessee_doc_request",
@@ -537,11 +544,17 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
 <p style="font-size:13px;color:#555">You can reopen this link anytime to add more files until the package is complete.</p>
 <p style="font-size:13px;color:#555">— ${me.name.replace(/</g, "")}<br/>Paul Motor Leasing</p>`,
     });
+    if (!mailResult.ok) {
+      throw new Error(
+        mailResult.error ||
+          "Email failed to send. Check RESEND_API_KEY, CRM_FROM_EMAIL, and Resend domain status.",
+      );
+    }
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
-      values (${uid()}, ${data.leadId}, 'credit', ${`Requested ${label} from lessee`}, ${me.id}, ${me.name})
+      values (${uid()}, ${data.leadId}, 'credit', ${`Requested ${label} from lessee → ${email}`}, ${me.id}, ${me.name})
     `;
-    return { ok: true as const, link };
+    return { ok: true as const, link, outboxId: mailResult.outboxId };
   });
 
 // ——— Public (token) endpoints ———

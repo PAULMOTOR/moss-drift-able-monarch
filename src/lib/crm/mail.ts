@@ -62,16 +62,14 @@ export function crmFromAddress(): string {
 
 /**
  * Reply-To for a staff actor — only if their profile email is on a company domain.
- * Returns undefined for Gmail/etc. so we never set a Reply-To that will bounce SPF confusion.
+ * Bare address only (Resend rejects display-name form on reply_to).
  */
 export function replyToForActor(
   email: string | null | undefined,
-  name?: string | null,
+  _name?: string | null,
 ): string | undefined {
   const addr = (email || "").trim().toLowerCase();
   if (!isCompanyEmail(addr)) return undefined;
-  const n = (name || "").trim().replace(/[<>"]/g, "");
-  if (n) return `${n} <${addr}>`;
   return addr;
 }
 
@@ -120,7 +118,10 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
         html: htmlBody,
       };
       if (replyTo) {
-        payload.reply_to = replyTo;
+        // Resend accepts string or string[]; bare email is safest
+        payload.reply_to = replyTo.includes("<")
+          ? replyTo.replace(/^.*<([^>]+)>.*$/, "$1").trim()
+          : replyTo;
       }
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
@@ -132,11 +133,18 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
       });
       if (!res.ok) {
         const err = await res.text();
+        let friendly = err.slice(0, 500);
+        try {
+          const j = JSON.parse(err) as { message?: string; name?: string };
+          if (j.message) friendly = j.message;
+        } catch {
+          /* keep raw */
+        }
         await sql`
-          update email_outbox set status = 'error', error = ${err.slice(0, 500)}
+          update email_outbox set status = 'error', error = ${friendly.slice(0, 500)}
           where id = ${outboxId}
         `;
-        return { ok: false, via: "resend", error: err.slice(0, 200), outboxId };
+        return { ok: false, via: "resend", error: friendly.slice(0, 300), outboxId };
       }
       await sql`
         update email_outbox set status = 'sent', sent_at = now() where id = ${outboxId}
