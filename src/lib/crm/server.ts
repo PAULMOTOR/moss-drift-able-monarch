@@ -2252,8 +2252,27 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
     });
     const optNum = quote.accepted_option || 1;
     const taxRate = taxRateForProvince(client.province || "QC");
-    const uploaded: Array<{ name: string; url: string; kind: string; fileId: string }> = [];
+    const uploaded: Array<{
+      name: string;
+      url: string;
+      kind: string;
+      fileId: string;
+      replaced: boolean;
+    }> = [];
     const errors: string[] = [];
+
+    function extFromMime(mime: string, nameHint = ""): string {
+      const fromName = nameHint.match(/(\.[a-zA-Z0-9]{2,5})$/)?.[1];
+      if (fromName) return fromName.toLowerCase();
+      const m = (mime || "").toLowerCase();
+      if (m.includes("pdf")) return ".pdf";
+      if (m.includes("png")) return ".png";
+      if (m.includes("webp")) return ".webp";
+      if (m.includes("jpeg") || m.includes("jpg")) return ".jpg";
+      if (m.includes("html")) return ".html";
+      if (m.includes("gif")) return ".gif";
+      return "";
+    }
 
     async function pushOne(
       kind: string,
@@ -2269,7 +2288,13 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
           mimeType,
           data,
         });
-        uploaded.push({ name, url: res.fileUrl, kind, fileId: res.fileId });
+        uploaded.push({
+          name,
+          url: res.fileUrl,
+          kind,
+          fileId: res.fileId,
+          replaced: res.replaced,
+        });
       } catch (e) {
         errors.push(
           `${kind}: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200),
@@ -2277,7 +2302,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       }
     }
 
-    // 1) Accepted quote PDF (always rebuild single-option)
+    // 1) Accepted quote PDF — stable name so re-push always overwrites "the" quote
     const quoteFileName = buildQuotePdfFileName({
       quoteDate: client.quoteDate,
       clientName: client.clientName,
@@ -2300,7 +2325,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       `;
       await pushOne(
         "quote",
-        `01-Accepted-Quote-${quoteFileName}`,
+        "01-Accepted-Quote.pdf",
         "application/pdf",
         pdfData,
       );
@@ -2321,11 +2346,11 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       }
     }
 
-    // 2) Lease contract PDF / HTML
+    // 2) Lease contract — one canonical file (latest CRM version wins)
     if (quote.contract_pdf_data) {
       await pushOne(
         "contract",
-        `02-Lease-Contract-${quote.contract_pdf_name || "Lease-Contract.pdf"}`,
+        "02-Lease-Contract.pdf",
         "application/pdf",
         quote.contract_pdf_data,
       );
@@ -2348,7 +2373,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       );
     }
 
-    // 4) Retail quote HTML snapshot (optional)
+    // 4) Retail quote HTML snapshot
     if (quote.retail_html) {
       await pushOne(
         "retail_html",
@@ -2358,7 +2383,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       );
     }
 
-    // 5) All lead quote files (accepted options, manual PDFs, generated contracts)
+    // 5) Extra lead quote files (skip sources already covered by 01/02)
     try {
       const quoteFiles = await sql<{
         id: string;
@@ -2373,23 +2398,22 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         where lead_id = ${data.leadId}
         order by created_at asc
       `;
-      let i = 0;
+      const latestByKey = new Map<string, (typeof quoteFiles)[0]>();
       for (const f of quoteFiles) {
-        i += 1;
         if (!f.file_data) continue;
+        if (f.source === "lease_contract" || f.source === "accepted_option") continue;
+        const key = `extra-${f.source || "upload"}-${(f.file_name || "file").toLowerCase()}`;
+        latestByKey.set(key, f);
+      }
+      let i = 0;
+      for (const f of latestByKey.values()) {
+        i += 1;
         const norm = normalizeUploadPayload(f.file_data, f.mime_type || "application/pdf");
         if (!norm) continue;
-        const prefix =
-          f.source === "lease_contract"
-            ? "Contract-file"
-            : f.source === "accepted_option"
-              ? "Accepted-option"
-              : f.source === "upload"
-                ? "Quote-upload"
-                : `Quote-${f.source || "file"}`;
+        const base = (f.file_name || "file").replace(/^05-Extra-\d+-/, "");
         await pushOne(
           `quote_file:${f.source}`,
-          `05-${prefix}-${String(i).padStart(2, "0")}-${f.file_name || "file"}`,
+          `05-Extra-${String(i).padStart(2, "0")}-${base}`,
           norm.mimeType,
           norm.dataUrl,
         );
@@ -2398,7 +2422,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       /* table may be empty / missing */
     }
 
-    // 6) Lead-level quote PDF (manual attach on lead form)
+    // 6) Lead-level quote PDF (manual attach) — stable name
     if (lead.quote_pdf_data) {
       const norm = normalizeUploadPayload(
         lead.quote_pdf_data,
@@ -2407,14 +2431,14 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       if (norm) {
         await pushOne(
           "lead_quote_pdf",
-          `06-Lead-Quote-${lead.quote_pdf_name || "quote.pdf"}`,
+          `06-Lead-Attached-Quote${extFromMime(norm.mimeType, lead.quote_pdf_name || "") || ".pdf"}`,
           norm.mimeType,
           norm.dataUrl,
         );
       }
     }
 
-    // 7) Credit documents (IDs, NOA, bank statements, equifax, other)
+    // 7) Credit documents — one file per kind (latest wins)
     try {
       const docs = await sql<{
         id: string;
@@ -2437,29 +2461,22 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         equifax: "Credit-Equifax",
         other: "Credit-Other",
       };
-      let di = 0;
+      const latestByKind = new Map<string, (typeof docs)[0]>();
       for (const d of docs) {
-        di += 1;
         if (!d.file_data) continue;
+        latestByKind.set(d.kind, d);
+      }
+      for (const d of latestByKind.values()) {
         const norm = normalizeUploadPayload(
           d.file_data,
           d.mime_type || "application/octet-stream",
         );
         if (!norm) continue;
         const label = kindLabel[d.kind] || `Credit-${d.kind}`;
-        const ext =
-          d.file_name?.includes(".")
-            ? ""
-            : norm.mimeType.includes("pdf")
-              ? ".pdf"
-              : norm.mimeType.includes("png")
-                ? ".png"
-                : norm.mimeType.includes("jpeg") || norm.mimeType.includes("jpg")
-                  ? ".jpg"
-                  : "";
+        const ext = extFromMime(norm.mimeType, d.file_name || "");
         await pushOne(
           `credit_doc:${d.kind}`,
-          `10-${label}-${String(di).padStart(2, "0")}-${d.file_name || `file${ext}`}`,
+          `10-${label}${ext || ""}`,
           norm.mimeType,
           norm.dataUrl,
         );
@@ -2488,7 +2505,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
           if (norm) {
             await pushOne(
               "equifax_app",
-              `10-Credit-Equifax-${eq.equifax_file_name || "equifax.pdf"}`,
+              `10-Credit-Equifax${extFromMime(norm.mimeType, eq.equifax_file_name || "") || ".pdf"}`,
               norm.mimeType,
               norm.dataUrl,
             );
@@ -2499,7 +2516,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       /* optional */
     }
 
-    // 9) Inventory vehicle image (if we have a data URL or can fetch http)
+    // 9) Inventory vehicle image — stable name
     if (lead.inventory_id) {
       try {
         const inv = await sql<{
@@ -2518,7 +2535,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
           if (norm) {
             await pushOne(
               "vehicle_photo",
-              `20-Vehicle-Photo-${inv[0]!.stock_number || "unit"}.jpg`,
+              `20-Vehicle-Photo${extFromMime(norm.mimeType) || ".jpg"}`,
               norm.mimeType,
               norm.dataUrl,
             );
@@ -2532,7 +2549,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
               if (ct.startsWith("image/") && buf.length < 8_000_000) {
                 await pushOne(
                   "vehicle_photo",
-                  `20-Vehicle-Photo-${inv[0]!.stock_number || "unit"}.jpg`,
+                  `20-Vehicle-Photo${extFromMime(ct) || ".jpg"}`,
                   ct,
                   `data:${ct};base64,${buf.toString("base64")}`,
                 );
@@ -2557,14 +2574,16 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         updated_at = now()
       where id = ${data.leadId}
     `;
-    const summary = `Push to Drive · ${uploaded.length} file(s) → ${folder.path}${
+    const replacedCount = uploaded.filter((u) => u.replaced).length;
+    const newCount = uploaded.length - replacedCount;
+    const summary = `Push to Drive · ${uploaded.length} file(s) (${replacedCount} updated, ${newCount} new) → ${folder.path}${
       errors.length ? ` · ${errors.length} skipped/error` : ""
     }`;
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${id()}, ${data.leadId}, 'stage',
-        ${summary + (uploaded.length ? `\n` + uploaded.map((u) => `• ${u.name}`).join("\n") : "")},
+        ${summary + (uploaded.length ? `\n` + uploaded.map((u) => `• ${u.replaced ? "↻" : "+"} ${u.name}`).join("\n") : "")},
         ${me.id}, ${me.name}
       )
     `;
@@ -2575,7 +2594,15 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       path: folder.path,
       fileUrl: uploaded.find((u) => u.kind === "quote")?.url || uploaded[0]?.url || null,
       uploadedCount: uploaded.length,
-      uploaded: uploaded.map((u) => ({ name: u.name, kind: u.kind, url: u.url })),
+      replacedCount,
+      newCount,
+      alreadyHadFolder: Boolean(lead.drive_folder_id),
+      uploaded: uploaded.map((u) => ({
+        name: u.name,
+        kind: u.kind,
+        url: u.url,
+        replaced: u.replaced,
+      })),
       errors,
     };
   });

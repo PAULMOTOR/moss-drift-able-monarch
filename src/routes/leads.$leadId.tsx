@@ -343,13 +343,27 @@ function LeadDetail() {
               size="sm"
               disabled={busy}
               onClick={async () => {
+                if (lead.drive_folder_url) {
+                  const ok = window.confirm(
+                    "This deal already has a Google Drive folder.\n\n" +
+                      "Push again will UPDATE the package files (same names are replaced with the latest from the CRM).\n" +
+                      "Google Drive keeps older versions in each file’s version history.\n\n" +
+                      "Update the existing Drive package now?",
+                  );
+                  if (!ok) return;
+                }
                 setBusy(true);
                 try {
                   const r = await readyBc({ data: { leadId: lead.id } });
                   const n = (r as { uploadedCount?: number }).uploadedCount;
+                  const replaced = (r as { replacedCount?: number }).replacedCount;
+                  const created = (r as { newCount?: number }).newCount;
                   toast.success(
                     n != null
-                      ? `Pushed ${n} file(s) to Drive`
+                      ? `Drive package: ${n} file(s)` +
+                          (replaced != null && created != null
+                            ? ` · ${replaced} updated, ${created} new`
+                            : "")
                       : "Pushed to Drive",
                   );
                   if (r.folderUrl) window.open(r.folderUrl, "_blank");
@@ -361,7 +375,7 @@ function LeadDetail() {
                 }
               }}
             >
-              Push to Drive
+              {lead.drive_folder_url ? "Update Drive package" : "Push to Drive"}
             </Button>
             <span
               className={cn(

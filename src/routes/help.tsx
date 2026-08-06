@@ -189,7 +189,11 @@ function HelpPage() {
               </ul>
             </li>
             <li>
-              Re-running <strong>Push to Drive</strong> updates files with the same names (avoids duplicate pile-up).
+              Re-running <strong>Push to Drive</strong> / <strong>Update Drive package</strong>{" "}
+              replaces the same canonical file names with the latest CRM version (e.g.{" "}
+              <code className="rounded bg-muted px-1">02-Lease-Contract.pdf</code>). Google Drive
+              keeps prior versions in each file’s version history — you won’t get a pile of
+              “contract v2 / v3” copies. Confirm when the deal folder already exists.
             </li>
             <li>
               Requires Google Drive access for <code className="rounded bg-muted px-1">client@</code>. If you see “File not found”, ask an admin to re-check Drive sharing.
