@@ -9,6 +9,11 @@ import {
   requestLesseeDocument,
   updateChecklistItem,
 } from "@/lib/crm/credit";
+import {
+  generateApprovedLeaseContract,
+  getLeadContractPacket,
+  sendContractDocuSign,
+} from "@/lib/crm/contracts";
 import type { Profile } from "@/lib/crm/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +28,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 
 export function CreditUnderwritingPanel({
   leadId,
@@ -41,16 +54,36 @@ export function CreditUnderwritingPanel({
   const [equifaxName, setEquifaxName] = useState<string | null>(null);
   const [equifaxData, setEquifaxData] = useState<string | null>(null);
   const [viewDoc, setViewDoc] = useState<{ name: string; data: string } | null>(null);
+  const [contractPkt, setContractPkt] = useState<Awaited<
+    ReturnType<typeof getLeadContractPacket>
+  > | null>(null);
+  const [showSendSign, setShowSendSign] = useState(false);
+  const [signerEmail, setSignerEmail] = useState("");
+  const [signerName, setSignerName] = useState("");
+  const [contractStyle, setContractStyle] = useState("qc_individual_en");
+  const [requireIdv, setRequireIdv] = useState(true);
 
   const load = useCallback(async () => {
     try {
       const pkg = await getCreditPackage({ data: { leadId } });
       setData(pkg);
       setAppEmail(pkg.lead.email || pkg.application.app_email || "");
+      if ((pkg.lead.credit_status || "").toLowerCase() === "approved" || pkg.application.status === "approved") {
+        const pkt = await getLeadContractPacket({ data: { leadId } }).catch(() => null);
+        setContractPkt(pkt);
+        if (pkt) {
+          setSignerEmail(pkt.lesseeEmail || "");
+          setSignerName(pkt.lesseeName || "");
+          if (pkt.quote?.contract_style) setContractStyle(pkt.quote.contract_style);
+        }
+      } else {
+        setContractPkt(null);
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not load credit package");
     }
   }, [leadId]);
+
 
   useEffect(() => {
     void load();
@@ -163,6 +196,151 @@ export function CreditUnderwritingPanel({
         </div>
       </div>
 
+      {app.status === "approved" || lead.credit_status === "approved" ? (
+        <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h4 className="text-sm font-semibold text-primary">Lease contract (post-approval)</h4>
+              <p className="text-xs text-muted-foreground">
+                Deal approved — generate the ENG lease contract from the accepted quote, then send for
+                DocuSign + Live ID.
+              </p>
+            </div>
+            <Badge variant="secondary">
+              {contractPkt?.contractStatus === "sent_docusign"
+                ? "Sent for signature"
+                : contractPkt?.quote?.contract_pdf_name
+                  ? "Contract ready"
+                  : "Awaiting generate"}
+            </Badge>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <Label className="text-xs">Contract style</Label>
+              <Select value={contractStyle} onValueChange={setContractStyle}>
+                <SelectTrigger className="mt-1 h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(contractPkt?.styles || [
+                    { key: "qc_individual_en", label: "Quebec Individual English" },
+                    { key: "qc_business_en", label: "Quebec Business English" },
+                    { key: "ca_individual_en", label: "Canada Individual lease" },
+                    { key: "ca_business_en", label: "Canada Business lease" },
+                  ]).map((s) => (
+                    <SelectItem key={s.key} value={s.key}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const res = await generateApprovedLeaseContract({
+                    data: { leadId, contractStyle },
+                  });
+                  toast.success("Lease contract generated");
+                  if (res.pdfData) {
+                    setViewDoc({ name: res.pdfName, data: res.pdfData });
+                  }
+                  await load();
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Generate failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Generate lease contract
+            </Button>
+            {contractPkt?.quote?.contract_html ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const w = window.open("", "_blank");
+                  if (!w) {
+                    toast.error("Popup blocked");
+                    return;
+                  }
+                  w.document.open();
+                  w.document.write(contractPkt.quote!.contract_html!);
+                  w.document.close();
+                }}
+              >
+                View HTML contract
+              </Button>
+            ) : null}
+            {contractPkt?.quote?.contract_pdf_data ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  setViewDoc({
+                    name: contractPkt.quote!.contract_pdf_name || "Lease-Contract.pdf",
+                    data: contractPkt.quote!.contract_pdf_data!,
+                  })
+                }
+              >
+                View PDF
+              </Button>
+            ) : null}
+            {contractPkt?.quote?.invoice_html ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const w = window.open("", "_blank");
+                  if (!w) return;
+                  w.document.open();
+                  w.document.write(contractPkt.quote!.invoice_html!);
+                  w.document.close();
+                }}
+              >
+                First invoice
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => setShowSendSign(true)}
+            >
+              Send for DocuSign
+            </Button>
+          </div>
+          {contractPkt?.docusign && !contractPkt.docusign.configured ? (
+            <p className="text-xs text-amber-800">
+              DocuSign is not connected yet. Add the API keys from DocuSign Admin (see team note) —
+              generate still works offline.
+            </p>
+          ) : contractPkt?.docusign?.configured ? (
+            <p className="text-xs text-muted-foreground">
+              DocuSign connected
+              {contractPkt.docusign.idvReady ? " · Live ID workflow ready" : " · Live ID workflow ID not set"}
+            </p>
+          ) : null}
+          {contractPkt?.envelopes && contractPkt.envelopes.length > 0 ? (
+            <ul className="space-y-1 text-xs text-muted-foreground">
+              {contractPkt.envelopes.map((e) => (
+                <li key={e.id}>
+                  {e.status} · {e.signer_email || "—"} · {e.envelope_id || "no id"}
+                  {e.idv_enabled ? " · Live ID" : ""}
+                  {e.error ? ` · ${e.error}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
       {data.appLink ? (
         <p className="break-all text-xs text-muted-foreground">
           Lessee app link:{" "}
@@ -171,6 +349,7 @@ export function CreditUnderwritingPanel({
           </a>
         </p>
       ) : null}
+
 
       <div className="grid gap-4 lg:grid-cols-2">
         <ChecklistSection
@@ -418,7 +597,69 @@ export function CreditUnderwritingPanel({
         </DialogContent>
       </Dialog>
 
+      <Dialog open={showSendSign} onOpenChange={setShowSendSign}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Send contract for DocuSign</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Sends the generated lease contract PDF for electronic signature. If Live ID is configured
+            in DocuSign, the lessee must verify ID before signing.
+          </p>
+          <div>
+            <Label>Lessee name</Label>
+            <Input className="mt-1" value={signerName} onChange={(e) => setSignerName(e.target.value)} />
+          </div>
+          <div>
+            <Label>Lessee email</Label>
+            <Input
+              className="mt-1"
+              type="email"
+              value={signerEmail}
+              onChange={(e) => setSignerEmail(e.target.value)}
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={requireIdv} onCheckedChange={(c) => setRequireIdv(c === true)} />
+            Require Live ID (DocuSign Identity Verification)
+          </label>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSendSign(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const res = await sendContractDocuSign({
+                    data: {
+                      leadId,
+                      signerEmail,
+                      signerName,
+                      requireIdv,
+                    },
+                  });
+                  toast.success(
+                    `Sent via DocuSign${res.idvEnabled ? " with Live ID" : ""} · ${res.envelopeId}`,
+                  );
+                  setShowSendSign(false);
+                  await load();
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "DocuSign send failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Send envelope
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!viewDoc} onOpenChange={(o) => !o && setViewDoc(null)}>
+
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>{viewDoc?.name}</DialogTitle>

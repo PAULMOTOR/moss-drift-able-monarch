@@ -739,7 +739,9 @@ export function renderContractTemplate(
     vin: client.vin,
     color: client.color,
     km: client.km != null ? String(client.km) : "",
+    stock: client.stock || "",
     price: formatMoney(option.cost + option.extra + option.profit),
+
     deposit: formatMoney(option.deposit),
     trade_in: formatMoney(option.tradeIn),
     financed: formatMoney(option.financed),
@@ -766,6 +768,7 @@ export function renderContractTemplate(
 
 export function defaultContractBody(style: ContractStyleKey): string {
   const isFr = style.includes("_fr");
+  const isBiz = style.includes("business");
   const note = isFr
     ? `Modèle ${style} — texte modifiable dans Admin → Contrats.`
     : `Template style: ${style} — edit under Admin → Lease contracts.`;
@@ -791,33 +794,140 @@ export function defaultContractBody(style: ContractStyleKey): string {
 </div>`;
   }
   return `<div class="contract">
-<h1>LESSEE LEASE AGREEMENT — PAUL MOTOR LEASING</h1>
-<p><strong>Lessor:</strong> Paul Motor Leasing Inc., 4009 rue de Verdun, Montreal, QC H4G 1L1 · GST 8630820380001 · QST 12081377070001</p>
-<p><strong>Lessee:</strong> {{client_name}} — {{address}}</p>
-<p><strong>Guarantor:</strong> {{guarantor}}</p>
-<p><strong>Vehicle:</strong> {{vehicle}} · VIN {{vin}} · Colour {{color}} · {{km}} km</p>
+<h1>LESSEE LEASE AGREEMENT</h1>
+<p class="sub"><strong>PAUL MOTOR COMPANY INC. DBA PAUL MOTOR LEASING</strong><br/>
+4009 rue de Verdun, Montreal, Quebec H4G 1L1<br/>
+T: 514-767-0126 · GST 8630820380001 · QST 12081377070001</p>
+
+<table class="meta-grid">
+  <tr><td><strong>Lessee${isBiz ? " (Business)" : ""}</strong></td><td>{{client_name}}</td></tr>
+  <tr><td><strong>Address</strong></td><td>{{address}}</td></tr>
+  <tr><td><strong>Phone / Email</strong></td><td>{{phone}} · {{email}}</td></tr>
+  <tr><td><strong>Guarantor(s)</strong></td><td>{{guarantor}}</td></tr>
+  <tr><td><strong>Salesperson</strong></td><td>{{salesman}}</td></tr>
+  <tr><td><strong>Quote date</strong></td><td>{{quote_date}}</td></tr>
+</table>
+
+<h2>1. VEHICLE</h2>
+<table class="meta-grid">
+  <tr><td><strong>Year / Make / Model / Trim</strong></td><td>{{vehicle}}</td></tr>
+  <tr><td><strong>VIN</strong></td><td>{{vin}}</td></tr>
+  <tr><td><strong>Colour</strong></td><td>{{color}}</td></tr>
+  <tr><td><strong>Odometer</strong></td><td>{{km}} km</td></tr>
+  <tr><td><strong>Stock #</strong></td><td>{{stock}}</td></tr>
+</table>
+
+<h2>2. LEASE TERM</h2>
+<p>The Lessor leases the Vehicle to the Lessee for a term of <strong>{{term}} months</strong>,
+commencing on <strong>{{start_date}}</strong> and ending on <strong>{{end_date}}</strong>
+(the “Term”), unless earlier terminated in accordance with this Agreement.</p>
+
+<h2>3. AMOUNT USED IN DETERMINING RENT</h2>
+<table class="nums">
+  <tr><td>Selling / capitalized cost</td><td class="num">{{price}}</td></tr>
+  <tr><td>Cash deposit / down payment</td><td class="num">{{deposit}}</td></tr>
+  <tr><td>Trade-in allowance</td><td class="num">{{trade_in}}</td></tr>
+  <tr><td><strong>Amount used in determining rent (financed)</strong></td><td class="num"><strong>{{financed}}</strong></td></tr>
+  <tr><td>Residual / purchase option (ex tax)</td><td class="num">{{residual}}</td></tr>
+  <tr><td>Contractual interest rate</td><td class="num">{{rate}} per annum</td></tr>
+</table>
+
+<h2>4. MONTHLY PAYMENTS</h2>
+<table class="nums">
+  <tr><td>Basic monthly rent</td><td class="num">{{payment}}</td></tr>
+  <tr><td>Applicable taxes on payment ({{tax_rate}})</td><td class="num">{{tax}}</td></tr>
+  <tr><td><strong>Total monthly rent (incl. taxes)</strong></td><td class="num"><strong>{{total_payment}}</strong></td></tr>
+</table>
+<p>Payments are due on the same calendar day each month as the lease start date (or the last day of the month if shorter), unless otherwise agreed in writing.</p>
+
+<h2>5. AMOUNTS PAYABLE UPON DELIVERY</h2>
+<table class="nums">
+  <tr><td>Pro-rata rent for delivery month</td><td class="num">{{pro_rata}}</td></tr>
+  <tr><td><strong>Total due on delivery (estimate)</strong></td><td class="num"><strong>{{due_total}}</strong></td></tr>
+</table>
+<p>Amounts due on delivery may include cash deposit, pro-rata rent, administration, tracker, lien/PPSA, license, tire tax and applicable taxes, as itemized on the First Invoice attached or delivered with this Agreement.</p>
+
+<h2>6. RESIDUAL / PURCHASE OPTION</h2>
+<p>At the end of the Term, subject to the Lessee’s compliance with this Agreement, the Lessee may purchase the Vehicle for the residual amount of <strong>{{residual}}</strong>, plus applicable taxes and a transfer fee of <strong>$200.00</strong>, unless a different fee is required by law or by the Lessor’s then-current policy disclosed in writing.</p>
+
+<h2>7. EXCESS KILOMETRES</h2>
+<p>Allowed distance: <strong>{{km_year}} km per year</strong> of the Term (prorated). Excess kilometres are charged at <strong>{{excess_km}} per km</strong> plus applicable taxes, payable at end of Term or earlier termination, unless otherwise agreed.</p>
+
+<h2>8. USE, INSURANCE AND MAINTENANCE</h2>
 <ol>
-<li><strong>LEASE.</strong> Term of {{term}} months, from {{start_date}} to {{end_date}}.</li>
-<li><strong>AMOUNT USED IN DETERMINING RENT.</strong> Price {{price}}; cash {{deposit}}; trade-in {{trade_in}}; amount for rent {{financed}}.</li>
-<li><strong>INTEREST RATE.</strong> {{rate}} per annum.</li>
-<li><strong>MONTHLY PAYMENTS.</strong> Basic rent {{payment}}; taxes {{tax}}; monthly rent {{total_payment}}.</li>
-<li><strong>AMOUNTS PAYABLE UPON DELIVERY.</strong> Total {{due_total}} including pro-rata {{pro_rata}} for remaining days in the delivery month.</li>
-<li><strong>RESIDUAL / PURCHASE OPTION.</strong> Residual {{residual}} plus taxes and a $200 transfer fee.</li>
-<li><strong>EXCESS KILOMETER.</strong> {{km_year}} km/year; excess {{excess_km}} per km plus taxes.</li>
-<li><strong>APPLICABLE LEGISLATION.</strong> Laws of the jurisdiction for this template style apply.</li>
+<li>The Lessee shall use the Vehicle lawfully and keep it in good repair, ordinary wear excepted.</li>
+<li>The Lessee shall maintain full insurance (including collision and comprehensive) naming the Lessor as loss payee / additional interest as required by the Lessor.</li>
+<li>The Lessee shall not sell, pledge, or encumber the Vehicle.</li>
 </ol>
-<p style="margin-top:24px">Executed at Montreal on {{quote_date}}. Salesperson: {{salesman}}</p>
-<p>_________________________ Lessee &nbsp;&nbsp; _________________________ Lessor &nbsp;&nbsp; _________________________ Guarantor</p>
+
+<h2>9. DEFAULT AND REMEDIES</h2>
+<p>If the Lessee fails to pay any amount when due or breaches a material term, the Lessor may, subject to applicable law, terminate this Agreement, repossess the Vehicle, and recover amounts owing including accelerated rent, residual shortfall, excess kilometres, costs of repossession and reasonable legal fees, to the extent permitted by law.</p>
+
+<h2>10. APPLICABLE LAW</h2>
+<p>This Agreement is governed by the laws of the province of the Lessee’s address above (or Quebec if blank), and the federal laws of Canada applicable therein. The parties attorn to the courts of that province.</p>
+
+<h2>11. ENTIRE AGREEMENT</h2>
+<p>This Agreement, together with the accepted lease quote option and first invoice (if any), constitutes the entire agreement between the parties concerning the lease of the Vehicle and supersedes prior negotiations, except for documents signed later that expressly amend this Agreement.</p>
+
+<p style="margin-top:28px">Executed at Montreal on {{quote_date}}.</p>
+
+<table class="sign">
+  <tr>
+    <td>
+      <p><strong>LESSEE</strong></p>
+      <p class="line">Signature</p>
+      <p class="line">Name: {{client_name}}</p>
+      <p class="line">Date</p>
+    </td>
+    <td>
+      <p><strong>LESSOR — Paul Motor Leasing</strong></p>
+      <p class="line">Authorized signature</p>
+      <p class="line">Name / Title</p>
+      <p class="line">Date</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <p><strong>GUARANTOR</strong> (if applicable)</p>
+      <p class="line">Signature — {{guarantor}}</p>
+      <p class="line">Date</p>
+    </td>
+  </tr>
+</table>
 <p class="note">${note}</p>
 </div>`;
+}
+
+/** Full printable lease contract HTML (spreadsheet ENG tab style) filled from quote option. */
+export function buildLeaseContractDocument(
+  client: ClientQuoteInfo,
+  option: LeaseOptionResult,
+  taxRate: number,
+  style: ContractStyleKey = "qc_individual_en",
+  templateBody?: string | null,
+): string {
+  const bodySrc =
+    templateBody && !/Template style:|Modèle /.test(templateBody)
+      ? templateBody
+      : defaultContractBody(style);
+  const filled = renderContractTemplate(bodySrc, client, option, taxRate);
+  const title = `Lease Contract — ${client.clientName}`;
+  return wrapPrintable(title, filled);
 }
 
 export function wrapPrintable(title: string, bodyHtml: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${escapeHtml(title)}</title>
 <style>
 body{font-family:Helvetica,Arial,sans-serif;margin:28px;color:#1a1a1a;font-size:12.5px;line-height:1.45}
-h1{color:#008272;font-size:18px}
+h1{color:#008272;font-size:18px;margin:0 0 6px}
+h2{color:#008272;font-size:13px;margin:18px 0 8px;border-bottom:1px solid #c8c6c4;padding-bottom:4px}
+.sub{font-size:11px;color:#323130;margin:0 0 14px;line-height:1.4}
 ol{padding-left:1.2rem} li{margin-bottom:8px}
+table.meta-grid,table.nums,table.sign{width:100%;border-collapse:collapse;margin:8px 0 12px;font-size:12px}
+table.meta-grid td,table.nums td{padding:5px 6px;border-bottom:1px solid #edebe9;vertical-align:top}
+table.nums td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;width:28%}
+table.sign td{width:50%;padding:12px 16px 12px 0;vertical-align:top}
+table.sign .line{border-top:1px solid #323130;margin-top:28px;padding-top:4px;font-size:11px;color:#605e5c}
 .note{font-size:10px;color:#605e5c;margin-top:16px}
 @media print{body{margin:12px}}
 </style></head><body>${bodyHtml}</body></html>`;
