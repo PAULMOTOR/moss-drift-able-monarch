@@ -6,7 +6,7 @@ import { ensureCrmSeeded, syncRealInventory } from "./seed";
 import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
-import { sendCrmEmail } from "./mail";
+import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
   buildFirstInvoiceHtml,
@@ -1788,6 +1788,8 @@ export const emailFirstInvoice = createServerFn({ method: "POST" })
       kind: "first_invoice",
       leadId: row.lead_id,
       profileId: me.id,
+      fromName: clientFacingFromName(me.name),
+      replyTo: replyToForActor(me.email, me.name),
     });
     if (row.lead_id) {
       await sql`

@@ -1,8 +1,19 @@
 /**
- * Outbound email for CRM reminders via Resend.
- * Until paulmotorcompany.com is verified in Resend, use onboarding@resend.dev as From.
+ * Outbound CRM email via Resend.
+ *
+ * From: always CRM_FROM_EMAIL (e.g. crm@paulmotorcompany.com) once the domain
+ * is verified — stable brand identity + one mailbox to manage.
+ *
+ * Reply-To: optional actor address when it is on a company domain so clients
+ * can reply to the salesperson without changing the From envelope.
  */
 import type { Sql } from "@/lib/db";
+
+/** Domains allowed for From/Reply-To personalization (must match Resend-verified). */
+const COMPANY_EMAIL_DOMAINS = [
+  "paulmotorcompany.com",
+  "paulmotorleasing.com",
+];
 
 export type OutboundMail = {
   to: string;
@@ -12,6 +23,13 @@ export type OutboundMail = {
   kind?: string;
   leadId?: string | null;
   profileId?: string | null;
+  /** Override display name (default: PAUL MOTOR CO. CRM). */
+  fromName?: string;
+  /**
+   * Reply-To header. Prefer replyToForActor(profile.email, profile.name).
+   * Resend accepts "name@domain" or "Name <name@domain>".
+   */
+  replyTo?: string | null;
 };
 
 function uid() {
@@ -29,6 +47,39 @@ function escapeHtml(s: string) {
     .join(amp + "gt;")
     .split('"')
     .join(amp + "quot;");
+}
+
+export function isCompanyEmail(email: string | null | undefined): boolean {
+  if (!email || !email.includes("@")) return false;
+  const domain = email.trim().toLowerCase().split("@")[1] || "";
+  return COMPANY_EMAIL_DOMAINS.includes(domain);
+}
+
+/** Shared CRM From address (env), fallback for unverified / dev. */
+export function crmFromAddress(): string {
+  return process.env.CRM_FROM_EMAIL?.trim() || "onboarding@resend.dev";
+}
+
+/**
+ * Reply-To for a staff actor — only if their profile email is on a company domain.
+ * Returns undefined for Gmail/etc. so we never set a Reply-To that will bounce SPF confusion.
+ */
+export function replyToForActor(
+  email: string | null | undefined,
+  name?: string | null,
+): string | undefined {
+  const addr = (email || "").trim().toLowerCase();
+  if (!isCompanyEmail(addr)) return undefined;
+  const n = (name || "").trim().replace(/[<>"]/g, "");
+  if (n) return `${n} <${addr}>`;
+  return addr;
+}
+
+/** Client-facing From display name, e.g. "Jeremy Paul · Paul Motor Leasing". */
+export function clientFacingFromName(actorName?: string | null): string {
+  const n = (actorName || "").trim().replace(/[<>"]/g, "");
+  if (n) return `${n} · Paul Motor Leasing`;
+  return "Paul Motor Leasing";
 }
 
 export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
@@ -50,9 +101,9 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
   `;
 
   const resendKey = process.env.RESEND_API_KEY?.trim();
-  const fromAddress =
-    process.env.CRM_FROM_EMAIL?.trim() || "onboarding@resend.dev";
-  const fromName = "PAUL MOTOR CO. CRM";
+  const fromAddress = crmFromAddress();
+  const fromName = (mail.fromName || "PAUL MOTOR CO. CRM").trim() || "PAUL MOTOR CO. CRM";
+  const replyTo = (mail.replyTo || "").trim() || undefined;
 
   if (resendKey) {
     try {
@@ -61,19 +112,23 @@ export async function sendCrmEmail(sql: Sql, mail: OutboundMail): Promise<{
         '<pre style="font-family:system-ui,sans-serif;white-space:pre-wrap">' +
           escapeHtml(mail.text) +
           "</pre>";
+      const payload: Record<string, unknown> = {
+        from: fromName + " <" + fromAddress + ">",
+        to: [mail.to],
+        subject: mail.subject,
+        text: mail.text,
+        html: htmlBody,
+      };
+      if (replyTo) {
+        payload.reply_to = replyTo;
+      }
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
           Authorization: "Bearer " + resendKey,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          from: fromName + " <" + fromAddress + ">",
-          to: [mail.to],
-          subject: mail.subject,
-          text: mail.text,
-          html: htmlBody,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.text();

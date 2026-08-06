@@ -5,7 +5,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { sendCrmEmail } from "./mail";
+import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import {
   CUSTOMER_CHECKLIST,
   VEHICLE_CHECKLIST,
@@ -256,6 +256,8 @@ export const requestCreditApp = createServerFn({ method: "POST" })
       kind: "credit_app_request",
       leadId: data.leadId,
       profileId: me.id,
+      fromName: clientFacingFromName(me.name),
+      replyTo: replyToForActor(me.email, me.name),
       text: `Hi ${first},
 
 Paul Motor Leasing has invited you to complete a short credit application and upload two pieces of identification for your vehicle lease.
@@ -526,10 +528,14 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
       subject: `Paul Motor Leasing — please upload ${label}`,
       kind: "lessee_doc_request",
       leadId: data.leadId,
-      text: `Hi,\n\nPlease upload ${label} for your lease application:\n${link}\n\nYou can reopen this link anytime to add more files until complete.\n\n— Paul Motor Co.`,
+      profileId: me.id,
+      fromName: clientFacingFromName(me.name),
+      replyTo: replyToForActor(me.email, me.name),
+      text: `Hi,\n\nPlease upload ${label} for your lease application:\n${link}\n\nYou can reopen this link anytime to add more files until complete.\n\n— ${me.name}\nPaul Motor Leasing`,
       html: `<p>Please upload <strong>${label}</strong> for your lease application.</p>
 <p><a href="${link}" style="background:#008272;color:#fff;padding:10px 16px;text-decoration:none;border-radius:4px">Upload document</a></p>
-<p style="font-size:13px;color:#555">You can reopen this link anytime to add more files until the package is complete.</p>`,
+<p style="font-size:13px;color:#555">You can reopen this link anytime to add more files until the package is complete.</p>
+<p style="font-size:13px;color:#555">— ${me.name.replace(/</g, "")}<br/>Paul Motor Leasing</p>`,
     });
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
