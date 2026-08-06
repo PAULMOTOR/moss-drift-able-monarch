@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { hashPassword } from "better-auth/crypto";
+import { hashPassword, verifyPassword } from "better-auth/crypto";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { ensureCrmSeeded, syncRealInventory } from "./seed";
@@ -1677,6 +1677,133 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
       from profiles where id = ${data.id}
     `;
     return rows[0]!;
+  });
+
+
+export const changeOwnPassword = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: { currentPassword: string; newPassword: string }) => data,
+  )
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    if (!me.user_id) throw new Error("Account not linked — ask an admin to reset your password");
+    const current = (data.currentPassword || "").trim();
+    const next = (data.newPassword || "").trim();
+    if (current.length < 1) throw new Error("Current password is required");
+    if (next.length < 8) throw new Error("New password must be at least 8 characters");
+    if (current === next) throw new Error("New password must be different from current password");
+    const sql = await boot();
+    const acc = await sql<{ id: string; password: string | null }>`
+      select id, password from account
+      where "userId" = ${me.user_id} and "providerId" = 'credential'
+      limit 1
+    `;
+    if (!acc[0]?.password) throw new Error("No password login on this account");
+    const ok = await verifyPassword({
+      hash: acc[0].password,
+      password: current,
+    });
+    if (!ok) throw new Error("Current password is incorrect");
+    const passwordHash = await hashPassword(next);
+    await sql`
+      update account set password = ${passwordHash}, "updatedAt" = now()
+      where id = ${acc[0].id}
+    `;
+    return { ok: true as const };
+  });
+
+export const emailFirstInvoice = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: { quoteId: string; toEmail?: string; note?: string }) => data,
+  )
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const rows = await sql<{
+      id: string;
+      lead_id: string | null;
+      client_name: string;
+      invoice_html: string | null;
+      payload: string;
+      accepted_option: number | null;
+    }>`
+      select id, lead_id, client_name, invoice_html, payload::text as payload, accepted_option
+      from lease_quotes where id = ${data.quoteId} limit 1
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("Quote not found");
+    let invoiceHtml = row.invoice_html;
+    let clientEmail = "";
+    let clientName = row.client_name || "Client";
+    try {
+      const payload = JSON.parse(row.payload) as {
+        client: { email?: string; clientName?: string };
+        options: unknown[];
+        taxRate?: number;
+      };
+      clientEmail = (payload.client?.email || "").trim();
+      clientName = payload.client?.clientName || clientName;
+      if (!invoiceHtml && row.accepted_option && payload.options?.length) {
+        const { buildFirstInvoiceHtml, taxRateForProvince } = await import("./lease-quote");
+        const opt = payload.options[row.accepted_option - 1] as import("./lease-quote").LeaseOptionResult;
+        if (opt) {
+          const tax = payload.taxRate || taxRateForProvince((payload.client as { province?: string })?.province || "QC");
+          invoiceHtml = buildFirstInvoiceHtml(payload.client as import("./lease-quote").ClientQuoteInfo, opt, tax);
+        }
+      }
+    } catch {
+      /* use row fields */
+    }
+    if (!invoiceHtml) {
+      throw new Error("No first invoice on this quote yet — accept an option first.");
+    }
+    const to = (data.toEmail || clientEmail || "").trim().toLowerCase();
+    if (!to || !to.includes("@")) {
+      throw new Error("Client email is required to send the first invoice.");
+    }
+    const note = (data.note || "").trim();
+    const subject = `Paul Motor Leasing — Pro forma first invoice · ${clientName}`;
+    const text =
+      `Hi ${clientName},\n\n` +
+      `Please find your pro forma first invoice from Paul Motor Leasing below` +
+      (note ? `.\n\nNote: ${note}` : ".") +
+      `\n\nIf you have questions, reply to this email or call your sales rep (${me.name}).\n\n— ${me.name}\nPaul Motor Leasing`;
+    // Wrap invoice HTML in a simple email shell
+    const html =
+      `<div style="font-family:system-ui,sans-serif;font-size:14px;color:#111">` +
+      `<p>Hi ${clientName.replace(/</g, "")},</p>` +
+      `<p>Please find your <strong>pro forma first invoice</strong> from Paul Motor Leasing below.` +
+      (note ? `</p><p><em>${note.replace(/</g, "")}</em></p><p>` : " ") +
+      `Questions? Contact ${me.name.replace(/</g, "")}.</p>` +
+      `</div><hr style="border:none;border-top:1px solid #ddd;margin:16px 0"/>` +
+      invoiceHtml;
+
+    const result = await sendCrmEmail(sql, {
+      to,
+      subject,
+      text,
+      html,
+      kind: "first_invoice",
+      leadId: row.lead_id,
+      profileId: me.id,
+    });
+    if (row.lead_id) {
+      await sql`
+        insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+        values (
+          ${id()}, ${row.lead_id}, 'email',
+          ${`First invoice emailed to ${to}${result.ok ? "" : " (queued/failed: " + (result.error || result.via) + ")"} · by ${me.name}`},
+          ${me.id}, ${me.name}
+        )
+      `;
+    }
+    if (!result.ok && result.via === "outbox") {
+      throw new Error(result.error || "Email queued — Resend not configured");
+    }
+    if (!result.ok) throw new Error(result.error || "Email failed");
+    return { ok: true as const, to, via: result.via };
   });
 
 export const adminDeleteUser = createServerFn({ method: "POST" })

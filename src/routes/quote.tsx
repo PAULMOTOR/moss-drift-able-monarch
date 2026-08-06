@@ -35,12 +35,13 @@ import {
   listLeads,
   saveLeaseQuote,
   deleteLeaseQuote,
+  emailFirstInvoice,
 } from "@/lib/crm/server";
 import type { InventoryItem, Lead } from "@/lib/crm/types";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { getMyProfile } from "@/lib/crm/server";
 import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
-import { Check, Calculator, FolderOpen, Printer, Save, Search, Trash2 } from "lucide-react";
+import { Check, Calculator, FolderOpen, Mail, Printer, Save, Search, Trash2 } from "lucide-react";
 
 
 type QuoteSearch = { leadId?: string; quoteId?: string };
@@ -120,7 +121,7 @@ function QuotePage() {
     startDate: todayIso(),
     notes: "This quote is valid for one week.",
     adminFee: 999,
-    trackerFee: 495,
+    trackerFee: 795,
     lienPpsa: 0,
     license: 0,
     tireTax: 0,
@@ -602,7 +603,32 @@ function QuotePage() {
     }
   }
 
-  function openHtml(html: string) {
+  async function onEmailInvoice() {
+    if (!quoteId) {
+      toast.error("Save and accept an option first so the first invoice exists");
+      return;
+    }
+    const to = (client.email || "").trim();
+    if (!to || !to.includes("@")) {
+      toast.error("Add the client email on the quote, then try again");
+      return;
+    }
+    setBusy(true);
+    try {
+      // Ensure latest numbers are saved before emailing
+      await silentSave(false);
+      const res = await emailFirstInvoice({
+        data: { quoteId, toEmail: to },
+      });
+      toast.success(`First invoice emailed to ${res.to}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Email failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+    function openHtml(html: string) {
     const w = window.open("", "_blank");
     if (!w) return;
     w.document.write(html);
@@ -649,6 +675,16 @@ function QuotePage() {
             <Button type="button" disabled={busy} onClick={() => void onShare()}>
               <Printer className="size-4" />
               {busy ? "Working…" : "Share quote"}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy || !quoteId}
+              onClick={() => void onEmailInvoice()}
+              title={!quoteId ? "Save & accept an option first" : "Email pro forma first invoice to client"}
+            >
+              <Mail className="size-4" />
+              Email 1st invoice
             </Button>
           </div>
         }
@@ -823,10 +859,10 @@ function QuotePage() {
               value={String(client.kmPerYear || "")}
               onChange={(v) => setClient((c) => ({ ...c, kmPerYear: v ? Number(v) || 0 : 0 }))}
             />
-            <Field
+            <DecimalField
               label="Excess KM fee ($/km)"
-              value={String(client.excessKmFee || "")}
-              onChange={(v) => setClient((c) => ({ ...c, excessKmFee: v ? Number(v) || 0 : 0 }))}
+              value={client.excessKmFee}
+              onChange={(v) => setClient((c) => ({ ...c, excessKmFee: v }))}
             />
             <Field label="Lease start date" value={client.startDate} onChange={(v) => setClient((c) => ({ ...c, startDate: v }))} />
             <Field
@@ -1012,7 +1048,7 @@ function QuotePage() {
       <p className="text-center text-xs text-muted-foreground">
         Share quote opens a customer PDF and sets the lead to Quote Sent.
         Update draft / Back to lead save without changing stage.
-        Accept builds contract + invoice. Push to Drive is on the lead page.
+        Accept builds contract + invoice. Email 1st invoice sends the pro forma to the client email. Push to Drive is on the lead page.
       </p>
       {leadId ? (
         <div className="mt-6 flex justify-center">
@@ -1049,6 +1085,61 @@ function Field({
   );
 }
 
+/** Allows typing 0.30, 7.99, etc. without eating leading zeros or the decimal point. */
+function DecimalField({
+  label,
+  value,
+  onChange,
+  className,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const display = draft !== null ? draft : value === 0 ? "" : String(value);
+
+  function commit(raw: string) {
+    const cleaned = raw.replace(/[,$\s]/g, "");
+    // Allow intermediate states while typing: "", ".", "0.", "7.", "0.3"
+    if (cleaned === "" || cleaned === "." || cleaned === "-" || cleaned === "-.") {
+      setDraft(raw);
+      onChange(0);
+      return;
+    }
+    if (!/^-?\d*\.?\d*$/.test(cleaned)) return;
+    setDraft(raw);
+    if (cleaned.endsWith(".") || cleaned === "-0") {
+      // Keep draft; push best-effort number for live calc
+      const n = Number(cleaned);
+      if (Number.isFinite(n)) onChange(n);
+      return;
+    }
+    const n = Number(cleaned);
+    if (Number.isFinite(n)) onChange(n);
+  }
+
+  return (
+    <div className={className || "grid gap-1.5"}>
+      <Label className="text-[11px] text-muted-foreground">{label}</Label>
+      <Input
+        inputMode="decimal"
+        value={display}
+        placeholder="0"
+        onChange={(e) => commit(e.target.value)}
+        onBlur={() => {
+          setDraft(null);
+        }}
+        onFocus={() => {
+          setDraft(value === 0 ? "" : String(value));
+        }}
+        className="h-9 rounded-sm tabular"
+      />
+    </div>
+  );
+}
+
 function MoneyField({
   label,
   value,
@@ -1059,16 +1150,12 @@ function MoneyField({
   onChange: (v: number) => void;
 }) {
   return (
-    <div className="grid gap-1">
-      <Label className="text-[11px] text-muted-foreground">{label}</Label>
-      <Input
-        inputMode="decimal"
-        value={value === 0 ? "" : String(value)}
-        placeholder="0"
-        onChange={(e) => onChange(num(e.target.value))}
-        className="h-9 rounded-sm tabular"
-      />
-    </div>
+    <DecimalField
+      label={label}
+      value={value}
+      onChange={onChange}
+      className="grid gap-1"
+    />
   );
 }
 

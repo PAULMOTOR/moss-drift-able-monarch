@@ -4,6 +4,7 @@ import {
   Calculator,
   Columns3,
   HelpCircle,
+  KeyRound,
   LayoutDashboard,
   Menu,
   Package,
@@ -15,10 +16,21 @@ import {
 
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { useServerFn } from "@tanstack/react-start";
 import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { Button } from "@/components/ui/button";
-import { getMyProfile } from "@/lib/crm/server";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { changeOwnPassword, getMyProfile } from "@/lib/crm/server";
 import type { Profile } from "@/lib/crm/types";
 import { cn } from "@/lib/utils";
 
@@ -42,6 +54,12 @@ export function AppShell({
 }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [open, setOpen] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const changePw = useServerFn(changeOwnPassword);
   const nav = [
     ...baseNav,
     ...(profile.role === "admin" || profile.role === "gsm"
@@ -51,6 +69,30 @@ export function AppShell({
       ? ([{ to: "/admin", label: "Admin", icon: Shield, primary: false }] as const)
       : []),
   ];
+
+  async function submitPassword() {
+    if (newPw.length < 8) {
+      toast.error("New password must be at least 8 characters");
+      return;
+    }
+    if (newPw !== confirmPw) {
+      toast.error("New passwords do not match");
+      return;
+    }
+    setPwBusy(true);
+    try {
+      await changePw({ data: { currentPassword: currentPw, newPassword: newPw } });
+      toast.success("Password updated");
+      setPwOpen(false);
+      setCurrentPw("");
+      setNewPw("");
+      setConfirmPw("");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not change password");
+    } finally {
+      setPwBusy(false);
+    }
+  }
 
   return (
     <div className="min-h-dvh bg-background lg:grid lg:grid-cols-[220px_1fr]">
@@ -110,6 +152,16 @@ export function AppShell({
               {profile.title ? ` · ${profile.title}` : ""}
             </p>
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mb-2 w-full justify-start gap-2"
+            onClick={() => setPwOpen(true)}
+          >
+            <KeyRound className="size-4" />
+            Change password
+          </Button>
           <UserButton />
         </div>
       </aside>
@@ -124,6 +176,56 @@ export function AppShell({
         </div>
         <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 lg:px-8 lg:py-6">{children}</div>
       </main>
+
+      <Dialog open={pwOpen} onOpenChange={setPwOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change your password</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="cur-pw">Current password</Label>
+              <Input
+                id="cur-pw"
+                type="password"
+                autoComplete="current-password"
+                value={currentPw}
+                onChange={(e) => setCurrentPw(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="new-pw">New password (8+)</Label>
+              <Input
+                id="new-pw"
+                type="password"
+                autoComplete="new-password"
+                minLength={8}
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="confirm-pw">Confirm new password</Label>
+              <Input
+                id="confirm-pw"
+                type="password"
+                autoComplete="new-password"
+                minLength={8}
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPwOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" disabled={pwBusy} onClick={() => void submitPassword()}>
+              {pwBusy ? "Saving…" : "Update password"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

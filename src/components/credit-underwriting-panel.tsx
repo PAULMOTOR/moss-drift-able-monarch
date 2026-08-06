@@ -14,6 +14,7 @@ import {
   getLeadContractPacket,
   sendContractDocuSign,
 } from "@/lib/crm/contracts";
+import { emailFirstInvoice } from "@/lib/crm/server";
 import type { Profile } from "@/lib/crm/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -326,19 +327,42 @@ export function CreditUnderwritingPanel({
               </Button>
             ) : null}
             {contractPkt?.quote?.invoice_html ? (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  const w = window.open("", "_blank");
-                  if (!w) return;
-                  w.document.open();
-                  w.document.write(contractPkt.quote!.invoice_html!);
-                  w.document.close();
-                }}
-              >
-                First invoice
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const w = window.open("", "_blank");
+                    if (!w) return;
+                    w.document.open();
+                    w.document.write(contractPkt.quote!.invoice_html!);
+                    w.document.close();
+                  }}
+                >
+                  First invoice
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy || !contractPkt.quote?.id}
+                  onClick={async () => {
+                    if (!contractPkt.quote?.id) return;
+                    setBusy(true);
+                    try {
+                      const res = await emailFirstInvoice({
+                        data: { quoteId: contractPkt.quote.id },
+                      });
+                      toast.success(`First invoice emailed to ${res.to}`);
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Email failed");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Email 1st invoice
+                </Button>
+              </>
             ) : null}
             <Button
               size="sm"

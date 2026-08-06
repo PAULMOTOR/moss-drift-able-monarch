@@ -246,7 +246,9 @@ async function processMessage(
   const stock = stockKey(parsed.stock_number);
   let vehicle = parsed.vehicle_interest?.trim() || "";
   const name =
-    parsed.name?.trim() ||
+    (parsed.name?.trim() && !/paul\s*motor/i.test(parsed.name)
+      ? parsed.name.trim()
+      : "") ||
     (customerEmail ? customerEmail.split("@")[0] : "") ||
     "Email lead";
 

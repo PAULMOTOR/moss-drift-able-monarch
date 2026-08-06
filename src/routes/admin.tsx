@@ -699,17 +699,22 @@ function AdminPage() {
                           </Select>
                         </div>
                         <div className="grid gap-1.5 sm:col-span-2">
-                          <Label htmlFor={`edit-password-${u.id}`}>New password (optional)</Label>
+                          <Label htmlFor={`edit-password-${u.id}`}>
+                            Override password (admin)
+                          </Label>
                           <Input
                             id={`edit-password-${u.id}`}
                             type="password"
-                            placeholder="Leave blank to keep current password"
+                            placeholder="Leave blank to keep their current password"
                             minLength={8}
                             value={editForm.password}
                             onChange={(e) =>
                               setEditForm((f) => (f ? { ...f, password: e.target.value } : f))
                             }
                           />
+                          <p className="text-[11px] text-muted-foreground">
+                            Sets a new password for this user without needing their current one.
+                          </p>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
