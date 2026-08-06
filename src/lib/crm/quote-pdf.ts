@@ -166,14 +166,15 @@ export async function buildRetailQuotePdf(
 
   y -= 6;
 
-  const active = drawOptions
-    .map((o, i) => ({ o, i: i + 1 }))
-    .filter(({ o }) => o.cost > 0 || o.payment > 0);
+  const allOpts = [0, 1, 2].map((idx) => ({
+    o: drawOptions[idx],
+    i: idx + 1,
+    empty: !drawOptions[idx] || !(drawOptions[idx].cost > 0 || drawOptions[idx].payment > 0),
+  }));
 
-  const singleMode = Boolean(acceptedOption) && active.length === 1;
+  const singleMode = Boolean(acceptedOption);
   const gap = 8;
-  // Three equal columns on one row (or one wide when single accepted)
-  const colCount = singleMode ? 1 : Math.min(3, Math.max(1, active.length));
+  const colCount = singleMode ? 1 : 3;
   const boxW = singleMode
     ? Math.min(contentW, 280)
     : (contentW - gap * (colCount - 1)) / 3;
@@ -185,46 +186,60 @@ export async function buildRetailQuotePdf(
   const valueX = singleMode ? 95 : 72; // left-justified amounts column
 
   function drawOption(num: number, x: number, top: number) {
-    const found = active.find((a) => a.i === num);
-    if (!found) return;
-    const o = found.o;
+    const slot = allOpts.find((a) => a.i === num);
+    if (!slot) return;
+    const empty = slot.empty;
     page.drawRectangle({
       x,
       y: top - boxH,
       width: boxW,
       height: boxH,
-      borderColor: rgb(0.78, 0.77, 0.77),
+      borderColor: empty ? rgb(0.85, 0.84, 0.84) : rgb(0.78, 0.77, 0.77),
       borderWidth: 0.7,
     });
-    const heading =
-      acceptedOption === num ? `Option ${num} — ACCEPTED` : `Option ${num}`;
+    const heading = empty
+      ? `Option ${num} — (N/A)`
+      : acceptedOption === num
+        ? `Option ${num} — ACCEPTED`
+        : `Option ${num}`;
     page.drawText(heading, {
       x: x + padX,
       y: top - 13,
       size: headSize,
       font: fontBold,
-      color: teal,
+      color: empty ? muted : teal,
     });
+    if (empty) {
+      page.drawText("No terms for this option", {
+        x: x + padX,
+        y: top - 32,
+        size: lineSize,
+        font,
+        color: muted,
+      });
+      return;
+    }
+    const o = slot.o!;
     const taxLabel =
       province === "BC"
         ? `GST 5%+PST ${(((o.pstRate ?? 0) * 100) || 0).toFixed(0)}%`
         : `Taxes (${province})`;
     const lines: [string, string, boolean?][] = [
-      ["Price", money(o.cost + o.extra + o.profit)],
+      ["Price", money(o.cost + o.extra + o.profit), true],
       ["Trade-In", money(o.tradeIn)],
       ["Trade Lien", money(o.tradeInLien || 0)],
-      ["Cash-down", `${money(o.deposit)} (${o.depositPct.toFixed(1)}%)`],
+      ["Cash-down", `${money(o.deposit)} (${o.depositPct.toFixed(1)}%)`, true],
       ["Term", `${o.termMonths} mo`],
       ["Residual", `${money(o.residual)} (${o.residualPct.toFixed(1)}%)`],
       ["Int. Rate", `${o.ratePct.toFixed(2)}%`],
-      ["Lease Pmt", money(o.payment)],
-      [taxLabel, money(o.taxOnPayment)],
+      ["Lease Pmt", money(o.payment), true],
+      [taxLabel, money(o.taxOnPayment), true],
       ["Total Pmt", money(o.totalPayment), true],
-      ["Due deliv.", money(o.dueTotal)],
       [
         "Pro-rata",
         `${money(o.proRata)} (${o.daysLeftMonth}/${o.daysInMonth}d)`,
       ],
+      ["Due deliv.", money(o.dueTotal), true],
     ];
     let ly = top - 26;
     for (const [lab, val, bold] of lines) {
@@ -236,7 +251,6 @@ export async function buildRetailQuotePdf(
         font: bold ? fontBold : font,
         color: black,
       });
-      // Amounts left-justified (not right-aligned)
       page.drawText(val, {
         x: x + valueX,
         y: ly,
@@ -252,9 +266,7 @@ export async function buildRetailQuotePdf(
   if (singleMode && acceptedOption) {
     drawOption(acceptedOption, margin, optTop);
   } else {
-    // Always lay out options 1–3 in one horizontal row when present
-    const nums = active.map((a) => a.i).sort((a, b) => a - b);
-    nums.forEach((num, idx) => {
+    [1, 2, 3].forEach((num, idx) => {
       const x = margin + idx * (boxW + gap);
       drawOption(num, x, optTop);
     });

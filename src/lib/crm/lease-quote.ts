@@ -511,43 +511,45 @@ function escapeHtml(s: string): string {
     .join(amp + "quot;");
 }
 
-/** Retail quote HTML: logo top-left; 2-col grid so Option 3 sits under Option 1. */
+/** Retail quote HTML: logo top-left; always 3 option frames (blank → Option N — N/A). */
 export function buildRetailQuoteHtml(
   client: ClientQuoteInfo,
   options: LeaseOptionResult[],
   taxRate: number,
 ): string {
-  const active = options
-    .map((o, i) => ({ o, i: i + 1 }))
-    .filter(({ o }) => o.cost > 0 || o.payment > 0);
-
-  const optBlocks = [1, 2, 3]
-    .map((num) => {
-      const found = active.find((a) => a.i === num);
-      if (!found) {
-        return `<div class="opt empty"></div>`;
-      }
-      const o = found.o;
+  const optBlocks = [0, 1, 2]
+    .map((idx) => {
+      const num = idx + 1;
+      const o = options[idx];
+      const isEmpty = !o || !(o.cost > 0 || o.payment > 0);
       const rateNote =
         num === 3
           ? `<p class="smallprint">Rate and residual subject to credit approval and inventory. Quote valid one week. Excess km: ${formatMoney(client.excessKmFee)}/km over ${client.kmPerYear.toLocaleString("en-CA")} km/yr.</p>`
           : "";
+      if (isEmpty) {
+        return `
+      <div class="opt na">
+        <h3>Option ${num} — (N/A)</h3>
+        <p class="na-msg">No terms entered for this option.</p>
+        ${rateNote}
+      </div>`;
+      }
       return `
       <div class="opt">
         <h3>Option ${num}</h3>
         <table>
-          <tr><td>Price</td><td class="num">${formatMoney(o.cost + o.extra + o.profit)}</td></tr>
+          <tr class="emph"><td>Price</td><td class="num">${formatMoney(o.cost + o.extra + o.profit)}</td></tr>
           <tr><td>Trade-In</td><td class="num">${formatMoney(o.tradeIn)}</td></tr>
           <tr><td>Trade-In Lien</td><td class="num">${formatMoney(o.tradeInLien || 0)}</td></tr>
-          <tr><td>Cash-down</td><td class="num">${formatMoney(o.deposit)} <span class="pct">(${o.depositPct.toFixed(1)}%)</span></td></tr>
+          <tr class="emph"><td>Cash-down</td><td class="num">${formatMoney(o.deposit)} <span class="pct">(${o.depositPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Term</td><td class="num">${o.termMonths} mo</td></tr>
           <tr><td>Residual</td><td class="num">${formatMoney(o.residual)} <span class="pct">(${o.residualPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Int. Rate</td><td class="num">${o.ratePct.toFixed(2)}%</td></tr>
-          <tr><td>Lease Payment</td><td class="num">${formatMoney(o.payment)}</td></tr>
-          <tr><td>Taxes (${escapeHtml((client.province || "QC").toUpperCase())}${o.taxProvince === "BC" ? ` GST ${((o.gstRate || 0) * 100).toFixed(0)}% + PST ${((o.pstRate || 0) * 100).toFixed(0)}%` : ""})</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
+          <tr class="emph"><td>Lease Payment</td><td class="num">${formatMoney(o.payment)}</td></tr>
+          <tr class="emph"><td>Taxes (${escapeHtml((client.province || "QC").toUpperCase())}${o.taxProvince === "BC" ? ` GST ${((o.gstRate || 0) * 100).toFixed(0)}% + PST ${((o.pstRate || 0) * 100).toFixed(0)}%` : ""})</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
           <tr class="total"><td>Total Payment</td><td class="num">${formatMoney(o.totalPayment)}</td></tr>
-          <tr><td>Due on delivery</td><td class="num">${formatMoney(o.dueTotal)}</td></tr>
           <tr><td>Pro-rata (${o.daysLeftMonth}/${o.daysInMonth} d)</td><td class="num">${formatMoney(o.proRata)}</td></tr>
+          <tr class="total"><td>Due on delivery</td><td class="num">${formatMoney(o.dueTotal)}</td></tr>
         </table>
         ${rateNote}
       </div>`;
@@ -586,11 +588,14 @@ export function buildRetailQuoteHtml(
     width: 100%;
     max-width: 100%;
   }
-  .opt.empty { border: none; padding: 0; min-height: 0; }
+  .opt.na { background: #faf9f8; border-style: dashed; }
+  .opt.na h3 { color: #605e5c; }
+  .na-msg { margin: 0; font-size: 12px; color: #605e5c; }
   .opt h3 { margin: 0 0 8px; font-size: 14px; color: #008272; font-weight: 700; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   td { padding: 3px 0; }
   td.num { text-align: left; font-variant-numeric: tabular-nums; }
+  tr.emph td { font-weight: 700; }
   tr.total td { font-weight: 700; border-top: 1px solid #edebe9; padding-top: 8px; }
   .pct { color: #605e5c; font-size: 11px; font-weight: 400; }
   .smallprint { font-size: 10px; color: #605e5c; margin: 8px 0 0; line-height: 1.35; }

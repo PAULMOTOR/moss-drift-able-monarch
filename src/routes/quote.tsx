@@ -189,9 +189,14 @@ function QuotePage() {
           const inv = inventory.find((i) => i.id === lead.inventory_id);
           if (inv) applyInventory(inv);
         } else if (lead.vehicle_interest) {
+          // Parse "2024 Porsche Cayenne" style interest into year/make/model when possible
+          const raw = lead.vehicle_interest.trim();
+          const m = raw.match(/^((?:19|20)\d{2})\s+([A-Za-z0-9À-ÿ-]+)\s+(.+)$/);
           setClient((c) => ({
             ...c,
-            model: lead.vehicle_interest || c.model,
+            year: m ? Number(m[1]) : c.year,
+            make: m ? m[2] : c.make,
+            model: m ? m[3] : raw || c.model,
           }));
         }
         if (lead.estimated_value) {
@@ -344,8 +349,9 @@ function QuotePage() {
     license: client.license,
     tireTax: client.tireTax,
   };
+  // Pro-rata always uses today's calendar date → days left in current month
   const proRataCtx = {
-    startDate: client.startDate || todayIso(),
+    startDate: todayIso(),
     daysLeftOverride: client.daysLeftOverride,
   };
   const daysInfo = computeDaysLeftInMonth(proRataCtx.startDate);
@@ -366,6 +372,8 @@ function QuotePage() {
       client.tireTax,
       client.startDate,
       client.daysLeftOverride,
+      // recompute pro-rata when the calendar day changes while page is open
+      todayIso(),
     ],
   );
 
@@ -866,7 +874,7 @@ function QuotePage() {
             />
             <Field label="Lease start date" value={client.startDate} onChange={(v) => setClient((c) => ({ ...c, startDate: v }))} />
             <Field
-              label={`Days left in month (auto ${daysInfo.daysLeft}/${daysInfo.daysInMonth})`}
+              label={`Pro-rata days (auto today → end of month: ${daysInfo.daysLeft}/${daysInfo.daysInMonth})`}
               value={client.daysLeftOverride != null ? String(client.daysLeftOverride) : ""}
               onChange={(v) =>
                 setClient((c) => ({
@@ -875,6 +883,9 @@ function QuotePage() {
                 }))
               }
             />
+            <p className="text-[11px] text-muted-foreground -mt-1">
+              Pro-rata uses today's date automatically. Override only if delivery is a different day.
+            </p>
             <Field label="Salesman" value={client.salesman} onChange={(v) => setClient((c) => ({ ...c, salesman: v }))} />
             <div className="grid gap-1.5">
               <Label>Contract style</Label>
@@ -923,12 +934,15 @@ function QuotePage() {
       </div>
 
       <div className="mb-4 grid gap-3 lg:grid-cols-3">
-        {calculated.map((o, i) => (
-          <Card key={i}>
+        {calculated.map((o, i) => {
+          const isEmpty = !(o.cost > 0 || o.payment > 0);
+          return (
+          <Card key={i} className={isEmpty ? "border-dashed opacity-90" : undefined}>
             <CardHeader className="space-y-2 pb-2">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="text-sm font-semibold text-primary">
                   Option {i + 1}
+                  {isEmpty ? " — (N/A)" : ""}
                 </CardTitle>
                 <Calculator className="size-4 shrink-0 text-muted-foreground" />
               </div>
@@ -1004,10 +1018,16 @@ function QuotePage() {
 
               <div className="mt-3 space-y-1 rounded-sm border border-border bg-muted/40 p-3 text-xs">
                 <Row
+                  label="Price"
+                  value={formatMoney(o.cost + o.extra + o.profit)}
+                  bold
+                />
+                <Row
                   label="Trade equity (trade − lien)"
                   value={formatMoney((options[i].tradeIn || 0) - (options[i].tradeInLien || 0))}
                 />
                 <Row label="Financed (cap. cost)" value={formatMoney(o.financed)} bold />
+                <Row label="Cash-down" value={formatMoney(o.deposit)} bold />
                 <Row label="Deposit %" value={`${o.depositPct.toFixed(1)}%`} />
                 <Row label="Residual %" value={`${o.residualPct.toFixed(1)}%`} />
                 <Row label="Int. rate" value={`${o.ratePct.toFixed(2)}%`} />
@@ -1019,12 +1039,12 @@ function QuotePage() {
                   <>
                     <Row label={`GST ${(o.gstRate * 100).toFixed(0)}%`} value={formatMoney(o.gstOnPayment)} />
                     <Row label={`PST ${(o.pstRate * 100).toFixed(0)}% (locked)`} value={formatMoney(o.pstOnPayment)} />
-                    <Row label="Taxes total" value={formatMoney(o.taxOnPayment)} />
+                    <Row label="Taxes total" value={formatMoney(o.taxOnPayment)} bold />
                     <Row label="TRV (gross cap)" value={formatMoney(o.trv)} />
                     <Row label="Buyout tax (end)" value={formatMoney(o.residualTax)} />
                   </>
                 ) : (
-                  <Row label="Taxes" value={formatMoney(o.taxOnPayment)} />
+                  <Row label="Taxes" value={formatMoney(o.taxOnPayment)} bold />
                 )}
                 <Row label="Total payment" value={formatMoney(o.totalPayment)} bold />
                 <Row label={`Pro-rata (${o.daysLeftMonth}/${o.daysInMonth}d)`} value={formatMoney(o.proRata)} />
@@ -1042,7 +1062,8 @@ function QuotePage() {
               </Button>
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       <p className="text-center text-xs text-muted-foreground">

@@ -34,6 +34,7 @@ import {
   listProfiles,
   parseEmailLead,
 } from "@/lib/crm/server";
+import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
 import {
   LEAD_TYPES,
   SOURCES,
@@ -58,11 +59,13 @@ function CapturePage() {
   const navigate = useNavigate();
   const capture = useServerFn(captureLead);
   const parseEmail = useServerFn(parseEmailLead);
+  const decodeVinFn = useServerFn(decodeVin);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [me, setMe] = useState<Profile | null>(null);
   const [busy, setBusy] = useState(false);
+  const [vinBusy, setVinBusy] = useState(false);
   const [invOpen, setInvOpen] = useState(false);
   const [invQ, setInvQ] = useState("");
   const [emailOpen, setEmailOpen] = useState(false);
@@ -81,6 +84,10 @@ function CapturePage() {
     source: "phone",
     notes: "",
     vehicle_interest: "",
+    vehicle_year: "" as string,
+    vehicle_make: "",
+    vehicle_model: "",
+    vehicle_vin: "",
     inventory_id: "" as string,
     assigned_to: "",
     quote_sent: false,
@@ -91,6 +98,68 @@ function CapturePage() {
     quote_pdf_data: "" as string,
     source_email_raw: "" as string,
   });
+
+  function composeVehicleInterest(f: typeof form): string {
+    const parts = [
+      f.vehicle_year?.trim(),
+      f.vehicle_make?.trim(),
+      f.vehicle_model?.trim(),
+    ].filter(Boolean);
+    const base = parts.join(" ");
+    if (f.vehicle_vin?.trim()) {
+      return base
+        ? `${base} · VIN ${normalizeVin(f.vehicle_vin)}`
+        : `VIN ${normalizeVin(f.vehicle_vin)}`;
+    }
+    return base || f.vehicle_interest.trim();
+  }
+
+  function applyVehicleParse(text: string) {
+    const raw = text.trim();
+    if (!raw) return {};
+    // VIN-only
+    const maybeVin = normalizeVin(raw);
+    if (maybeVin.length === 17 && !/\s/.test(raw.replace(/[^A-Za-z0-9]/g, ""))) {
+      return { vehicle_vin: maybeVin };
+    }
+    const m = raw.match(/^((?:19|20)\d{2})\s+([A-Za-z0-9À-ÿ-]+)\s+(.+)$/);
+    if (m) {
+      return {
+        vehicle_year: m[1],
+        vehicle_make: m[2],
+        vehicle_model: m[3].replace(/\s*[·•].*$/, "").trim(),
+      };
+    }
+    return { vehicle_model: raw, vehicle_interest: raw };
+  }
+
+  async function explodeVin() {
+    const vin = normalizeVin(form.vehicle_vin);
+    if (vin.length !== 17) {
+      toast.error("Enter a 17-character VIN");
+      return;
+    }
+    setVinBusy(true);
+    try {
+      const result = await decodeVinFn({ data: { vin } });
+      if (!result.ok) {
+        toast.error(result.message || "Could not decode VIN");
+        return;
+      }
+      setForm((f) => ({
+        ...f,
+        vehicle_vin: result.vin,
+        vehicle_year: result.year != null ? String(result.year) : f.vehicle_year,
+        vehicle_make: result.make || f.vehicle_make,
+        vehicle_model: [result.model, result.trim].filter(Boolean).join(" ") || f.vehicle_model,
+      }));
+      toast.success(result.message || "VIN decoded");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "VIN decode failed");
+    } finally {
+      setVinBusy(false);
+    }
+  }
 
   useEffect(() => {
     void Promise.all([listProfiles({ data: {} }), listInventory({ data: {} }), getMyProfile()]).then(
@@ -152,6 +221,7 @@ function CapturePage() {
         source: parsed.source || "email",
         notes: parsed.notes || f.notes,
         vehicle_interest: parsed.vehicle_interest || parsed.inventory_label || f.vehicle_interest,
+        ...applyVehicleParse(parsed.vehicle_interest || parsed.inventory_label || ""),
         inventory_id:
           parsed.lead_type === "inventory" && parsed.inventory_id
             ? parsed.inventory_id
@@ -210,6 +280,7 @@ function CapturePage() {
     e.preventDefault();
     setBusy(true);
     try {
+      const vehicleInterest = composeVehicleInterest(form);
       const lead = await capture({
         data: {
           name: [form.first_name, form.last_name].filter(Boolean).join(" ") || form.name,
@@ -218,7 +289,7 @@ function CapturePage() {
           source: form.source,
           lead_type: form.lead_type,
           notes: form.notes || undefined,
-          vehicle_interest: form.vehicle_interest || undefined,
+          vehicle_interest: vehicleInterest || form.vehicle_interest || undefined,
           inventory_id: form.lead_type === "inventory" ? form.inventory_id || null : null,
 
           assigned_to: form.assigned_to || null,
@@ -516,6 +587,10 @@ Message: Interested in a viewing this weekend.`}
                                 ...f,
                                 inventory_id: item.id,
                                 vehicle_interest: vehicleLabel(item),
+                                vehicle_year: item.year != null ? String(item.year) : f.vehicle_year,
+                                vehicle_make: item.make || f.vehicle_make,
+                                vehicle_model: [item.model, item.trim].filter(Boolean).join(" ") || f.vehicle_model,
+                                vehicle_vin: item.vin ? normalizeVin(item.vin) : f.vehicle_vin,
                               }));
                               setInvOpen(false);
                             }}
@@ -555,19 +630,92 @@ Message: Interested in a viewing this weekend.`}
                 </div>
               </div>
             ) : (
-              <div className="grid gap-1.5">
-                <Label htmlFor="lease-vehicle">Vehicle for lease quote *</Label>
-                <Input
-                  id="lease-vehicle"
-                  className="h-12 text-base"
-                  placeholder="e.g. 2025 Porsche 911 Carrera S · 36/10k"
-                  value={form.vehicle_interest}
-                  onChange={(e) => setForm((f) => ({ ...f, vehicle_interest: e.target.value }))}
-                  required={form.lead_type === "lease"}
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  Lease leads are free-text — not tied to our floor inventory.
-                </p>
+              <div className="grid gap-3">
+                <Label>Vehicle for lease quote *</Label>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="grid gap-1">
+                    <Label htmlFor="v-year" className="text-[11px] text-muted-foreground">
+                      Year
+                    </Label>
+                    <Input
+                      id="v-year"
+                      className="h-11"
+                      inputMode="numeric"
+                      placeholder="2025"
+                      maxLength={4}
+                      value={form.vehicle_year}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, vehicle_year: e.target.value.replace(/\D/g, "").slice(0, 4) }))
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <Label htmlFor="v-make" className="text-[11px] text-muted-foreground">
+                      Make
+                    </Label>
+                    <Input
+                      id="v-make"
+                      className="h-11"
+                      placeholder="Porsche"
+                      value={form.vehicle_make}
+                      onChange={(e) => setForm((f) => ({ ...f, vehicle_make: e.target.value }))}
+                    />
+                  </div>
+                  <div className="grid gap-1 col-span-2">
+                    <Label htmlFor="v-model" className="text-[11px] text-muted-foreground">
+                      Model
+                    </Label>
+                    <Input
+                      id="v-model"
+                      className="h-11"
+                      placeholder="911 Carrera S"
+                      value={form.vehicle_model}
+                      onChange={(e) => setForm((f) => ({ ...f, vehicle_model: e.target.value }))}
+                      required={form.lead_type === "lease"}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-1">
+                  <Label htmlFor="v-vin" className="text-[11px] text-muted-foreground">
+                    VIN
+                  </Label>
+                  <div className="flex flex-wrap gap-2">
+                    <Input
+                      id="v-vin"
+                      className="h-11 min-w-0 flex-1 font-mono tracking-wide uppercase"
+                      placeholder="17-character VIN"
+                      maxLength={17}
+                      autoComplete="off"
+                      value={form.vehicle_vin}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          vehicle_vin: normalizeVin(e.target.value),
+                        }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void explodeVin();
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="h-11 shrink-0"
+                      disabled={vinBusy || normalizeVin(form.vehicle_vin).length !== 17}
+                      onClick={() => void explodeVin()}
+                    >
+                      <Search className="size-4" />
+                      {vinBusy ? "Decoding…" : "Explode VIN"}
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Free NHTSA (DOT) decode fills year, make, model. Colour is not in the VIN
+                    {form.vehicle_vin ? ` · ${normalizeVin(form.vehicle_vin).length}/17` : ""}.
+                  </p>
+                </div>
               </div>
             )}
 
