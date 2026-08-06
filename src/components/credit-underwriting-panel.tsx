@@ -28,13 +28,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 
 export function CreditUnderwritingPanel({
@@ -68,7 +61,10 @@ export function CreditUnderwritingPanel({
       const pkg = await getCreditPackage({ data: { leadId } });
       setData(pkg);
       setAppEmail(pkg.lead.email || pkg.application.app_email || "");
-      if ((pkg.lead.credit_status || "").toLowerCase() === "approved" || pkg.application.status === "approved") {
+      if (
+        (pkg.lead.credit_status || "").toLowerCase() === "approved" ||
+        (pkg.application.status || "").toLowerCase() === "approved"
+      ) {
         const pkt = await getLeadContractPacket({ data: { leadId } }).catch(() => null);
         setContractPkt(pkt);
         if (pkt) {
@@ -99,13 +95,17 @@ export function CreditUnderwritingPanel({
   const canApprove = ["admin", "gsm"].includes(me.role);
   const vehicleItems = checklist.filter((c) => c.section === "vehicle");
   const customerItems = checklist.filter((c) => c.section === "customer");
+  const isDealApproved =
+    String(app.status || "").toLowerCase() === "approved" ||
+    String(lead.credit_status || "").toLowerCase() === "approved";
   const appReady =
     app.status === "app_submitted" ||
     app.status === "ids_uploaded" ||
     app.status === "credit_requested" ||
     app.status === "in_review" ||
     app.status === "pending_gsm" ||
-    app.status === "approved";
+    isDealApproved;
+
 
   return (
     <div className="space-y-4 rounded-sm border border-border bg-card p-4">
@@ -193,17 +193,47 @@ export function CreditUnderwritingPanel({
               </Button>
             </>
           ) : null}
+          {isDealApproved && canStaff ? (
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const res = await generateApprovedLeaseContract({
+                    data: { leadId, contractStyle },
+                  });
+                  toast.success("Lease contract generated");
+                  if (res.pdfData) {
+                    setViewDoc({ name: res.pdfName, data: res.pdfData });
+                  }
+                  await load();
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Generate failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Generate lease contract
+            </Button>
+          ) : null}
+          {isDealApproved && canStaff ? (
+            <Button size="sm" variant="secondary" disabled={busy} onClick={() => setShowSendSign(true)}>
+              Send for DocuSign
+            </Button>
+          ) : null}
         </div>
       </div>
 
-      {app.status === "approved" || lead.credit_status === "approved" ? (
-        <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 space-y-3">
+      {isDealApproved ? (
+        <div className="rounded-sm border-2 border-primary/40 bg-primary/5 p-3 space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <h4 className="text-sm font-semibold text-primary">Lease contract (post-approval)</h4>
               <p className="text-xs text-muted-foreground">
-                Deal approved — generate the ENG lease contract from the accepted quote, then send for
-                DocuSign + Live ID.
+                Deal is approved. Generate the ENG lease contract from the accepted quote, then send
+                for DocuSign + Live ID. Requires a saved lease quote with an accepted option.
               </p>
             </div>
             <Badge variant="secondary">
@@ -211,29 +241,32 @@ export function CreditUnderwritingPanel({
                 ? "Sent for signature"
                 : contractPkt?.quote?.contract_pdf_name
                   ? "Contract ready"
-                  : "Awaiting generate"}
+                  : "Ready to generate"}
             </Badge>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-2 sm:max-w-sm">
             <div>
               <Label className="text-xs">Contract style</Label>
-              <Select value={contractStyle} onValueChange={setContractStyle}>
-                <SelectTrigger className="mt-1 h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(contractPkt?.styles || [
+              <select
+                className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={contractStyle}
+                onChange={(e) => setContractStyle(e.target.value)}
+              >
+                {(
+                  contractPkt?.styles || [
                     { key: "qc_individual_en", label: "Quebec Individual English" },
                     { key: "qc_business_en", label: "Quebec Business English" },
                     { key: "ca_individual_en", label: "Canada Individual lease" },
                     { key: "ca_business_en", label: "Canada Business lease" },
-                  ]).map((s) => (
-                    <SelectItem key={s.key} value={s.key}>
-                      {s.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                    { key: "qc_individual_fr", label: "Quebec Individual French" },
+                    { key: "qc_business_fr", label: "Quebec Business French" },
+                  ]
+                ).map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -318,13 +351,15 @@ export function CreditUnderwritingPanel({
           </div>
           {contractPkt?.docusign && !contractPkt.docusign.configured ? (
             <p className="text-xs text-amber-800">
-              DocuSign is not connected yet. Add the API keys from DocuSign Admin (see team note) —
-              generate still works offline.
+              DocuSign is not connected yet. Add the API keys on Vercel — generate still works without
+              them.
             </p>
           ) : contractPkt?.docusign?.configured ? (
             <p className="text-xs text-muted-foreground">
               DocuSign connected
-              {contractPkt.docusign.idvReady ? " · Live ID workflow ready" : " · Live ID workflow ID not set"}
+              {contractPkt.docusign.idvReady
+                ? " · Live ID workflow ready"
+                : " · Live ID workflow ID not set"}
             </p>
           ) : null}
           {contractPkt?.envelopes && contractPkt.envelopes.length > 0 ? (
@@ -342,6 +377,7 @@ export function CreditUnderwritingPanel({
       ) : null}
 
       {data.appLink ? (
+
         <p className="break-all text-xs text-muted-foreground">
           Lessee app link:{" "}
           <a className="text-primary underline" href={data.appLink} target="_blank" rel="noreferrer">

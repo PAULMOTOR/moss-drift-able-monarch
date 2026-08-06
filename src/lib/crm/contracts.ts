@@ -152,37 +152,65 @@ export const generateApprovedLeaseContract = createServerFn({ method: "POST" })
     const invoiceHtml = buildFirstInvoiceHtml(payload.client, opt, taxRate);
     const { pdfName, pdfData } = await makeContractPdfDataUrl(payload.client, opt, taxRate);
 
-    await sql`
-      update lease_quotes set
-        accepted_option = ${optionNumber},
-        selected_option = ${optionNumber},
-        status = 'accepted',
-        contract_html = ${contractHtml},
-        invoice_html = ${invoiceHtml},
-        contract_pdf_name = ${pdfName},
-        contract_pdf_data = ${pdfData},
-        contract_style = ${style},
-        contract_generated_at = now(),
-        contract_generated_by = ${me.id},
-        updated_at = now()
-      where id = ${row.id}
-    `;
-    await sql`
-      update leads set
-        accepted_quote_id = ${row.id},
-        contract_status = 'ready',
-        guarantor = ${payload.client.guarantor || null},
-        updated_at = now()
-      where id = ${data.leadId}
-    `;
-    await sql`
-      insert into lead_quote_files (
-        id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
-      ) values (
-        ${uid()}, ${data.leadId}, ${row.id}, ${optionNumber},
-        ${pdfName}, ${pdfData}, 'application/pdf', 'lease_contract', ${me.id}
-      )
-    `;
+    try {
+      await sql`
+        update lease_quotes set
+          accepted_option = ${optionNumber},
+          selected_option = ${optionNumber},
+          status = 'accepted',
+          contract_html = ${contractHtml},
+          invoice_html = ${invoiceHtml},
+          contract_pdf_name = ${pdfName},
+          contract_pdf_data = ${pdfData},
+          contract_style = ${style},
+          contract_generated_at = now(),
+          contract_generated_by = ${me.id},
+          updated_at = now()
+        where id = ${row.id}
+      `;
+    } catch {
+      // Columns from 0011 not applied yet — store HTML only
+      await sql`
+        update lease_quotes set
+          accepted_option = ${optionNumber},
+          selected_option = ${optionNumber},
+          status = 'accepted',
+          contract_html = ${contractHtml},
+          invoice_html = ${invoiceHtml},
+          updated_at = now()
+        where id = ${row.id}
+      `;
+    }
+    try {
+      await sql`
+        update leads set
+          accepted_quote_id = ${row.id},
+          contract_status = 'ready',
+          guarantor = ${payload.client.guarantor || null},
+          updated_at = now()
+        where id = ${data.leadId}
+      `;
+    } catch {
+      await sql`
+        update leads set
+          accepted_quote_id = ${row.id},
+          guarantor = ${payload.client.guarantor || null},
+          updated_at = now()
+        where id = ${data.leadId}
+      `;
+    }
+    try {
+      await sql`
+        insert into lead_quote_files (
+          id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
+        ) values (
+          ${uid()}, ${data.leadId}, ${row.id}, ${optionNumber},
+          ${pdfName}, ${pdfData}, 'application/pdf', 'lease_contract', ${me.id}
+        )
+      `;
+    } catch {
+      /* non-fatal */
+    }
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
@@ -210,55 +238,108 @@ export const getLeadContractPacket = createServerFn({ method: "GET" })
   .handler(async ({ context, data }) => {
     await requireProfile(context.userId);
     const sql = await getSql();
+    // Base lead fields (always present)
     const lead = await sql<{
       credit_status: string | null;
-      contract_status: string | null;
       accepted_quote_id: string | null;
       name: string;
       email: string | null;
       guarantor: string | null;
     }>`
-      select credit_status, contract_status, accepted_quote_id, name, email, guarantor
+      select credit_status, accepted_quote_id, name, email, guarantor
       from leads where id = ${data.leadId} limit 1
     `;
     if (!lead[0]) throw new Error("Lead not found");
-    const q = lead[0].accepted_quote_id
-      ? await sql<{
-          id: string;
-          contract_html: string | null;
-          invoice_html: string | null;
-          contract_pdf_name: string | null;
-          contract_pdf_data: string | null;
-          contract_style: string | null;
-          accepted_option: number | null;
-          contract_generated_at: string | null;
-        }>`
-          select id, contract_html, invoice_html, contract_pdf_name, contract_pdf_data,
-                 contract_style, accepted_option,
-                 contract_generated_at::text as contract_generated_at
-          from lease_quotes where id = ${lead[0].accepted_quote_id} limit 1
-        `
-      : await sql<{
-          id: string;
-          contract_html: string | null;
-          invoice_html: string | null;
-          contract_pdf_name: string | null;
-          contract_pdf_data: string | null;
-          contract_style: string | null;
-          accepted_option: number | null;
-          contract_generated_at: string | null;
-        }>`
-          select id, contract_html, invoice_html, contract_pdf_name, contract_pdf_data,
-                 contract_style, accepted_option,
-                 contract_generated_at::text as contract_generated_at
-          from lease_quotes where lead_id = ${data.leadId}
-          order by
-            case when contract_generated_at is not null then 0 else 1 end,
-            created_at desc
-          limit 1
 
+    let contractStatus = "none";
+    try {
+      const cs = await sql<{ contract_status: string | null }>`
+        select contract_status from leads where id = ${data.leadId} limit 1
+      `;
+      contractStatus = cs[0]?.contract_status || "none";
+    } catch {
+      contractStatus = "none";
+    }
+
+    let quote: {
+      id: string;
+      contract_html: string | null;
+      invoice_html: string | null;
+      contract_pdf_name: string | null;
+      contract_pdf_data: string | null;
+      contract_style: string | null;
+      accepted_option: number | null;
+      contract_generated_at: string | null;
+    } | null = null;
+
+    try {
+      const q = lead[0].accepted_quote_id
+        ? await sql<{
+            id: string;
+            contract_html: string | null;
+            invoice_html: string | null;
+            contract_pdf_name: string | null;
+            contract_pdf_data: string | null;
+            contract_style: string | null;
+            accepted_option: number | null;
+            contract_generated_at: string | null;
+          }>`
+            select id, contract_html, invoice_html,
+                   contract_pdf_name, contract_pdf_data, contract_style, accepted_option,
+                   contract_generated_at::text as contract_generated_at
+            from lease_quotes where id = ${lead[0].accepted_quote_id} limit 1
+          `
+        : await sql<{
+            id: string;
+            contract_html: string | null;
+            invoice_html: string | null;
+            contract_pdf_name: string | null;
+            contract_pdf_data: string | null;
+            contract_style: string | null;
+            accepted_option: number | null;
+            contract_generated_at: string | null;
+          }>`
+            select id, contract_html, invoice_html,
+                   contract_pdf_name, contract_pdf_data, contract_style, accepted_option,
+                   contract_generated_at::text as contract_generated_at
+            from lease_quotes where lead_id = ${data.leadId}
+            order by created_at desc
+            limit 1
+          `;
+      quote = q[0] || null;
+    } catch {
+      // Migration not applied yet — fall back to HTML-only columns
+      try {
+        const q = await sql<{
+          id: string;
+          contract_html: string | null;
+          invoice_html: string | null;
+          accepted_option: number | null;
+        }>`
+          select id, contract_html, invoice_html, accepted_option
+          from lease_quotes
+          where lead_id = ${data.leadId}
+          order by created_at desc
+          limit 1
         `;
-    const envelopes = await sql<{
+        if (q[0]) {
+          quote = {
+            id: q[0].id,
+            contract_html: q[0].contract_html,
+            invoice_html: q[0].invoice_html,
+            contract_pdf_name: null,
+            contract_pdf_data: null,
+            contract_style: null,
+            accepted_option: q[0].accepted_option,
+            contract_generated_at: null,
+          };
+        }
+      } catch {
+        quote = null;
+      }
+    }
+
+    let envelopes: Array<{
       id: string;
       envelope_id: string | null;
       status: string;
@@ -266,25 +347,31 @@ export const getLeadContractPacket = createServerFn({ method: "GET" })
       idv_enabled: boolean;
       created_at: string;
       error: string | null;
-    }>`
-      select id, envelope_id, status, signer_email, idv_enabled,
-             created_at::text as created_at, error
-      from contract_envelopes
-      where lead_id = ${data.leadId}
-      order by created_at desc
-      limit 10
-    `;
+    }> = [];
+    try {
+      envelopes = await sql`
+        select id, envelope_id, status, signer_email, idv_enabled,
+               created_at::text as created_at, error
+        from contract_envelopes
+        where lead_id = ${data.leadId}
+        order by created_at desc
+        limit 10
+      `;
+    } catch {
+      envelopes = [];
+    }
+
     return {
       creditStatus: lead[0].credit_status || "none",
-      contractStatus: lead[0].contract_status || "none",
+      contractStatus,
       approved: (lead[0].credit_status || "").toLowerCase() === "approved",
       lesseeName: lead[0].name,
       lesseeEmail: lead[0].email,
       guarantor: lead[0].guarantor,
-      quote: q[0] || null,
+      quote,
       envelopes,
       docusign: docuSignStatus(),
-      styles: CONTRACT_STYLE_META,
+      styles: CONTRACT_STYLE_META.map((s) => ({ key: s.key, label: s.label })),
     };
   });
 
