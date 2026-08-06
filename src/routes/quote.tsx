@@ -39,7 +39,9 @@ import {
 import type { InventoryItem, Lead } from "@/lib/crm/types";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { getMyProfile } from "@/lib/crm/server";
-import { Check, Calculator, FolderOpen, Printer, Save, Trash2 } from "lucide-react";
+import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
+import { Check, Calculator, FolderOpen, Printer, Save, Search, Trash2 } from "lucide-react";
+
 
 type QuoteSearch = { leadId?: string; quoteId?: string };
 
@@ -70,8 +72,11 @@ function QuotePage() {
   const acceptFn = useServerFn(acceptLeaseQuoteOption);
   const getQuoteFn = useServerFn(getLeaseQuote);
   const deleteQuoteFn = useServerFn(deleteLeaseQuote);
+  const decodeVinFn = useServerFn(decodeVin);
   const { user } = useCurrentUserState();
   const [busy, setBusy] = useState(false);
+  const [vinBusy, setVinBusy] = useState(false);
+
   const [leads, setLeads] = useState<Lead[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [saved, setSaved] = useState<
@@ -275,6 +280,59 @@ function QuotePage() {
           : o,
       ),
     );
+  }
+
+  async function explodeVin() {
+    const vin = normalizeVin(client.vin);
+    if (vin.length !== 17) {
+      toast.error("Enter a full 17-character VIN first");
+      return;
+    }
+    setVinBusy(true);
+    try {
+      const result = await decodeVinFn({ data: { vin } });
+      if (!result.ok) {
+        toast.error(result.message);
+        setClient((c) => ({ ...c, vin: result.vin || c.vin }));
+        return;
+      }
+      const invMatch = inventory.find((i) => i.vin && normalizeVin(i.vin) === result.vin);
+      setClient((c) => ({
+        ...c,
+        vin: result.vin,
+        year: result.year ?? c.year,
+        make: result.make || c.make,
+        model: result.model || c.model,
+        trim: result.trim || c.trim,
+        color: invMatch?.exterior_color || c.color,
+        km: invMatch?.mileage ?? c.km,
+        stock: invMatch?.stock_number || c.stock,
+      }));
+      if (invMatch?.price) {
+        const price = invMatch.price;
+        setOptions((opts) =>
+          opts.map((o, idx) =>
+            idx === 0 && !o.cost
+              ? {
+                  ...o,
+                  cost: price,
+                  residual: o.residual || Math.round(price * 0.55),
+                  deposit: o.deposit || Math.round(price * 0.2),
+                }
+              : o,
+          ),
+        );
+      }
+      toast.success(
+        invMatch
+          ? `${result.message} · matched stock #${invMatch.stock_number || "—"}`
+          : `${result.message} · enter colour manually (not in VIN)`,
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "VIN decode failed");
+    } finally {
+      setVinBusy(false);
+    }
   }
 
   const taxRate = taxRateForProvince(client.province);
@@ -721,7 +779,44 @@ function QuotePage() {
             <Field label="Trim" value={client.trim} onChange={(v) => setClient((c) => ({ ...c, trim: v }))} />
             <Field label="Colour" value={client.color} onChange={(v) => setClient((c) => ({ ...c, color: v }))} />
             <Field label="KM" value={client.km?.toString() || ""} onChange={(v) => setClient((c) => ({ ...c, km: v ? Number(v) : null }))} />
-            <Field label="VIN" value={client.vin} onChange={(v) => setClient((c) => ({ ...c, vin: v }))} />
+            <div className="grid gap-1.5 sm:col-span-2">
+              <Label>VIN</Label>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
+                  value={client.vin}
+                  onChange={(e) =>
+                    setClient((c) => ({
+                      ...c,
+                      vin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, "").slice(0, 17),
+                    }))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void explodeVin();
+                    }
+                  }}
+                  placeholder="17-character VIN"
+                  className="font-mono tracking-wide uppercase"
+                  maxLength={17}
+                  autoComplete="off"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={vinBusy || normalizeVin(client.vin).length !== 17}
+                  onClick={() => void explodeVin()}
+                  className="shrink-0"
+                >
+                  <Search className="size-4" />
+                  {vinBusy ? "Decoding…" : "Explode VIN"}
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Free NHTSA (DOT) decode fills year, make, model, trim. Colour is not in the VIN
+                {client.vin ? ` · ${normalizeVin(client.vin).length}/17` : ""}.
+              </p>
+            </div>
             <Field label="Stock #" value={client.stock} onChange={(v) => setClient((c) => ({ ...c, stock: v }))} />
             <Field
               label="KM allowance (per year)"
