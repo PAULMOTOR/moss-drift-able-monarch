@@ -16,6 +16,9 @@ export const Route = createFileRoute("/api/health")({
         const mail = {
           hasResendKey: Boolean(process.env.RESEND_API_KEY?.trim()),
           fromEmail: process.env.CRM_FROM_EMAIL?.trim() || "onboarding@resend.dev",
+          keyPrefix: process.env.RESEND_API_KEY?.trim()
+            ? process.env.RESEND_API_KEY.trim().slice(0, 6) + "…"
+            : null,
         };
 
         const gmail = {
@@ -160,6 +163,115 @@ export const Route = createFileRoute("/api/health")({
           };
         }
 
+        // Resend probe: does THIS API key see paulmotorcompany.com as verified?
+        let resendProbe: {
+          ok: boolean;
+          error?: string;
+          fromDomain?: string;
+          domainStatus?: string | null;
+          domainVerified?: boolean;
+          domainsFound?: string[];
+          recentOutbox?: Array<{
+            status: string;
+            kind: string | null;
+            error: string | null;
+            to: string;
+            created_at: string;
+          }>;
+        } | null = null;
+        {
+          const key = process.env.RESEND_API_KEY?.trim();
+          const fromEmail = mail.fromEmail;
+          const fromDomain = fromEmail.includes("@")
+            ? fromEmail.split("@")[1]!.toLowerCase()
+            : "";
+          if (!key) {
+            resendProbe = { ok: false, error: "RESEND_API_KEY missing", fromDomain };
+          } else {
+            try {
+              const res = await fetch("https://api.resend.com/domains", {
+                headers: { Authorization: "Bearer " + key },
+              });
+              const text = await res.text();
+              if (!res.ok) {
+                resendProbe = {
+                  ok: false,
+                  error: `Resend API ${res.status}: ${text.slice(0, 200)}`,
+                  fromDomain,
+                };
+              } else {
+                let domains: Array<{ name?: string; status?: string }> = [];
+                try {
+                  const j = JSON.parse(text) as {
+                    data?: Array<{ name?: string; status?: string }>;
+                  };
+                  domains = j.data || [];
+                } catch {
+                  domains = [];
+                }
+                const match = domains.find(
+                  (d) => (d.name || "").toLowerCase() === fromDomain,
+                );
+                const status = match?.status || null;
+                const verified =
+                  status === "verified" ||
+                  status === "Verified" ||
+                  (status || "").toLowerCase() === "verified";
+                resendProbe = {
+                  ok: verified,
+                  fromDomain,
+                  domainStatus: status,
+                  domainVerified: verified,
+                  domainsFound: domains.map((d) => `${d.name}:${d.status}`),
+                  error: verified
+                    ? undefined
+                    : match
+                      ? `Domain ${fromDomain} status is "${status}" (need verified)`
+                      : `Domain ${fromDomain} not on this API key's account. Domains: ${domains.map((d) => d.name).join(", ") || "(none)"}`,
+                };
+              }
+            } catch (e) {
+              resendProbe = {
+                ok: false,
+                error: e instanceof Error ? e.message : String(e),
+                fromDomain,
+              };
+            }
+          }
+
+          // Last outbound attempts (errors show real Resend messages)
+          if (db.ok) {
+            try {
+              const { getSql } = await import("@/lib/db");
+              const sql = await getSql();
+              const rows = await sql<{
+                status: string;
+                kind: string | null;
+                error: string | null;
+                to_email: string;
+                created_at: string;
+              }>`
+                select status, kind, error, to_email, created_at::text as created_at
+                from email_outbox
+                order by created_at desc
+                limit 5
+              `;
+              resendProbe = {
+                ...(resendProbe || { ok: false }),
+                recentOutbox: rows.map((r) => ({
+                  status: r.status,
+                  kind: r.kind,
+                  error: r.error,
+                  to: r.to_email,
+                  created_at: r.created_at,
+                })),
+              };
+            } catch {
+              /* table may not exist */
+            }
+          }
+        }
+
         const hints: string[] = [];
         if (!hasDatabaseUrl) hints.push("Missing DATABASE_URL");
         if (!gmail.configured) {
@@ -191,6 +303,20 @@ export const Route = createFileRoute("/api/health")({
             "RESEND_API_KEY not set — assignment/reminder emails are queued only (not delivered). Add Resend key + optional CRM_FROM_EMAIL on Production, redeploy.",
           );
         }
+        if (mail.hasResendKey && resendProbe && !resendProbe.domainVerified) {
+          hints.push(
+            resendProbe.error ||
+              "RESEND_API_KEY does not see CRM_FROM_EMAIL domain as verified — use a key from the Resend account where the domain is Verified.",
+          );
+        }
+        if (resendProbe?.recentOutbox?.some((r) => r.status === "error" || r.status === "queued_no_provider")) {
+          const lastErr = resendProbe.recentOutbox.find(
+            (r) => r.status === "error" || r.status === "queued_no_provider",
+          );
+          if (lastErr?.error) {
+            hints.push(`Last email error: ${lastErr.error}`);
+          }
+        }
         if (hints.length === 0) {
           hints.push("Config looks good. Use Admin → Import now, or wait for the 2-minute cron.");
         }
@@ -209,6 +335,7 @@ export const Route = createFileRoute("/api/health")({
             crmSeedDemo,
           },
           mail,
+          resendProbe,
           gmail,
           gmailProbe,
           driveProbe,
