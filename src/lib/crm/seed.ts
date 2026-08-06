@@ -43,6 +43,24 @@ const STAFF = [
     phone: "514-767-0104",
   },
   {
+    id: "prof-christian",
+    userId: "user-christian",
+    email: "christian@paulmotorcompany.com",
+    name: "Christian Haykal",
+    role: "credit_manager" as const,
+    title: "Credit Manager",
+    phone: "514-767-0105",
+  },
+  {
+    id: "prof-gsm",
+    userId: "user-gsm",
+    email: "info@paulmotorcompany.com",
+    name: "GSM (TBD)",
+    role: "gsm" as const,
+    title: "General Sales Manager",
+    phone: "514-767-0100",
+  },
+  {
     id: "prof-broker-marie",
     userId: "user-broker-marie",
     email: "marie@exoticroutes.ca",
@@ -82,6 +100,17 @@ async function insertStaffMember(
   if (mode === "ensure") {
     const existing = await sql<{ id: string }>`select id from profiles where id = ${s.id} limit 1`;
     if (existing[0]) {
+      // Keep core staff roles/titles in sync (e.g. promote to GSM / Credit Manager)
+      await sql`
+        update profiles set
+          role = ${s.role},
+          title = ${s.title},
+          name = ${s.name},
+          email = ${s.email},
+          active = true,
+          updated_at = now()
+        where id = ${s.id}
+      `;
       const prof = await sql<{ user_id: string | null; email: string; name: string }>`
         select user_id, email, name from profiles where id = ${s.id}
       `;
@@ -110,6 +139,22 @@ async function insertStaffMember(
           on conflict (id) do nothing
         `;
       }
+      return;
+    }
+    // also try match by email (existing user under different id)
+    const byEmail = await sql<{ id: string; user_id: string | null }>`
+      select id, user_id from profiles where lower(email) = ${s.email.toLowerCase()} limit 1
+    `;
+    if (byEmail[0]) {
+      await sql`
+        update profiles set
+          role = ${s.role},
+          title = ${s.title},
+          name = ${s.name},
+          active = true,
+          updated_at = now()
+        where id = ${byEmail[0].id}
+      `;
       return;
     }
   }
@@ -182,13 +227,14 @@ async function syncStaff(sql: Sql) {
   }
 
   for (const s of STAFF) {
-    if (s.role === "admin") {
-      await insertStaffMember(sql, s, passwordHash, now, "ensure");
-    } else {
+    // Always ensure core Paul Motor staff (admins, reps, credit, GSM)
+    if (s.role === "broker") {
       const exists = await sql`select id from profiles where id = ${s.id} limit 1`;
       if (exists[0]) {
         await insertStaffMember(sql, s, passwordHash, now, "ensure");
       }
+    } else {
+      await insertStaffMember(sql, s, passwordHash, now, "ensure");
     }
   }
 }

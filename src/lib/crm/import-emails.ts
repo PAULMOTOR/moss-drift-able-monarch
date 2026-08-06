@@ -332,14 +332,24 @@ async function processMessage(
 
   const leadId = uid();
   const lucasId = leadType === "inventory" ? await resolveLucasProfileId(sql) : null;
+  const nameParts = name.trim().split(/\s+/).filter(Boolean);
+  const firstName = nameParts[0] || name;
+  const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
+  const partyType =
+    leadType === "lease" && /business|entreprise/i.test(String(classified.rule || source || ""))
+      ? "business"
+      : "individual";
   await sql`
     insert into leads (
-      id, name, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
+      id, name, first_name, last_name, party_type, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
       assigned_to, stage, stage_entered_at, quote_sent, estimated_value,
       source_email_raw, email_portal, gmail_message_id, gmail_thread_id, created_by
     ) values (
       ${leadId},
       ${name},
+      ${firstName},
+      ${lastName},
+      ${partyType},
       ${parsed.phone || null},
       ${customerEmail},
       ${source},

@@ -44,11 +44,11 @@ export function AppShell({
   const [open, setOpen] = useState(false);
   const nav = [
     ...baseNav,
+    ...(profile.role === "admin" || profile.role === "gsm"
+      ? ([{ to: "/data-analysis", label: "Data analysis", icon: BarChart3, primary: false }] as const)
+      : []),
     ...(profile.role === "admin"
-      ? ([
-          { to: "/data-analysis", label: "Data analysis", icon: BarChart3, primary: false },
-          { to: "/admin", label: "Admin", icon: Shield, primary: false },
-        ] as const)
+      ? ([{ to: "/admin", label: "Admin", icon: Shield, primary: false }] as const)
       : []),
   ];
 

@@ -73,6 +73,9 @@ function CapturePage() {
   const [form, setForm] = useState({
     lead_type: "inventory" as LeadType,
     name: "",
+    first_name: "",
+    last_name: "",
+    party_type: "individual" as "individual" | "business",
     phone: "",
     email: "",
     source: "phone",
@@ -131,10 +134,19 @@ function CapturePage() {
     setParseBusy(true);
     try {
       const parsed = await parseEmail({ data: { raw: emailRaw } });
+      const nameParts = (parsed.name || "").trim().split(/\s+/).filter(Boolean);
+      const first_name = nameParts[0] || "";
+      const last_name = nameParts.slice(1).join(" ");
+      const businessHint =
+        /business|inc\.?|ltd\.?|llc|corp|company|leasing form business/i.test(emailRaw) ||
+        /business|inc\.?|ltd\.?|llc|corp/i.test(parsed.name || "");
       setForm((f) => ({
         ...f,
         lead_type: parsed.lead_type,
         name: parsed.name || f.name,
+        first_name: first_name || f.first_name,
+        last_name: last_name || f.last_name,
+        party_type: businessHint ? "business" : f.party_type,
         phone: parsed.phone || f.phone,
         email: parsed.email || f.email,
         source: parsed.source || "email",
@@ -200,7 +212,7 @@ function CapturePage() {
     try {
       const lead = await capture({
         data: {
-          name: form.name,
+          name: [form.first_name, form.last_name].filter(Boolean).join(" ") || form.name,
           phone: form.phone || undefined,
           email: form.email || undefined,
           source: form.source,
@@ -210,6 +222,9 @@ function CapturePage() {
           inventory_id: form.lead_type === "inventory" ? form.inventory_id || null : null,
 
           assigned_to: form.assigned_to || null,
+          first_name: form.first_name || undefined,
+          last_name: form.last_name || undefined,
+          party_type: form.party_type || "individual",
           quote_sent: form.quote_sent,
           quote_sent_at:
             form.quote_sent && form.quote_sent_at
@@ -359,18 +374,65 @@ Message: Interested in a viewing this weekend.`}
 
         <Card className="border-primary/20 shadow-lg shadow-primary/5">
           <CardContent className="space-y-4 p-4 sm:p-5">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="first_name">First name *</Label>
+                <Input
+                  id="first_name"
+                  required
+                  autoFocus={!emailOpen}
+                  autoComplete="given-name"
+                  className="h-12 text-base"
+                  placeholder="First"
+                  value={form.first_name}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      first_name: e.target.value,
+                      name: [e.target.value, f.last_name].filter(Boolean).join(" "),
+                    }))
+                  }
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="last_name">Last name *</Label>
+                <Input
+                  id="last_name"
+                  required
+                  autoComplete="family-name"
+                  className="h-12 text-base"
+                  placeholder="Last"
+                  value={form.last_name}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      last_name: e.target.value,
+                      name: [f.first_name, e.target.value].filter(Boolean).join(" "),
+                    }))
+                  }
+                />
+              </div>
+            </div>
+
             <div className="grid gap-1.5">
-              <Label htmlFor="name">Name *</Label>
-              <Input
-                id="name"
-                required
-                autoFocus={!emailOpen}
-                autoComplete="name"
-                className="h-12 text-base"
-                placeholder="Customer name"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              />
+              <Label>Client type</Label>
+              <Select
+                value={form.party_type}
+                onValueChange={(v) =>
+                  setForm((f) => ({
+                    ...f,
+                    party_type: v as "individual" | "business",
+                  }))
+                }
+              >
+                <SelectTrigger className="h-12">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="individual">Individual</SelectItem>
+                  <SelectItem value="business">Business</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">

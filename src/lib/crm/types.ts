@@ -1,4 +1,4 @@
-export const ROLES = ["admin", "rep", "broker"] as const;
+export const ROLES = ["admin", "rep", "broker", "gsm", "credit_manager"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const STAGES = [
@@ -6,6 +6,7 @@ export const STAGES = [
   { id: "contacted", label: "Contacted", short: "Contacted" },
   { id: "paused", label: "Paused", short: "Paused" },
   { id: "quote_sent", label: "Quote Sent", short: "Quote" },
+  { id: "credit_review", label: "Credit Underwriting", short: "Credit" },
   { id: "ready_bc", label: "Ready for Business Central", short: "BC Ready" },
   { id: "won", label: "Closed Won", short: "Won" },
   { id: "lost", label: "Closed Lost", short: "Lost" },
@@ -102,13 +103,30 @@ export type InventoryItem = {
   updated_at: string;
 };
 
+export type PartyType = "individual" | "business";
+
+export type CreditStatus =
+  | "none"
+  | "app_requested"
+  | "app_submitted"
+  | "credit_requested"
+  | "in_review"
+  | "pending_gsm"
+  | "approved"
+  | "declined";
+
 export type Lead = {
   id: string;
   name: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  party_type?: PartyType | null;
   phone: string | null;
   email: string | null;
   source: string;
   lead_type: LeadType;
+  credit_status?: CreditStatus | string | null;
+  credit_app_id?: string | null;
   notes: string | null;
   vehicle_interest: string | null;
   inventory_id: string | null;
@@ -279,3 +297,111 @@ export function daysInStage(stageEnteredAt: string) {
   if (Number.isNaN(d.getTime())) return 0;
   return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000));
 }
+
+export const ROLE_LABELS: Record<Role, string> = {
+  admin: "Admin",
+  rep: "Sales Rep",
+  broker: "Broker",
+  gsm: "General Sales Manager",
+  credit_manager: "Credit Manager",
+};
+
+export type CreditAppStatus =
+  | "draft"
+  | "app_requested"
+  | "app_in_progress"
+  | "app_submitted"
+  | "ids_uploaded"
+  | "credit_requested"
+  | "in_review"
+  | "pending_gsm"
+  | "approved"
+  | "declined"
+  | "cancelled";
+
+export type CreditDocumentKind =
+  | "dl_front"
+  | "dl_back"
+  | "id_second"
+  | "noa_payslip"
+  | "bank_statement"
+  | "equifax"
+  | "other";
+
+/** Serializable form answers (string values only — createServerFn requirement). */
+export type CreditPayload = Record<string, string>;
+
+export type CreditApplication = {
+  id: string;
+  lead_id: string;
+  status: CreditAppStatus;
+  party_type: PartyType;
+  payload: CreditPayload;
+  public_token: string | null;
+  doc_request_token: string | null;
+  app_email: string | null;
+  requested_by: string | null;
+  submitted_at: string | null;
+  credit_requested_at: string | null;
+  credit_requested_by: string | null;
+  credit_request_notes: string | null;
+  do_not_pull_credit: boolean;
+  equifax_file_name: string | null;
+  equifax_file_data: string | null;
+  equifax_notes: string | null;
+  gsm_requested_at: string | null;
+  gsm_requested_by: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  approval_notes: string | null;
+  vehicle_checklist_complete: boolean;
+  customer_checklist_complete: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreditDocument = {
+  id: string;
+  application_id: string;
+  lead_id: string;
+  kind: CreditDocumentKind;
+  file_name: string;
+  mime_type: string;
+  file_data: string;
+  uploaded_by: string | null;
+  uploaded_via: string;
+  created_at: string;
+};
+
+export type CreditChecklistItem = {
+  id: string;
+  application_id: string;
+  section: "vehicle" | "customer";
+  item_key: string;
+  label: string;
+  notes: string;
+  done: boolean;
+  filled_by: string | null;
+  filled_at: string | null;
+};
+
+export const VEHICLE_CHECKLIST: { key: string; label: string }[] = [
+  { key: "listing_pics", label: "Listing or pictures of the vehicle" },
+  { key: "price_justified", label: "Selling price of the vehicle is justified" },
+  { key: "vehicle_specs", label: "Understanding of the vehicle specs" },
+  { key: "market_benchmark", label: "Market benchmark and future value assessed" },
+  { key: "carfax_lien", label: "Carfax and lien check verified" },
+  { key: "keys_verified", label: "Number of keys verified; second key will be sent" },
+];
+
+export const CUSTOMER_CHECKLIST: { key: string; label: string }[] = [
+  { key: "ids_verified", label: "IDs received and verified" },
+  { key: "status_visa", label: "Customer has permanent status or VISA provided" },
+  { key: "equifax", label: "Equifax was pulled and verified" },
+  { key: "phone_interview", label: "Phone interview to verify customer information" },
+  { key: "address_ownership", label: "Address was verified and ownership checked" },
+  { key: "noa_payslips", label: "NOAs/payslips verified (optional)" },
+  { key: "bank_statements", label: "Bank/Financial statements verified (optional)" },
+  { key: "kyc", label: "KYC on the customer (Google, social, CanLII, etc.)" },
+  { key: "money_flow", label: "Understanding of how the customer makes and spends money" },
+];

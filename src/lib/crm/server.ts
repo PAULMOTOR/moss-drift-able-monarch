@@ -117,6 +117,12 @@ function isAdminRole(p: Profile): boolean {
   return p.role === "admin";
 }
 
+/** Staff who see all leads (not ownership-scoped). */
+function isElevatedStaff(p: Profile): boolean {
+  return p.role === "admin" || p.role === "gsm" || p.role === "credit_manager";
+}
+
+
 /** Default owner for inventory leads: Lucas Legatos. */
 export async function resolveLucasProfileId(
   sql: Awaited<ReturnType<typeof boot>>,
@@ -136,7 +142,7 @@ export async function resolveLucasProfileId(
 
 /** Non-admins may only open unassigned leads or leads assigned to them. */
 function canAccessLead(me: Profile, assignedTo: string | null | undefined): boolean {
-  if (isAdminRole(me)) return true;
+  if (isElevatedStaff(me)) return true;
   if (assignedTo == null || assignedTo === "") return true;
   return assignedTo === me.id;
 }
@@ -147,10 +153,15 @@ function mapLead(r: Record<string, unknown>): Lead {
   return {
     id: String(r.id),
     name: String(r.name),
+    first_name: (r.first_name as string) ?? null,
+    last_name: (r.last_name as string) ?? null,
+    party_type: (r.party_type as Lead["party_type"]) || "individual",
     phone: (r.phone as string) ?? null,
     email: (r.email as string) ?? null,
     source: String(r.source),
     lead_type: isLeadType(lt) ? lt : "inventory",
+    credit_status: (r.credit_status as string) ?? "none",
+    credit_app_id: (r.credit_app_id as string) ?? null,
     notes: (r.notes as string) ?? null,
     vehicle_interest: (r.vehicle_interest as string) ?? null,
     inventory_id: (r.inventory_id as string) ?? null,
@@ -187,7 +198,7 @@ function mapLead(r: Record<string, unknown>): Lead {
 }
 
 const leadSelect = `
-  l.id, l.name, l.phone, l.email, l.source, l.lead_type, l.notes, l.vehicle_interest,
+  l.id, l.name, l.first_name, l.last_name, l.party_type, l.credit_status, l.credit_app_id, l.phone, l.email, l.source, l.lead_type, l.notes, l.vehicle_interest,
   l.inventory_id, l.assigned_to, l.stage,
   l.stage_entered_at::text as stage_entered_at,
   l.quote_sent, l.quote_sent_at::text as quote_sent_at,
@@ -223,14 +234,14 @@ export const listProfiles = createServerFn({ method: "GET" })
         select id, user_id, email, name, role, active, phone, title,
                created_at::text as created_at, updated_at::text as updated_at
         from profiles order by
-          case role when 'admin' then 0 when 'rep' then 1 else 2 end, name
+          case role when 'admin' then 0 when 'gsm' then 1 when 'credit_manager' then 2 when 'rep' then 3 else 4 end, name
       `;
     }
     return sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
              created_at::text as created_at, updated_at::text as updated_at
       from profiles where active = true
-      order by case role when 'admin' then 0 when 'rep' then 1 else 2 end, name
+      order by case role when 'admin' then 0 when 'gsm' then 1 when 'credit_manager' then 2 when 'rep' then 3 else 4 end, name
     `;
   });
 
@@ -407,9 +418,9 @@ export const listLeads = createServerFn({ method: "GET" })
     const stage = data.stage && data.stage !== "all" ? data.stage : null;
     const leadType = data.lead_type && data.lead_type !== "all" ? data.lead_type : null;
     const q = data.q?.trim() ? `%${data.q.trim().toLowerCase()}%` : null;
-    const admin = isAdminRole(me);
+    const admin = isElevatedStaff(me);
 
-    // Admins may filter by any owner. Reps/brokers: only self + unassigned.
+    // Admins/GSM/Credit Manager may filter by any owner. Reps/brokers: self + unassigned.
     let assignedFilter: string | null = null;
     let unassignedOnly = false;
     if (admin) {
@@ -523,6 +534,9 @@ export const getLead = createServerFn({ method: "GET" })
 
 export type CaptureLeadInput = {
   name: string;
+  first_name?: string;
+  last_name?: string;
+  party_type?: "individual" | "business";
   phone?: string;
   email?: string;
   source: string;
@@ -549,6 +563,18 @@ export const captureLead = createServerFn({ method: "POST" })
     const sql = await boot();
     const name = data.name.trim();
     if (!name) throw new Error("Name is required");
+    const nameParts = name.split(/\s+/).filter(Boolean);
+    const firstName = (data as { first_name?: string }).first_name?.trim()
+      || nameParts[0]
+      || name;
+    const lastName = (data as { last_name?: string }).last_name?.trim()
+      || (nameParts.length > 1 ? nameParts.slice(1).join(" ") : "");
+    const partyType =
+      (data as { party_type?: string }).party_type === "business"
+        ? "business"
+        : data.lead_type === "lease" && /business|entreprise/i.test(data.source || "")
+          ? "business"
+          : "individual";
     if (!data.phone?.trim() && !data.email?.trim()) throw new Error("Phone or email required");
 
     const leadType: LeadType =
@@ -583,12 +609,12 @@ export const captureLead = createServerFn({ method: "POST" })
 
     await sql`
       insert into leads (
-        id, name, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
+        id, name, first_name, last_name, party_type, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
         assigned_to, stage, stage_entered_at, quote_sent, quote_sent_at,
         quote_link, quote_notes, quote_pdf_name, quote_pdf_data, source_email_raw,
         estimated_value, created_by
       ) values (
-        ${leadId}, ${name}, ${data.phone?.trim() || null},
+        ${leadId}, ${name}, ${firstName}, ${lastName}, ${partyType}, ${data.phone?.trim() || null},
         ${data.email?.trim().toLowerCase() || null},
         ${data.source || "phone"}, ${leadType}, ${data.notes?.trim() || null},
         ${vehicleInterest}, ${data.inventory_id || null},
@@ -758,9 +784,29 @@ export const updateLead = createServerFn({ method: "POST" })
       quotePdfName = data.quote_pdf_name?.trim() || "quote.pdf";
     }
 
+    const nextFirst =
+      data.first_name !== undefined
+        ? data.first_name?.trim() || null
+        : (prev.first_name as string | null) ?? null;
+    const nextLast =
+      data.last_name !== undefined
+        ? data.last_name?.trim() || null
+        : (prev.last_name as string | null) ?? null;
+    const nextParty =
+      data.party_type === "business" || data.party_type === "individual"
+        ? data.party_type
+        : (prev.party_type as string) || "individual";
+    const displayName =
+      data.name?.trim() ||
+      [nextFirst, nextLast].filter(Boolean).join(" ") ||
+      String(prev.name);
+
     await sql`
       update leads set
-        name = ${data.name?.trim() ?? String(prev.name)},
+        name = ${displayName},
+        first_name = ${nextFirst},
+        last_name = ${nextLast},
+        party_type = ${nextParty},
         phone = ${data.phone !== undefined ? data.phone?.trim() || null : (prev.phone as string | null)},
         email = ${data.email !== undefined ? data.email?.trim().toLowerCase() || null : (prev.email as string | null)},
         source = ${data.source ?? String(prev.source)},
@@ -1317,7 +1363,7 @@ export const getDataAnalysis = createServerFn({ method: "GET" })
         count(l.id) filter (where l.stage = 'won')::int as all_won
       from profiles p
       left join leads l on l.assigned_to = p.id
-      where p.active = true and p.role in ('rep', 'broker', 'admin')
+      where p.active = true and p.role in ('rep', 'broker', 'admin', 'gsm', 'credit_manager')
       group by p.id, p.name, p.role
       order by inventory_won desc, inventory_total desc
     `;
@@ -1425,7 +1471,7 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
         count(l.id) filter (where l.google_review_status = 'received')::int as reviews_received
       from profiles p
       left join leads l on l.assigned_to = p.id
-      where p.role in ('rep', 'broker', 'admin') and p.active = true
+      where p.role in ('rep', 'broker', 'admin', 'gsm', 'credit_manager') and p.active = true
       group by p.id, p.name, p.role
       order by won desc, total desc
     `;

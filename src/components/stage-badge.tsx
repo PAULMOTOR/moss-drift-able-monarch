@@ -8,6 +8,7 @@ const map: Record<
   new: "new",
   contacted: "contacted",
   quote_sent: "proposal",
+  credit_review: "negotiation",
   ready_bc: "negotiation",
   paused: "outline",
   won: "won",

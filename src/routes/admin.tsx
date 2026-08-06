@@ -516,6 +516,8 @@ function AdminPage() {
               <SelectContent>
                 <SelectItem value="admin">Admin</SelectItem>
                 <SelectItem value="rep">Sales rep</SelectItem>
+                <SelectItem value="credit_manager">Credit Manager</SelectItem>
+                <SelectItem value="gsm">General Sales Manager</SelectItem>
                 <SelectItem value="broker">Broker</SelectItem>
               </SelectContent>
             </Select>

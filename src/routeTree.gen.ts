@@ -13,12 +13,15 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as CaptureRouteImport } from './routes/capture'
 import { Route as DataAnalysisRouteImport } from './routes/data-analysis'
+import { Route as HelpRouteImport } from './routes/help'
 import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as LeadsRouteImport } from './routes/leads'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PipelineRouteImport } from './routes/pipeline'
 import { Route as QuoteRouteImport } from './routes/quote'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as CreditAppTokenRouteImport } from './routes/credit-app.$token'
+import { Route as CreditDocsTokenRouteImport } from './routes/credit-docs.$token'
 import { Route as LeadsIndexRouteImport } from './routes/leads.index'
 import { Route as LeadsLeadIdRouteImport } from './routes/leads.$leadId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -45,6 +48,11 @@ const CaptureRoute = CaptureRouteImport.update({
 const DataAnalysisRoute = DataAnalysisRouteImport.update({
   id: '/data-analysis',
   path: '/data-analysis',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HelpRoute = HelpRouteImport.update({
+  id: '/help',
+  path: '/help',
   getParentRoute: () => rootRouteImport,
 } as any)
 const InventoryRoute = InventoryRouteImport.update({
@@ -75,6 +83,16 @@ const QuoteRoute = QuoteRouteImport.update({
 const ApiHealthRoute = ApiHealthRouteImport.update({
   id: '/api/health',
   path: '/api/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CreditAppTokenRoute = CreditAppTokenRouteImport.update({
+  id: '/credit-app/$token',
+  path: '/credit-app/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CreditDocsTokenRoute = CreditDocsTokenRouteImport.update({
+  id: '/credit-docs/$token',
+  path: '/credit-docs/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LeadsIndexRoute = LeadsIndexRouteImport.update({
@@ -118,12 +136,15 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/capture': typeof CaptureRoute
   '/data-analysis': typeof DataAnalysisRoute
+  '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
   '/leads': typeof LeadsRouteWithChildren
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
   '/api/health': typeof ApiHealthRoute
+  '/credit-app/$token': typeof CreditAppTokenRoute
+  '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -137,11 +158,14 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/capture': typeof CaptureRoute
   '/data-analysis': typeof DataAnalysisRoute
+  '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
   '/api/health': typeof ApiHealthRoute
+  '/credit-app/$token': typeof CreditAppTokenRoute
+  '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
   '/leads': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -156,12 +180,15 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/capture': typeof CaptureRoute
   '/data-analysis': typeof DataAnalysisRoute
+  '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
   '/leads': typeof LeadsRouteWithChildren
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
   '/api/health': typeof ApiHealthRoute
+  '/credit-app/$token': typeof CreditAppTokenRoute
+  '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -177,12 +204,15 @@ export interface FileRouteTypes {
     | '/admin'
     | '/capture'
     | '/data-analysis'
+    | '/help'
     | '/inventory'
     | '/leads'
     | '/login'
     | '/pipeline'
     | '/quote'
     | '/api/health'
+    | '/credit-app/$token'
+    | '/credit-docs/$token'
     | '/leads/$leadId'
     | '/leads/'
     | '/api/auth/$'
@@ -196,11 +226,14 @@ export interface FileRouteTypes {
     | '/admin'
     | '/capture'
     | '/data-analysis'
+    | '/help'
     | '/inventory'
     | '/login'
     | '/pipeline'
     | '/quote'
     | '/api/health'
+    | '/credit-app/$token'
+    | '/credit-docs/$token'
     | '/leads/$leadId'
     | '/leads'
     | '/api/auth/$'
@@ -214,12 +247,15 @@ export interface FileRouteTypes {
     | '/admin'
     | '/capture'
     | '/data-analysis'
+    | '/help'
     | '/inventory'
     | '/leads'
     | '/login'
     | '/pipeline'
     | '/quote'
     | '/api/health'
+    | '/credit-app/$token'
+    | '/credit-docs/$token'
     | '/leads/$leadId'
     | '/leads/'
     | '/api/auth/$'
@@ -234,12 +270,15 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   CaptureRoute: typeof CaptureRoute
   DataAnalysisRoute: typeof DataAnalysisRoute
+  HelpRoute: typeof HelpRoute
   InventoryRoute: typeof InventoryRoute
   LeadsRoute: typeof LeadsRouteWithChildren
   LoginRoute: typeof LoginRoute
   PipelineRoute: typeof PipelineRoute
   QuoteRoute: typeof QuoteRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  CreditAppTokenRoute: typeof CreditAppTokenRoute
+  CreditDocsTokenRoute: typeof CreditDocsTokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCronImportEmailsRoute: typeof ApiCronImportEmailsRoute
   ApiCronRemindersRoute: typeof ApiCronRemindersRoute
@@ -275,6 +314,13 @@ declare module '@tanstack/react-router' {
       path: '/data-analysis'
       fullPath: '/data-analysis'
       preLoaderRoute: typeof DataAnalysisRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/help': {
+      id: '/help'
+      path: '/help'
+      fullPath: '/help'
+      preLoaderRoute: typeof HelpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/inventory': {
@@ -317,6 +363,20 @@ declare module '@tanstack/react-router' {
       path: '/api/health'
       fullPath: '/api/health'
       preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/credit-app/$token': {
+      id: '/credit-app/$token'
+      path: '/credit-app/$token'
+      fullPath: '/credit-app/$token'
+      preLoaderRoute: typeof CreditAppTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/credit-docs/$token': {
+      id: '/credit-docs/$token'
+      path: '/credit-docs/$token'
+      fullPath: '/credit-docs/$token'
+      preLoaderRoute: typeof CreditDocsTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/leads/': {
@@ -388,12 +448,15 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   CaptureRoute: CaptureRoute,
   DataAnalysisRoute: DataAnalysisRoute,
+  HelpRoute: HelpRoute,
   InventoryRoute: InventoryRoute,
   LeadsRoute: LeadsRouteWithChildren,
   LoginRoute: LoginRoute,
   PipelineRoute: PipelineRoute,
   QuoteRoute: QuoteRoute,
   ApiHealthRoute: ApiHealthRoute,
+  CreditAppTokenRoute: CreditAppTokenRoute,
+  CreditDocsTokenRoute: CreditDocsTokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCronImportEmailsRoute: ApiCronImportEmailsRoute,
   ApiCronRemindersRoute: ApiCronRemindersRoute,

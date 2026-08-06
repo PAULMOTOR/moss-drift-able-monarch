@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, CalendarPlus, FileUp, Mail, Phone, Trash2, X } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
+import { CreditUnderwritingPanel } from "@/components/credit-underwriting-panel";
 import { StageBadge } from "@/components/stage-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,6 +34,7 @@ import {
   readyForBusinessCentral,
   getLeaseQuote,
   deleteLeaseQuote,
+  getMyProfile,
 } from "@/lib/crm/server";
 import {
   LEAD_TYPES,
@@ -137,6 +139,9 @@ function LeadDetail() {
   const [missing, setMissing] = useState(false);
   const [pdfDrag, setPdfDrag] = useState(false);
   const [editName, setEditName] = useState("");
+  const [editFirst, setEditFirst] = useState("");
+  const [editLast, setEditLast] = useState("");
+  const [editParty, setEditParty] = useState<"individual" | "business">("individual");
   const [editPhone, setEditPhone] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -148,6 +153,7 @@ function LeadDetail() {
   });
   const [contactNote, setContactNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [me, setMe] = useState<Profile | null>(null);
   const [savedQuotes, setSavedQuotes] = useState<Array<{
     id: string;
     title: string | null;
@@ -184,6 +190,13 @@ function LeadDetail() {
     setMissing(false);
     setLead(detail.lead);
     setEditName(detail.lead.name);
+    setEditFirst(detail.lead.first_name || detail.lead.name.split(" ")[0] || "");
+    setEditLast(
+      detail.lead.last_name ||
+        detail.lead.name.split(" ").slice(1).join(" ") ||
+        "",
+    );
+    setEditParty(detail.lead.party_type === "business" ? "business" : "individual");
     setEditPhone(detail.lead.phone || "");
     setEditEmail(detail.lead.email || "");
     setActivities(detail.activities);
@@ -206,6 +219,7 @@ function LeadDetail() {
   }
 
   useEffect(() => {
+    void getMyProfile().then(setMe).catch(() => setMe(null));
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
@@ -217,6 +231,9 @@ function LeadDetail() {
       const updated = await updateFn({ data: { id: lead.id, ...partial } as never });
       setLead(updated);
       setEditName(updated.name);
+      setEditFirst(updated.first_name || updated.name.split(" ")[0] || "");
+      setEditLast(updated.last_name || updated.name.split(" ").slice(1).join(" ") || "");
+      setEditParty(updated.party_type === "business" ? "business" : "individual");
       setEditPhone(updated.phone || "");
       setEditEmail(updated.email || "");
       await load();
@@ -230,7 +247,9 @@ function LeadDetail() {
 
   async function saveContact() {
     if (!lead) return;
-    const name = editName.trim();
+    const first = editFirst.trim();
+    const last = editLast.trim();
+    const name = [first, last].filter(Boolean).join(" ") || editName.trim();
     if (!name) {
       toast.error("Name is required");
       return;
@@ -241,15 +260,14 @@ function LeadDetail() {
       toast.error("Add a phone or email");
       return;
     }
-    if (
-      name === lead.name &&
-      phone === (lead.phone || "") &&
-      email === (lead.email || "")
-    ) {
-      toast.message("No contact changes");
-      return;
-    }
-    await patch({ name, phone: phone || null, email: email || null });
+    await patch({
+      name,
+      first_name: first || null,
+      last_name: last || null,
+      party_type: editParty,
+      phone: phone || null,
+      email: email || null,
+    });
   }
 
   async function handleDelete() {
@@ -360,6 +378,12 @@ function LeadDetail() {
           </div>
         }
       />
+
+      {me ? (
+        <div className="mb-6">
+          <CreditUnderwritingPanel leadId={lead.id} me={me} />
+        </div>
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-5">
         <div className="space-y-6 lg:col-span-3">
@@ -612,13 +636,44 @@ function LeadDetail() {
               <CardTitle className="font-display text-lg">Contact</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 p-4 pt-0">
-              <Field label="Client name">
-                <Input
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="First name">
+                  <Input
+                    value={editFirst}
+                    onChange={(e) => {
+                      setEditFirst(e.target.value);
+                      setEditName([e.target.value, editLast].filter(Boolean).join(" "));
+                    }}
+                    disabled={busy}
+                    className="h-11"
+                  />
+                </Field>
+                <Field label="Last name">
+                  <Input
+                    value={editLast}
+                    onChange={(e) => {
+                      setEditLast(e.target.value);
+                      setEditName([editFirst, e.target.value].filter(Boolean).join(" "));
+                    }}
+                    disabled={busy}
+                    className="h-11"
+                  />
+                </Field>
+              </div>
+              <Field label="Client type">
+                <Select
+                  value={editParty}
+                  onValueChange={(v) => setEditParty(v as "individual" | "business")}
                   disabled={busy}
-                  className="h-11"
-                />
+                >
+                  <SelectTrigger className="h-11">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="individual">Individual</SelectItem>
+                    <SelectItem value="business">Business</SelectItem>
+                  </SelectContent>
+                </Select>
               </Field>
               <Field label="Phone">
                 <div className="flex gap-2">
