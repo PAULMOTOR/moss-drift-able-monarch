@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminRouteImport } from './routes/admin'
+import { Route as CalendarRouteImport } from './routes/calendar'
 import { Route as CaptureRouteImport } from './routes/capture'
 import { Route as DataAnalysisRouteImport } from './routes/data-analysis'
 import { Route as HelpRouteImport } from './routes/help'
@@ -19,6 +20,7 @@ import { Route as LeadsRouteImport } from './routes/leads'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PipelineRouteImport } from './routes/pipeline'
 import { Route as QuoteRouteImport } from './routes/quote'
+import { Route as TasksRouteImport } from './routes/tasks'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as CreditAppTokenRouteImport } from './routes/credit-app.$token'
 import { Route as CreditDocsTokenRouteImport } from './routes/credit-docs.$token'
@@ -38,6 +40,11 @@ const IndexRoute = IndexRouteImport.update({
 const AdminRoute = AdminRouteImport.update({
   id: '/admin',
   path: '/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CalendarRoute = CalendarRouteImport.update({
+  id: '/calendar',
+  path: '/calendar',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CaptureRoute = CaptureRouteImport.update({
@@ -78,6 +85,11 @@ const PipelineRoute = PipelineRouteImport.update({
 const QuoteRoute = QuoteRouteImport.update({
   id: '/quote',
   path: '/quote',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TasksRoute = TasksRouteImport.update({
+  id: '/tasks',
+  path: '/tasks',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
@@ -134,6 +146,7 @@ const ApiCronRemindersHourlyRoute = ApiCronRemindersHourlyRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/calendar': typeof CalendarRoute
   '/capture': typeof CaptureRoute
   '/data-analysis': typeof DataAnalysisRoute
   '/help': typeof HelpRoute
@@ -142,6 +155,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
+  '/tasks': typeof TasksRoute
   '/api/health': typeof ApiHealthRoute
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
@@ -156,6 +170,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/calendar': typeof CalendarRoute
   '/capture': typeof CaptureRoute
   '/data-analysis': typeof DataAnalysisRoute
   '/help': typeof HelpRoute
@@ -163,6 +178,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
+  '/tasks': typeof TasksRoute
   '/api/health': typeof ApiHealthRoute
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
@@ -178,6 +194,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/calendar': typeof CalendarRoute
   '/capture': typeof CaptureRoute
   '/data-analysis': typeof DataAnalysisRoute
   '/help': typeof HelpRoute
@@ -186,6 +203,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
+  '/tasks': typeof TasksRoute
   '/api/health': typeof ApiHealthRoute
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
@@ -202,6 +220,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/admin'
+    | '/calendar'
     | '/capture'
     | '/data-analysis'
     | '/help'
@@ -210,6 +229,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/pipeline'
     | '/quote'
+    | '/tasks'
     | '/api/health'
     | '/credit-app/$token'
     | '/credit-docs/$token'
@@ -224,6 +244,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/admin'
+    | '/calendar'
     | '/capture'
     | '/data-analysis'
     | '/help'
@@ -231,6 +252,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/pipeline'
     | '/quote'
+    | '/tasks'
     | '/api/health'
     | '/credit-app/$token'
     | '/credit-docs/$token'
@@ -245,6 +267,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/admin'
+    | '/calendar'
     | '/capture'
     | '/data-analysis'
     | '/help'
@@ -253,6 +276,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/pipeline'
     | '/quote'
+    | '/tasks'
     | '/api/health'
     | '/credit-app/$token'
     | '/credit-docs/$token'
@@ -268,6 +292,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
+  CalendarRoute: typeof CalendarRoute
   CaptureRoute: typeof CaptureRoute
   DataAnalysisRoute: typeof DataAnalysisRoute
   HelpRoute: typeof HelpRoute
@@ -276,6 +301,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   PipelineRoute: typeof PipelineRoute
   QuoteRoute: typeof QuoteRoute
+  TasksRoute: typeof TasksRoute
   ApiHealthRoute: typeof ApiHealthRoute
   CreditAppTokenRoute: typeof CreditAppTokenRoute
   CreditDocsTokenRoute: typeof CreditDocsTokenRoute
@@ -300,6 +326,13 @@ declare module '@tanstack/react-router' {
       path: '/admin'
       fullPath: '/admin'
       preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/calendar': {
+      id: '/calendar'
+      path: '/calendar'
+      fullPath: '/calendar'
+      preLoaderRoute: typeof CalendarRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/capture': {
@@ -356,6 +389,13 @@ declare module '@tanstack/react-router' {
       path: '/quote'
       fullPath: '/quote'
       preLoaderRoute: typeof QuoteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/tasks': {
+      id: '/tasks'
+      path: '/tasks'
+      fullPath: '/tasks'
+      preLoaderRoute: typeof TasksRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/health': {
@@ -446,6 +486,7 @@ const LeadsRouteWithChildren = LeadsRoute._addFileChildren(LeadsRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
+  CalendarRoute: CalendarRoute,
   CaptureRoute: CaptureRoute,
   DataAnalysisRoute: DataAnalysisRoute,
   HelpRoute: HelpRoute,
@@ -454,6 +495,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   PipelineRoute: PipelineRoute,
   QuoteRoute: QuoteRoute,
+  TasksRoute: TasksRoute,
   ApiHealthRoute: ApiHealthRoute,
   CreditAppTokenRoute: CreditAppTokenRoute,
   CreditDocsTokenRoute: CreditDocsTokenRoute,

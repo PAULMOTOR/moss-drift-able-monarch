@@ -36,9 +36,12 @@ import {
   getMyProfile,
 } from "@/lib/crm/server";
 import { CreditUnderwritingPanel } from "@/components/credit-underwriting-panel";
+import { listLeadCalendarEvents, upsertCalendarEvent } from "@/lib/crm/calendar";
+import { listTasks, setTaskStatus, upsertTask } from "@/lib/crm/tasks";
 import { CompliancePanel } from "@/components/compliance-panel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  CALENDAR_EVENT_TYPES,
   LEAD_TABS,
   LEAD_TYPES,
   REVIEW_STATUSES,
@@ -46,6 +49,8 @@ import {
   STAGES,
   defaultLeadTab,
   vehicleLabel,
+  type CalendarEvent,
+  type CrmTask,
   type InventoryItem,
   type Lead,
   type LeadActivity,
@@ -164,6 +169,17 @@ function LeadDetail() {
   });
   const [contactNote, setContactNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [leadEvents, setLeadEvents] = useState<CalendarEvent[]>([]);
+  const [leadTasks, setLeadTasks] = useState<CrmTask[]>([]);
+  const [quickEventType, setQuickEventType] = useState("test_drive");
+  const [quickEventWhen, setQuickEventWhen] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(10, 0, 0, 0);
+    return toLocalInputValue(d);
+  });
+  const [quickTaskTitle, setQuickTaskTitle] = useState("");
+
   const [me, setMe] = useState<Profile | null>(null);
   const [savedQuotes, setSavedQuotes] = useState<Array<{
     id: string;
@@ -227,6 +243,12 @@ function LeadDetail() {
         ),
       )
       .catch(() => setQuoteFiles([]));
+    void listLeadCalendarEvents({ data: { leadId } })
+      .then(setLeadEvents)
+      .catch(() => setLeadEvents([]));
+    void listTasks({ data: { leadId } })
+      .then((r) => setLeadTasks(r.tasks.filter((t) => t.status === "open" || t.status === "done").slice(0, 20)))
+      .catch(() => setLeadTasks([]));
   }
 
   useEffect(() => {
@@ -703,6 +725,156 @@ function LeadDetail() {
                   Pause until appointment
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="font-display text-lg">Calendar on this deal</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid gap-2">
+                <Select value={quickEventType} onValueChange={setQuickEventType}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Event type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CALENDAR_EVENT_TYPES.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="datetime-local"
+                  value={quickEventWhen}
+                  onChange={(e) => setQuickEventWhen(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      const typeMeta = CALENDAR_EVENT_TYPES.find((t) => t.id === quickEventType);
+                      const start = new Date(quickEventWhen);
+                      await upsertCalendarEvent({
+                        data: {
+                          title: `${typeMeta?.label || "Appointment"} — ${lead.name}`,
+                          event_type: quickEventType,
+                          starts_at: start.toISOString(),
+                          ends_at: new Date(start.getTime() + 60 * 60 * 1000).toISOString(),
+                          lead_id: lead.id,
+                          participant_ids: me ? [me.id] : [],
+                        },
+                      });
+                      toast.success("Added to team calendar");
+                      await load();
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Failed");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  <CalendarPlus className="size-4" />
+                  Add to calendar
+                </Button>
+              </div>
+              {leadEvents.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No calendar events linked yet.</p>
+              ) : (
+                <ul className="space-y-1.5 text-sm">
+                  {leadEvents.map((ev) => (
+                    <li key={ev.id} className="rounded-sm border border-border px-2 py-1.5">
+                      <p className="font-medium">{ev.title}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatDateTime(ev.starts_at)}
+                        {ev.location ? ` · ${ev.location}` : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <Button asChild size="sm" variant="outline">
+                <Link to="/calendar">Open calendar</Link>
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="font-display text-lg">My tasks on this deal</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Call / email / follow-up…"
+                  value={quickTaskTitle}
+                  onChange={(e) => setQuickTaskTitle(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  disabled={busy || !quickTaskTitle.trim()}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await upsertTask({
+                        data: {
+                          title: quickTaskTitle.trim(),
+                          task_type: "follow_up",
+                          lead_id: lead.id,
+                        },
+                      });
+                      setQuickTaskTitle("");
+                      toast.success("Task added");
+                      await load();
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Failed");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Add
+                </Button>
+              </div>
+              {leadTasks.filter((t) => t.status === "open").length === 0 ? (
+                <p className="text-xs text-muted-foreground">No open tasks.</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {leadTasks
+                    .filter((t) => t.status === "open")
+                    .map((t) => (
+                      <li key={t.id} className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={false}
+                          disabled={busy}
+                          onCheckedChange={async () => {
+                            setBusy(true);
+                            try {
+                              await setTaskStatus({ data: { id: t.id, status: "done" } });
+                              toast.success("Done");
+                              await load();
+                            } catch (e) {
+                              toast.error(e instanceof Error ? e.message : "Failed");
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        />
+                        <span className="min-w-0 flex-1">{t.title}</span>
+                        {t.due_date ? (
+                          <span className="text-[11px] text-muted-foreground">{t.due_date}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                </ul>
+              )}
+              <Button asChild size="sm" variant="outline">
+                <Link to="/tasks">Open tasks</Link>
+              </Button>
             </CardContent>
           </Card>
 

@@ -623,3 +623,91 @@ export function checklistDef(section: "vehicle" | "customer", key: string): Chec
 export function lesseeDocLabel(key: string) {
   return LESSEE_DOC_TYPES.find((d) => d.key === key)?.label ?? key.replace(/_/g, " ");
 }
+
+/** Team calendar event types (domain derived). */
+export const CALENDAR_EVENT_TYPES = [
+  { id: "test_drive", label: "Test drive", domain: "sales" as const },
+  { id: "vehicle_viewing", label: "Vehicle viewing", domain: "sales" as const },
+  { id: "delivery", label: "Vehicle delivery", domain: "sales" as const },
+  { id: "antitheft_install", label: "Anti-theft installation", domain: "compliance" as const },
+  { id: "repair", label: "Repair appointment", domain: "service" as const },
+  { id: "detailing", label: "Car detailing", domain: "service" as const },
+  { id: "other", label: "Other", domain: "sales" as const },
+] as const;
+
+export type CalendarEventTypeId = (typeof CALENDAR_EVENT_TYPES)[number]["id"];
+export type CalendarDomain = "sales" | "compliance" | "service";
+
+export const CALENDAR_DOMAINS: { id: CalendarDomain; label: string }[] = [
+  { id: "sales", label: "Sales" },
+  { id: "compliance", label: "Compliance" },
+  { id: "service", label: "Service" },
+];
+
+export type CalendarScope = "mine" | "organize" | "invited" | "team";
+
+export type CalendarEvent = {
+  id: string;
+  title: string;
+  event_type: CalendarEventTypeId | string;
+  domain: CalendarDomain | string;
+  starts_at: string;
+  ends_at: string;
+  all_day: boolean;
+  location: string | null;
+  notes: string | null;
+  lead_id: string | null;
+  inventory_id: string | null;
+  organizer_id: string;
+  organizer_name?: string | null;
+  visibility: "team" | "private";
+  status: "scheduled" | "completed" | "cancelled" | "no_show" | string;
+  created_at: string;
+  updated_at: string;
+  participant_ids: string[];
+  participant_names?: string[];
+  lead_name?: string | null;
+};
+
+export function calendarTypeMeta(typeId: string) {
+  return (
+    CALENDAR_EVENT_TYPES.find((t) => t.id === typeId) || {
+      id: typeId,
+      label: typeId.replace(/_/g, " "),
+      domain: "sales" as const,
+    }
+  );
+}
+
+export function domainForEventType(typeId: string): CalendarDomain {
+  return calendarTypeMeta(typeId).domain;
+}
+
+export const TASK_TYPES = [
+  { id: "call", label: "Phone call" },
+  { id: "email", label: "Email" },
+  { id: "follow_up", label: "Follow-up" },
+  { id: "other", label: "Other" },
+] as const;
+
+export type TaskTypeId = (typeof TASK_TYPES)[number]["id"];
+
+export type CrmTask = {
+  id: string;
+  title: string;
+  task_type: TaskTypeId | string;
+  due_at: string | null;
+  due_date: string | null;
+  owner_id: string;
+  owner_name?: string | null;
+  lead_id: string | null;
+  lead_name?: string | null;
+  notes: string | null;
+  status: "open" | "done" | string;
+  completed_at: string | null;
+  completed_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskListView = "today" | "overdue" | "upcoming" | "completed";

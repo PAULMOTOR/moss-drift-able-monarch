@@ -234,6 +234,12 @@ function HelpPage() {
               <strong>One owner:</strong> always assign the lead so reminders and reporting hit the right rep.
             </li>
             <li>
+              <strong>Calendar:</strong> team appointments (test drive, delivery, anti-theft install, repair, detailing). Use filters Mine / I organize / Invited / Team and Sales · Compliance · Service.
+            </li>
+            <li>
+              <strong>Tasks:</strong> personal calls and follow-ups by day — complete them to clear the list. Link a task to a lead when it belongs to a deal.
+            </li>
+            <li>
               <strong>Notes after every touch:</strong> date, channel, next step — history lives on the lead for the whole team.
             </li>
             <li>
