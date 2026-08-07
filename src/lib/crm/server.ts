@@ -2592,6 +2592,15 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       mimeType: string,
       data: string,
     ) {
+      // Never push HTML snapshots — Drive package is PDF/docs only
+      const mime = (mimeType || "").toLowerCase();
+      if (
+        mime.includes("html") ||
+        mime.includes("text/plain") ||
+        /\.html?$/i.test(fileName)
+      ) {
+        return;
+      }
       try {
         const name = (await driveApi()).safeDriveFileName(fileName);
         const res = await (await driveApi()).uploadOrReplaceFile({
@@ -2614,7 +2623,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       }
     }
 
-    // 1) Accepted quote PDF — stable name so re-push always overwrites "the" quote
+    // 1) Accepted lease quote PDF — the main file for a quote-only push
     const quoteFileName = (await driveApi()).buildQuotePdfFileName({
       quoteDate: client.quoteDate,
       clientName: client.clientName,
@@ -2658,7 +2667,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       }
     }
 
-    // 2) Lease contract — one canonical file (latest CRM version wins)
+    // 2) Lease contract PDF only — never the HTML draft / invoice / retail HTML
     if (quote.contract_pdf_data) {
       await pushOne(
         "contract",
@@ -2666,36 +2675,9 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         "application/pdf",
         quote.contract_pdf_data,
       );
-    } else if (quote.contract_html) {
-      await pushOne(
-        "contract",
-        "02-Lease-Contract.html",
-        "text/html",
-        (await driveApi()).htmlToDataUrl(quote.contract_html),
-      );
     }
 
-    // 3) First invoice
-    if (quote.invoice_html) {
-      await pushOne(
-        "invoice",
-        "03-First-Invoice.html",
-        "text/html",
-        (await driveApi()).htmlToDataUrl(quote.invoice_html),
-      );
-    }
-
-    // 4) Retail quote HTML snapshot
-    if (quote.retail_html) {
-      await pushOne(
-        "retail_html",
-        "04-Retail-Quote.html",
-        "text/html",
-        (await driveApi()).htmlToDataUrl(quote.retail_html),
-      );
-    }
-
-    // 5) Extra lead quote files (skip sources already covered by 01/02)
+    // 3) Extra lead quote files — PDFs only; skip accepted_option / contract duplicates
     try {
       const quoteFiles = await sql<{
         id: string;
@@ -2714,14 +2696,20 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       for (const f of quoteFiles) {
         if (!f.file_data) continue;
         if (f.source === "lease_contract" || f.source === "accepted_option") continue;
+        const mime = (f.mime_type || "").toLowerCase();
+        if (mime.includes("html") || /\.html?$/i.test(f.file_name || "")) continue;
         const key = `extra-${f.source || "upload"}-${(f.file_name || "file").toLowerCase()}`;
         latestByKey.set(key, f);
       }
       let i = 0;
       for (const f of latestByKey.values()) {
         i += 1;
-        const norm = (await driveApi()).normalizeUploadPayload(f.file_data, f.mime_type || "application/pdf");
+        const norm = (await driveApi()).normalizeUploadPayload(
+          f.file_data,
+          f.mime_type || "application/pdf",
+        );
         if (!norm) continue;
+        if ((norm.mimeType || "").toLowerCase().includes("html")) continue;
         const base = (f.file_name || "file").replace(/^05-Extra-\d+-/, "");
         await pushOne(
           `quote_file:${f.source}`,
@@ -2734,13 +2722,13 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       /* table may be empty / missing */
     }
 
-    // 6) Lead-level quote PDF (manual attach) — stable name
-    if (lead.quote_pdf_data) {
+    // 4) Lead-level attached quote PDF only if accepted CRM quote was not pushed
+    if (lead.quote_pdf_data && !uploaded.some((u) => u.kind === "quote")) {
       const norm = (await driveApi()).normalizeUploadPayload(
         lead.quote_pdf_data,
         "application/pdf",
       );
-      if (norm) {
+      if (norm && !(norm.mimeType || "").toLowerCase().includes("html")) {
         await pushOne(
           "lead_quote_pdf",
           `06-Lead-Attached-Quote${extFromMime(norm.mimeType, lead.quote_pdf_name || "") || ".pdf"}`,
@@ -2750,7 +2738,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       }
     }
 
-    // 7) Credit documents — one file per kind (latest wins)
+    // 5) Credit documents — PDFs/images only (no HTML)
     try {
       const docs = await sql<{
         id: string;
@@ -2784,6 +2772,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
           d.mime_type || "application/octet-stream",
         );
         if (!norm) continue;
+        if ((norm.mimeType || "").toLowerCase().includes("html")) continue;
         const label = kindLabel[d.kind] || `Credit-${d.kind}`;
         const ext = extFromMime(norm.mimeType, d.file_name || "");
         await pushOne(
@@ -2797,7 +2786,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       /* credit tables may not exist yet */
     }
 
-    // 8) Equifax on credit application (if not already in documents)
+    // 6) Equifax on credit application (if not already in documents)
     try {
       const apps = await sql<{
         equifax_file_name: string | null;
@@ -2813,8 +2802,11 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       if (eq?.equifax_file_data) {
         const already = uploaded.some((u) => u.kind.startsWith("credit_doc:equifax"));
         if (!already) {
-          const norm = (await driveApi()).normalizeUploadPayload(eq.equifax_file_data, "application/pdf");
-          if (norm) {
+          const norm = (await driveApi()).normalizeUploadPayload(
+            eq.equifax_file_data,
+            "application/pdf",
+          );
+          if (norm && !(norm.mimeType || "").toLowerCase().includes("html")) {
             await pushOne(
               "equifax_app",
               `10-Credit-Equifax${extFromMime(norm.mimeType, eq.equifax_file_name || "") || ".pdf"}`,
@@ -2828,53 +2820,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       /* optional */
     }
 
-    // 9) Inventory vehicle image — stable name
-    if (lead.inventory_id) {
-      try {
-        const inv = await sql<{
-          image_url: string | null;
-          stock_number: string | null;
-          year: number;
-          make: string;
-          model: string;
-        }>`
-          select image_url, stock_number, year, make, model
-          from inventory where id = ${lead.inventory_id} limit 1
-        `;
-        const img = inv[0]?.image_url;
-        if (img?.startsWith("data:")) {
-          const norm = (await driveApi()).normalizeUploadPayload(img, "image/jpeg");
-          if (norm) {
-            await pushOne(
-              "vehicle_photo",
-              `20-Vehicle-Photo${extFromMime(norm.mimeType) || ".jpg"}`,
-              norm.mimeType,
-              norm.dataUrl,
-            );
-          }
-        } else if (img && /^https?:\/\//i.test(img)) {
-          try {
-            const res = await fetch(img, { signal: AbortSignal.timeout(12_000) });
-            if (res.ok) {
-              const buf = Buffer.from(await res.arrayBuffer());
-              const ct = res.headers.get("content-type") || "image/jpeg";
-              if (ct.startsWith("image/") && buf.length < 8_000_000) {
-                await pushOne(
-                  "vehicle_photo",
-                  `20-Vehicle-Photo${extFromMime(ct) || ".jpg"}`,
-                  ct,
-                  `data:${ct};base64,${buf.toString("base64")}`,
-                );
-              }
-            }
-          } catch {
-            /* skip remote photo */
-          }
-        }
-      } catch {
-        /* optional */
-      }
-    }
+    // No vehicle photos, no invoice/retail/contract HTML in the Drive package
 
     await sql`
       update leads set
