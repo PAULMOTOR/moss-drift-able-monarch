@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSql } from "@/lib/db";
 import { ensureCrmSeeded } from "@/lib/crm/seed";
-import {
-  releaseExpiredPauses,
-  runHourlyNewLeadReminders,
-} from "@/lib/crm/reminders";
+import { runScheduledUncontactedReminders } from "@/lib/crm/reminders";
 
+/**
+ * Hourly cron: release expired pauses; on weekdays at 9am & 2pm America/Toronto
+ * send each rep one batch of uncontacted (New) leads; at 9am also escalate
+ * 3+ day uncontacted leads to GSM + Admins.
+ */
 async function handle(request: Request) {
   const secret = process.env.CRON_SECRET?.trim();
   const url = new URL(request.url);
@@ -29,9 +31,8 @@ async function handle(request: Request) {
   try {
     const sql = await getSql();
     await ensureCrmSeeded(sql);
-    const released = await releaseExpiredPauses(sql);
-    const hourly = await runHourlyNewLeadReminders(sql);
-    return new Response(JSON.stringify({ ok: true, released, hourly }, null, 2), {
+    const result = await runScheduledUncontactedReminders(sql);
+    return new Response(JSON.stringify({ ok: true, ...result }, null, 2), {
       status: 200,
       headers: { "content-type": "application/json" },
     });

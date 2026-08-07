@@ -633,7 +633,7 @@ function LeadDetail() {
             <CardContent className="space-y-3">
               <p className="text-xs text-muted-foreground">
                 Schedule a callback. The lead moves to{" "}
-                <strong className="text-foreground">Paused</strong> until that date — hourly and
+                <strong className="text-foreground">Paused</strong> until that date — weekday and
                 daily auto-reminders skip it.
               </p>
               {lead.stage === "paused" && lead.pause_until ? (

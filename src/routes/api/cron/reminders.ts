@@ -4,11 +4,15 @@ import { ensureCrmSeeded } from "@/lib/crm/seed";
 import {
   releaseExpiredPauses,
   runDailyRepBatch,
-  runHourlyNewLeadReminders,
+  runScheduledUncontactedReminders,
+  runStaleUncontactedEscalation,
+  runUncontactedRepBatches,
+  type UncontactedSlot,
 } from "@/lib/crm/reminders";
 
 /**
- * GET/POST /api/cron/reminders?mode=hourly|daily|all
+ * GET/POST /api/cron/reminders?mode=uncontacted|daily|all|escalation
+ * Optional: &force=am|pm to force a rep batch slot (still deduped by day).
  * Protected by CRON_SECRET.
  */
 async function handle(request: Request) {
@@ -35,6 +39,9 @@ async function handle(request: Request) {
   }
 
   const mode = (url.searchParams.get("mode") || "all").toLowerCase();
+  const force = url.searchParams.get("force")?.toLowerCase();
+  const forceSlot: UncontactedSlot | undefined =
+    force === "am" || force === "pm" ? force : undefined;
 
   try {
     const sql = await getSql();
@@ -43,11 +50,27 @@ async function handle(request: Request) {
 
     const result: Record<string, unknown> = { ok: true, released_pauses: released };
 
-    if (mode === "hourly" || mode === "all") {
-      result.hourly = await runHourlyNewLeadReminders(sql);
+    if (mode === "hourly" || mode === "uncontacted" || mode === "all") {
+      if (forceSlot) {
+        result.repBatch = await runUncontactedRepBatches(sql, {
+          forceSlot,
+          ignoreSchedule: true,
+        });
+        if (forceSlot === "am") {
+          result.escalation = await runStaleUncontactedEscalation(sql, {
+            ignoreSchedule: true,
+          });
+        }
+      } else {
+        result.uncontacted = await runScheduledUncontactedReminders(sql);
+      }
+    }
+    if (mode === "escalation") {
+      result.escalation = await runStaleUncontactedEscalation(sql, {
+        ignoreSchedule: url.searchParams.get("force") === "1",
+      });
     }
     if (mode === "daily" || mode === "all") {
-      // Daily only meaningful in morning; still safe to call (deduped per day)
       result.daily = await runDailyRepBatch(sql);
     }
 

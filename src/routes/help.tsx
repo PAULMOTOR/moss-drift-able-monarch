@@ -101,7 +101,7 @@ function HelpPage() {
               Opening a pipeline card jumps to the right tab.
             </li>
             <li>
-              <strong>Paused:</strong> schedule a call-back appointment on the lead. Automatic hourly/daily reminders skip paused leads until the date.
+              <strong>Paused:</strong> schedule a call-back appointment on the lead. Automatic weekday/daily reminders skip paused leads until the date.
             </li>
             <li>
               <strong>Quote Sent</strong> only when you:
@@ -228,7 +228,7 @@ function HelpPage() {
               <strong>Speed on the floor:</strong> use New Lead first; polish details after. Capture phone + source every time.
             </li>
             <li>
-              <strong>Same-day contact:</strong> unworked New leads trigger hourly reminders until Contacted. Call or mark Contacted promptly.
+              <strong>Same-day contact:</strong> unworked New leads appear in one email at <strong>9:00 AM</strong> and another at <strong>2:00 PM</strong> on weekdays (Toronto) listing all of your uncontacted leads. After <strong>3 days</strong> still New, GSM and Admins get a single intervention digest. Call or mark Contacted promptly.
             </li>
             <li>
               <strong>One owner:</strong> always assign the lead so reminders and reporting hit the right rep.
