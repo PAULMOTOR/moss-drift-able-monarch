@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSql } from "@/lib/db";
+import { labCronBlockedResponse, shouldBlockLabSideEffects } from "@/lib/crm/lab-guard";
 import { ensureCrmSeeded } from "@/lib/crm/seed";
 import {
   releaseExpiredPauses,
@@ -42,6 +43,10 @@ async function handle(request: Request) {
   const force = url.searchParams.get("force")?.toLowerCase();
   const forceSlot: UncontactedSlot | undefined =
     force === "am" || force === "pm" ? force : undefined;
+
+  if (shouldBlockLabSideEffects()) {
+    return labCronBlockedResponse('reminders');
+  }
 
   try {
     const sql = await getSql();

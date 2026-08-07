@@ -16,6 +16,7 @@ import {
   Wrench,
   X,
   Zap,
+  FlaskConical,
 } from "lucide-react";
 
 
@@ -38,6 +39,8 @@ import { changeOwnPassword, getMyProfile, updateOwnAvatar } from "@/lib/crm/serv
 import { getMyPermissions } from "@/lib/crm/permissions";
 import { ROLE_LABELS, type PermissionKey, type Profile } from "@/lib/crm/types";
 import { cn } from "@/lib/utils";
+import { LabBanner } from "@/components/lab-banner";
+import { isDmsLab } from "@/lib/app-track";
 
 type NavItem = {
   to: string;
@@ -104,6 +107,9 @@ export function AppShell({
 
   const nav: NavItem[] = [
     ...baseNav.filter((item) => canSeeNav(item, profile.role, perms)),
+    ...((isDmsLab()
+      ? [{ to: "/dms", label: "DMS lab", icon: FlaskConical }]
+      : []) as NavItem[]),
     ...((profile.role === "admin" || profile.role === "gsm" || perms.has("data.analysis")
       ? [{ to: "/data-analysis", label: "Data analysis", icon: BarChart3 }]
       : []) as NavItem[]),
@@ -138,6 +144,9 @@ export function AppShell({
 
   return (
     <div className="min-h-dvh bg-background lg:grid lg:grid-cols-[220px_1fr]">
+      <div className="col-span-full">
+        <LabBanner />
+      </div>
       {/* Mobile top bar — BC style white chrome */}
       <header className="sticky top-0 z-40 flex items-center justify-between border-b border-border bg-card px-3 py-2 shadow-sm lg:hidden">
         <Brand compact />

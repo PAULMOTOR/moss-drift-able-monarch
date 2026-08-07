@@ -1,0 +1,75 @@
+# Keeps the DMS lab branch fed with CRM v1 updates from main.
+# Schedule: Monday 14:00 UTC (~10:00 America/Toronto)
+name: Weekly merge main → dms
+
+on:
+  schedule:
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge-main-into-dms:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Ensure dms branch exists
+        run: |
+          git fetch origin main
+          if git ls-remote --exit-code --heads origin dms; then
+            echo "origin/dms exists"
+          else
+            echo "Creating origin/dms from main"
+            git checkout -B dms origin/main
+            git push -u origin dms
+          fi
+
+      - name: Merge main into dms
+        id: merge
+        run: |
+          git fetch origin main dms
+          git checkout dms
+          git reset --hard origin/dms
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo "already_up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "dms already contains main — nothing to do."
+            exit 0
+          fi
+          if git merge origin/main --no-edit; then
+            git push origin dms
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            echo "Merged main → dms and pushed."
+          else
+            git merge --abort || true
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            echo "Merge conflict — open a PR for human resolution."
+            exit 1
+          fi
+
+      - name: Open PR on conflict (fallback)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Best-effort: create a PR main→dms so someone can resolve in the UI
+          gh pr list --base dms --head main --state open --json number --jq 'length' | grep -q '^0$' || exit 0
+          gh pr create --base dms --head main \
+            --title "CRM → DMS: resolve weekly merge conflicts" \
+            --body "Automated Monday merge of \`main\` into \`dms\` hit conflicts. Resolve in this PR so the DMS lab keeps receiving CRM updates.
+
+          Prefer **CRM (main)** behavior for leads, credit, quotes, and pipeline.
+          Keep **DMS-only** modules under \`src/lib/dms\` and \`/dms\` routes." \
+            || true

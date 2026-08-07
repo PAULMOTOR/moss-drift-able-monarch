@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSql } from "@/lib/db";
+import { labCronBlockedResponse, shouldBlockLabSideEffects } from "@/lib/crm/lab-guard";
 import { ensureCrmSeeded } from "@/lib/crm/seed";
 import { runEmailImport } from "@/lib/crm/import-emails";
 
@@ -33,6 +34,10 @@ async function handle(request: Request) {
       }),
       { status: 503, headers: { "content-type": "application/json" } },
     );
+  }
+
+  if (shouldBlockLabSideEffects()) {
+    return labCronBlockedResponse('import-emails');
   }
 
   try {

@@ -15,6 +15,7 @@ import { Route as CalendarRouteImport } from './routes/calendar'
 import { Route as CaptureRouteImport } from './routes/capture'
 import { Route as ComplianceOpsRouteImport } from './routes/compliance-ops'
 import { Route as DataAnalysisRouteImport } from './routes/data-analysis'
+import { Route as DmsRouteImport } from './routes/dms'
 import { Route as HelpRouteImport } from './routes/help'
 import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as LeadsRouteImport } from './routes/leads'
@@ -63,6 +64,11 @@ const ComplianceOpsRoute = ComplianceOpsRouteImport.update({
 const DataAnalysisRoute = DataAnalysisRouteImport.update({
   id: '/data-analysis',
   path: '/data-analysis',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DmsRoute = DmsRouteImport.update({
+  id: '/dms',
+  path: '/dms',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HelpRoute = HelpRouteImport.update({
@@ -168,6 +174,7 @@ export interface FileRoutesByFullPath {
   '/capture': typeof CaptureRoute
   '/compliance-ops': typeof ComplianceOpsRoute
   '/data-analysis': typeof DataAnalysisRoute
+  '/dms': typeof DmsRoute
   '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
   '/leads': typeof LeadsRouteWithChildren
@@ -195,6 +202,7 @@ export interface FileRoutesByTo {
   '/capture': typeof CaptureRoute
   '/compliance-ops': typeof ComplianceOpsRoute
   '/data-analysis': typeof DataAnalysisRoute
+  '/dms': typeof DmsRoute
   '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
   '/login': typeof LoginRoute
@@ -222,6 +230,7 @@ export interface FileRoutesById {
   '/capture': typeof CaptureRoute
   '/compliance-ops': typeof ComplianceOpsRoute
   '/data-analysis': typeof DataAnalysisRoute
+  '/dms': typeof DmsRoute
   '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
   '/leads': typeof LeadsRouteWithChildren
@@ -251,6 +260,7 @@ export interface FileRouteTypes {
     | '/capture'
     | '/compliance-ops'
     | '/data-analysis'
+    | '/dms'
     | '/help'
     | '/inventory'
     | '/leads'
@@ -278,6 +288,7 @@ export interface FileRouteTypes {
     | '/capture'
     | '/compliance-ops'
     | '/data-analysis'
+    | '/dms'
     | '/help'
     | '/inventory'
     | '/login'
@@ -304,6 +315,7 @@ export interface FileRouteTypes {
     | '/capture'
     | '/compliance-ops'
     | '/data-analysis'
+    | '/dms'
     | '/help'
     | '/inventory'
     | '/leads'
@@ -332,6 +344,7 @@ export interface RootRouteChildren {
   CaptureRoute: typeof CaptureRoute
   ComplianceOpsRoute: typeof ComplianceOpsRoute
   DataAnalysisRoute: typeof DataAnalysisRoute
+  DmsRoute: typeof DmsRoute
   HelpRoute: typeof HelpRoute
   InventoryRoute: typeof InventoryRoute
   LeadsRoute: typeof LeadsRouteWithChildren
@@ -393,6 +406,13 @@ declare module '@tanstack/react-router' {
       path: '/data-analysis'
       fullPath: '/data-analysis'
       preLoaderRoute: typeof DataAnalysisRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dms': {
+      id: '/dms'
+      path: '/dms'
+      fullPath: '/dms'
+      preLoaderRoute: typeof DmsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/help': {
@@ -550,6 +570,7 @@ const rootRouteChildren: RootRouteChildren = {
   CaptureRoute: CaptureRoute,
   ComplianceOpsRoute: ComplianceOpsRoute,
   DataAnalysisRoute: DataAnalysisRoute,
+  DmsRoute: DmsRoute,
   HelpRoute: HelpRoute,
   InventoryRoute: InventoryRoute,
   LeadsRoute: LeadsRouteWithChildren,

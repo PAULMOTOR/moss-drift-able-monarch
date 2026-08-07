@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSql } from "@/lib/db";
+import { labCronBlockedResponse, shouldBlockLabSideEffects } from "@/lib/crm/lab-guard";
 import { ensureCrmSeeded } from "@/lib/crm/seed";
 import { releaseExpiredPauses, runDailyRepBatch } from "@/lib/crm/reminders";
 import { runComplianceOpsReminders } from "@/lib/crm/compliance-ops";
@@ -24,6 +25,10 @@ async function handle(request: Request) {
       headers: { "content-type": "application/json" },
     });
   }
+  if (shouldBlockLabSideEffects()) {
+    return labCronBlockedResponse('reminders-daily');
+  }
+
   try {
     const sql = await getSql();
     await ensureCrmSeeded(sql);
