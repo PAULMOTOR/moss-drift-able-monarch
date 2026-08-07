@@ -3,19 +3,8 @@
   "framework": null,
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "regions": ["iad1"],
-  "crons": [
-    {
-      "path": "/api/cron/import-emails",
-      "schedule": "*/2 * * * *"
-    },
-    {
-      "path": "/api/cron/reminders-hourly",
-      "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/cron/reminders-daily",
-      "schedule": "0 12 * * *"
-    }
-  ]
+  "regions": [
+    "iad1"
+  ],
+  "crons": []
 }
