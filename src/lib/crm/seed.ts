@@ -421,19 +421,23 @@ export async function syncRealInventory(sql: Sql): Promise<number> {
   return count;
 }
 
-export async function ensureCrmSeeded(sql: Sql) {
+export async function ensureCrmSeeded(
+  sql: Sql,
+  opts?: { syncInventory?: boolean },
+) {
   const profileCount = await sql<{ n: number }>`select count(*)::int as n from profiles`;
   const profilesEmpty = (profileCount[0]?.n ?? 0) === 0;
   const seed = shouldSeedDemoData({ profilesEmpty });
+  // Inventory sync is expensive — only when explicitly requested (admin refresh / first seed)
+  const doInv = opts?.syncInventory === true;
 
   if (!seed) {
-    // Always refresh website inventory so stock numbers stay current
-    await syncRealInventory(sql);
+    if (doInv) await syncRealInventory(sql);
     return;
   }
 
   await syncStaff(sql);
-  await syncRealInventory(sql);
+  if (doInv || profilesEmpty) await syncRealInventory(sql);
 
   const leadCount = await sql<{ n: number }>`select count(*)::int as n from leads`;
   if ((leadCount[0]?.n ?? 0) > 0) return;

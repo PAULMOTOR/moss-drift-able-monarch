@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { hashPassword, verifyPassword } from "better-auth/crypto";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { ensureCrmSeeded, syncRealInventory } from "./seed";
+import { syncRealInventory } from "./seed";
 import { permissionsForRole } from "./permissions";
 import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
@@ -18,18 +18,10 @@ import {
   taxRateForProvince,
   wrapPrintable,
 } from "./lease-quote";
-import {
-  buildDealFolderName,
-  buildQuotePdfFileName,
-  ensureDealFolder,
-  htmlToDataUrl,
-  isDriveConfigured,
-  normalizeUploadPayload,
-  probeDrive,
-  safeDriveFileName,
-  uploadFileToFolder,
-  uploadOrReplaceFile,
-} from "./google-drive";
+/** Drive helpers + googleapis are loaded only when Push-to-Drive runs. */
+async function driveApi() {
+  return import("./google-drive");
+}
 
 import {
   type AdminMetrics,
@@ -90,9 +82,28 @@ function toIsoTs(v: unknown): string | null {
   return d.toISOString();
 }
 
+const bootGlobal = globalThis as typeof globalThis & {
+  __crmSeedOk__?: boolean;
+  __crmSeedP__?: Promise<void>;
+};
+
+/**
+ * Hot path: open SQL only. Seed staff at most once per process.
+ * Never syncs website inventory here (that belongs on admin refresh).
+ */
 async function boot() {
   const sql = await getSql();
-  await ensureCrmSeeded(sql);
+  if (bootGlobal.__crmSeedOk__) return sql;
+  bootGlobal.__crmSeedP__ ??= (async () => {
+    // Dynamic import keeps seed/real-inventory off the cold path when already seeded
+    const { ensureCrmSeeded } = await import("./seed");
+    await ensureCrmSeeded(sql, { syncInventory: false });
+    bootGlobal.__crmSeedOk__ = true;
+  })().catch((err) => {
+    bootGlobal.__crmSeedP__ = undefined;
+    throw err;
+  });
+  await bootGlobal.__crmSeedP__;
   return sql;
 }
 
@@ -215,6 +226,30 @@ const leadSelect = `
   l.stage_entered_at::text as stage_entered_at,
   l.quote_sent, l.quote_sent_at::text as quote_sent_at,
   l.quote_link, l.quote_notes, l.quote_pdf_name, l.quote_pdf_data, l.source_email_raw,
+  l.guarantor, l.legal_entity_name, l.drive_folder_id, l.drive_folder_url, l.accepted_quote_id,
+  l.email_portal, l.gmail_message_id,
+  l.pause_until::text as pause_until, l.pause_note, l.stage_before_pause,
+  l.google_review_status,
+  l.google_review_at::text as google_review_at,
+  l.google_review_link,
+  l.estimated_value::float8 as estimated_value,
+  l.created_by,
+  l.created_at::text as created_at,
+  l.updated_at::text as updated_at,
+  p.name as assigned_name,
+  case when i.id is not null
+    then trim(both ' ' from concat(i.year, ' ', i.make, ' ', i.model, ' ', coalesce(i.trim, '')))
+    else null end as inventory_label
+`;
+
+/** List/pipeline queries — omit multi-MB PDF/email blobs. */
+const leadListSelect = `
+  l.id, l.name, l.first_name, l.last_name, l.party_type, l.credit_status, l.credit_app_id, l.phone, l.email, l.source, l.lead_type, l.notes, l.vehicle_interest,
+  l.inventory_id, l.assigned_to, l.stage,
+  l.stage_entered_at::text as stage_entered_at,
+  l.quote_sent, l.quote_sent_at::text as quote_sent_at,
+  l.quote_link, l.quote_notes, l.quote_pdf_name,
+  null::text as quote_pdf_data, null::text as source_email_raw,
   l.guarantor, l.legal_entity_name, l.drive_folder_id, l.drive_folder_url, l.accepted_quote_id,
   l.email_portal, l.gmail_message_id,
   l.pause_until::text as pause_until, l.pause_note, l.stage_before_pause,
@@ -452,13 +487,32 @@ export const parseEmailLead = createServerFn({ method: "POST" })
     },
   );
 
+export type ListLeadsResult = {
+  leads: Lead[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+};
+
 export const listLeads = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .validator(
-    (data: { stage?: string; q?: string; assigned?: string; lead_type?: string } | undefined) =>
-      data ?? {},
+    (
+      data:
+        | {
+            stage?: string;
+            q?: string;
+            assigned?: string;
+            lead_type?: string;
+            /** page size (default 50, max 200) */
+            limit?: number;
+            offset?: number;
+          }
+        | undefined,
+    ) => data ?? {},
   )
-  .handler(async ({ context, data }): Promise<Lead[]> => {
+  .handler(async ({ context, data }): Promise<ListLeadsResult> => {
     const me = await requireProfile(context.userId);
     const sql = await boot();
     const stage = data.stage && data.stage !== "all" ? data.stage : null;
@@ -468,7 +522,6 @@ export const listLeads = createServerFn({ method: "GET" })
     const perms = await permissionsForRole(me.role);
     const canEarly = me.role === "admin" || perms.has("leads.early");
     const canLate = me.role === "admin" || perms.has("leads.late");
-    // Stage gate for roles like Compliance (late only)
     const stageAllow: string[] | null =
       canEarly && canLate
         ? null
@@ -478,7 +531,6 @@ export const listLeads = createServerFn({ method: "GET" })
             ? ["new", "contacted", "paused", "quote_sent", "lost"]
             : [];
 
-    // Admins/GSM/Credit/Compliance/Accounting may filter by any owner. Reps/brokers: self + unassigned.
     let assignedFilter: string | null = null;
     let unassignedOnly = false;
     if (admin) {
@@ -494,11 +546,13 @@ export const listLeads = createServerFn({ method: "GET" })
     }
 
     if (stageAllow && stage && !stageAllow.includes(stage)) {
-      return [];
+      return { leads: [], total: 0, limit: 50, offset: 0, hasMore: false };
     }
 
-    const rows = await sql.query<Record<string, unknown>>(
-      `select ${leadSelect}
+    const limit = Math.min(200, Math.max(1, Number(data.limit) || 50));
+    const offset = Math.max(0, Number(data.offset) || 0);
+
+    const whereSql = `
        from leads l
        left join profiles p on p.id = l.assigned_to
        left join inventory i on i.id = l.inventory_id
@@ -526,11 +580,39 @@ export const listLeads = createServerFn({ method: "GET" })
          and (
            $8::text[] is null
            or l.stage = any($8::text[])
-         )
-       order by l.updated_at desc`,
-      [stage, assignedFilter, leadType, q, admin, me.id, unassignedOnly, stageAllow],
+         )`;
+    const params = [
+      stage,
+      assignedFilter,
+      leadType,
+      q,
+      admin,
+      me.id,
+      unassignedOnly,
+      stageAllow,
+    ];
+
+    const countRows = await sql.query<{ n: number }>(
+      `select count(*)::int as n ${whereSql}`,
+      params,
     );
-    return rows.map(mapLead);
+    const total = countRows[0]?.n ?? 0;
+
+    const rows = await sql.query<Record<string, unknown>>(
+      `select ${leadListSelect}
+       ${whereSql}
+       order by l.updated_at desc
+       limit $9 offset $10`,
+      [...params, limit, offset],
+    );
+    const leads = rows.map(mapLead);
+    return {
+      leads,
+      total,
+      limit,
+      offset,
+      hasMore: offset + leads.length < total,
+    };
   });
 
 export const getLead = createServerFn({ method: "GET" })
@@ -1998,7 +2080,7 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
     const title =
       data.title ||
       `Quote ${data.client.clientName || "Client"} · ${data.client.quoteDate || ""}`.trim();
-    const pdfName = buildQuotePdfFileName({
+    const pdfName = (await driveApi()).buildQuotePdfFileName({
       quoteDate: data.client.quoteDate,
       clientName: data.client.clientName,
       option: data.selectedOption ?? 1,
@@ -2253,7 +2335,7 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
       ),
       taxRate,
     );
-    const pdfName = buildQuotePdfFileName({
+    const pdfName = (await driveApi()).buildQuotePdfFileName({
       quoteDate: payload.client.quoteDate,
       clientName: payload.client.clientName,
       option: data.optionNumber,
@@ -2461,7 +2543,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       throw new Error("Corrupt quote");
     }
     const client = payload.client;
-    const folderName = buildDealFolderName({
+    const folderName = (await driveApi()).buildDealFolderName({
       year: client.year,
       make: client.make,
       model: client.model,
@@ -2470,12 +2552,12 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       guarantor: client.guarantor || lead.guarantor || "",
     });
     const now = new Date();
-    if (!isDriveConfigured()) {
+    if (!(await driveApi()).isDriveConfigured()) {
       throw new Error(
         "Google Drive is not configured. Re-run OAuth with Drive scope and set GOOGLE_DRIVE_REFRESH_TOKEN (or GMAIL_REFRESH_TOKEN with Drive access).",
       );
     }
-    const folder = await ensureDealFolder({
+    const folder = await (await driveApi()).ensureDealFolder({
       year: now.getFullYear(),
       monthIndex: now.getMonth(),
       folderName,
@@ -2511,8 +2593,8 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       data: string,
     ) {
       try {
-        const name = safeDriveFileName(fileName);
-        const res = await uploadOrReplaceFile({
+        const name = (await driveApi()).safeDriveFileName(fileName);
+        const res = await (await driveApi()).uploadOrReplaceFile({
           folderId: folder.folderId,
           fileName: name,
           mimeType,
@@ -2533,7 +2615,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
     }
 
     // 1) Accepted quote PDF — stable name so re-push always overwrites "the" quote
-    const quoteFileName = buildQuotePdfFileName({
+    const quoteFileName = (await driveApi()).buildQuotePdfFileName({
       quoteDate: client.quoteDate,
       clientName: client.clientName,
       option: optNum,
@@ -2589,7 +2671,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         "contract",
         "02-Lease-Contract.html",
         "text/html",
-        htmlToDataUrl(quote.contract_html),
+        (await driveApi()).htmlToDataUrl(quote.contract_html),
       );
     }
 
@@ -2599,7 +2681,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         "invoice",
         "03-First-Invoice.html",
         "text/html",
-        htmlToDataUrl(quote.invoice_html),
+        (await driveApi()).htmlToDataUrl(quote.invoice_html),
       );
     }
 
@@ -2609,7 +2691,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         "retail_html",
         "04-Retail-Quote.html",
         "text/html",
-        htmlToDataUrl(quote.retail_html),
+        (await driveApi()).htmlToDataUrl(quote.retail_html),
       );
     }
 
@@ -2638,7 +2720,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       let i = 0;
       for (const f of latestByKey.values()) {
         i += 1;
-        const norm = normalizeUploadPayload(f.file_data, f.mime_type || "application/pdf");
+        const norm = (await driveApi()).normalizeUploadPayload(f.file_data, f.mime_type || "application/pdf");
         if (!norm) continue;
         const base = (f.file_name || "file").replace(/^05-Extra-\d+-/, "");
         await pushOne(
@@ -2654,7 +2736,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
 
     // 6) Lead-level quote PDF (manual attach) — stable name
     if (lead.quote_pdf_data) {
-      const norm = normalizeUploadPayload(
+      const norm = (await driveApi()).normalizeUploadPayload(
         lead.quote_pdf_data,
         "application/pdf",
       );
@@ -2697,7 +2779,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         latestByKind.set(d.kind, d);
       }
       for (const d of latestByKind.values()) {
-        const norm = normalizeUploadPayload(
+        const norm = (await driveApi()).normalizeUploadPayload(
           d.file_data,
           d.mime_type || "application/octet-stream",
         );
@@ -2731,7 +2813,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       if (eq?.equifax_file_data) {
         const already = uploaded.some((u) => u.kind.startsWith("credit_doc:equifax"));
         if (!already) {
-          const norm = normalizeUploadPayload(eq.equifax_file_data, "application/pdf");
+          const norm = (await driveApi()).normalizeUploadPayload(eq.equifax_file_data, "application/pdf");
           if (norm) {
             await pushOne(
               "equifax_app",
@@ -2761,7 +2843,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         `;
         const img = inv[0]?.image_url;
         if (img?.startsWith("data:")) {
-          const norm = normalizeUploadPayload(img, "image/jpeg");
+          const norm = (await driveApi()).normalizeUploadPayload(img, "image/jpeg");
           if (norm) {
             await pushOne(
               "vehicle_photo",
@@ -2898,5 +2980,5 @@ export const driveHealth = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     await requireProfile(context.userId);
-    return probeDrive();
+    return (await driveApi()).probeDrive();
   });

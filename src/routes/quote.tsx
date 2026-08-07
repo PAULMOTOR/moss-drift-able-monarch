@@ -147,11 +147,11 @@ function QuotePage() {
 
   useEffect(() => {
     void Promise.all([
-      listLeads({ data: {} }),
+      listLeads({ data: { limit: 100, offset: 0 } }),
       listInventory({ data: {} }),
       getMyProfile().catch(() => null),
     ]).then(([L, inv, profile]) => {
-      setLeads(L);
+      setLeads(L.leads);
       setInventory(inv);
       if (profile?.name) {
         setSalesman(profile.name);

@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Search, Zap } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { StageBadge } from "@/components/stage-badge";
@@ -19,48 +20,56 @@ import {
   STAGES,
   defaultLeadTab,
   sourceLabel,
-  type Lead,
-  type Profile,
 } from "@/lib/crm/types";
+import { leadsQueryKey } from "@/lib/query-client";
 import { cn, formatCurrency, formatRelative } from "@/lib/utils";
 
 export const Route = createFileRoute("/leads/")({
   component: LeadsPage,
 });
 
+const PAGE_SIZE = 50;
+
 function LeadsPage() {
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
   const [q, setQ] = useState("");
+  const [qApplied, setQApplied] = useState("");
   const [stage, setStage] = useState("all");
   const [assigned, setAssigned] = useState("all");
   const [leadType, setLeadType] = useState("all");
+  const [offset, setOffset] = useState(0);
 
-  async function load(next?: {
-    q?: string;
-    stage?: string;
-    assigned?: string;
-    lead_type?: string;
-  }) {
-    const [rows, people] = await Promise.all([
-      listLeads({
-        data: {
-          q: next?.q ?? q,
-          stage: next?.stage ?? stage,
-          assigned: next?.assigned ?? assigned,
-          lead_type: next?.lead_type ?? leadType,
-        },
-      }),
-      listProfiles({ data: {} }),
-    ]);
-    setLeads(rows);
-    setProfiles(people);
+  const filters = useMemo(
+    () => ({
+      q: qApplied,
+      stage,
+      assigned,
+      lead_type: leadType,
+      limit: PAGE_SIZE,
+      offset,
+    }),
+    [qApplied, stage, assigned, leadType, offset],
+  );
+
+  const leadsQ = useQuery({
+    queryKey: leadsQueryKey(filters),
+    queryFn: () => listLeads({ data: filters }),
+  });
+
+  const profilesQ = useQuery({
+    queryKey: ["profiles"],
+    queryFn: () => listProfiles({ data: {} }),
+    staleTime: 120_000,
+  });
+
+  const leads = leadsQ.data?.leads ?? [];
+  const total = leadsQ.data?.total ?? 0;
+  const hasMore = leadsQ.data?.hasMore ?? false;
+  const profiles = profilesQ.data ?? [];
+
+  function applySearch() {
+    setOffset(0);
+    setQApplied(q.trim());
   }
-
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   return (
     <>
@@ -88,7 +97,7 @@ function LeadsPage() {
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") void load({ q: e.currentTarget.value });
+                  if (e.key === "Enter") applySearch();
                 }}
               />
             </div>
@@ -96,7 +105,7 @@ function LeadsPage() {
               value={leadType}
               onValueChange={(v) => {
                 setLeadType(v);
-                void load({ lead_type: v });
+                setOffset(0);
               }}
             >
               <SelectTrigger className="h-11 w-full lg:w-36">
@@ -115,7 +124,7 @@ function LeadsPage() {
               value={stage}
               onValueChange={(v) => {
                 setStage(v);
-                void load({ stage: v });
+                setOffset(0);
               }}
             >
               <SelectTrigger className="h-11 w-full lg:w-44">
@@ -134,7 +143,7 @@ function LeadsPage() {
               value={assigned}
               onValueChange={(v) => {
                 setAssigned(v);
-                void load({ assigned: v });
+                setOffset(0);
               }}
             >
               <SelectTrigger className="h-11 w-full lg:w-48">
@@ -150,12 +159,18 @@ function LeadsPage() {
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="secondary" className="h-11" onClick={() => void load()}>
+            <Button variant="secondary" className="h-11" onClick={applySearch}>
               Apply
             </Button>
           </div>
 
-          <p className="text-xs text-muted-foreground">{leads.length} leads</p>
+          <p className="text-xs text-muted-foreground">
+            {leadsQ.isFetching ? "Loading… · " : ""}
+            {total} lead{total === 1 ? "" : "s"}
+            {total > PAGE_SIZE
+              ? ` · showing ${offset + 1}–${offset + leads.length}`
+              : ""}
+          </p>
 
           <div className="space-y-2">
             {leads.map((lead) => (
@@ -205,10 +220,35 @@ function LeadsPage() {
                 </div>
               </Link>
             ))}
-            {leads.length === 0 ? (
+            {!leadsQ.isLoading && leads.length === 0 ? (
               <p className="py-10 text-center text-sm text-muted-foreground">No leads match.</p>
             ) : null}
           </div>
+
+          {total > PAGE_SIZE ? (
+            <div className="flex items-center justify-between gap-2 pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={offset <= 0 || leadsQ.isFetching}
+                onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+              >
+                Previous
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Page {Math.floor(offset / PAGE_SIZE) + 1} of{" "}
+                {Math.max(1, Math.ceil(total / PAGE_SIZE))}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!hasMore || leadsQ.isFetching}
+                onClick={() => setOffset((o) => o + PAGE_SIZE)}
+              >
+                Next
+              </Button>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </>

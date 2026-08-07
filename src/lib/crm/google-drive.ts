@@ -1,5 +1,15 @@
 import { Readable } from "node:stream";
-import { google } from "googleapis";
+
+/** Lazy-load googleapis (~25MB) only when Drive is actually used. */
+type Google = typeof import("googleapis").google;
+let googleApi: Google | null = null;
+async function getGoogle(): Promise<Google> {
+  if (!googleApi) {
+    const mod = await import("googleapis");
+    googleApi = mod.google;
+  }
+  return googleApi;
+}
 
 function env(key: string): string | undefined {
   const v = process.env[key]?.trim();
@@ -25,7 +35,7 @@ export function isDriveConfigured(): boolean {
   );
 }
 
-function getAuth(prefer: "drive" | "gmail" | "auto" = "auto") {
+async function getAuth(prefer: "drive" | "gmail" | "auto" = "auto") {
   const clientId = env("GMAIL_CLIENT_ID");
   const clientSecret = env("GMAIL_CLIENT_SECRET");
   const driveTok = env("GOOGLE_DRIVE_REFRESH_TOKEN");
@@ -40,13 +50,15 @@ function getAuth(prefer: "drive" | "gmail" | "auto" = "auto") {
       "Google Drive not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and a refresh token with Drive scope (GOOGLE_DRIVE_REFRESH_TOKEN or GMAIL_REFRESH_TOKEN).",
     );
   }
+  const google = await getGoogle();
   const oauth2 = new google.auth.OAuth2(clientId, clientSecret);
   oauth2.setCredentials({ refresh_token: refreshToken });
   return oauth2;
 }
 
-function driveClient(prefer: "drive" | "gmail" | "auto" = "auto") {
-  return google.drive({ version: "v3", auth: getAuth(prefer) });
+async function driveClient(prefer: "drive" | "gmail" | "auto" = "auto") {
+  const google = await getGoogle();
+  return google.drive({ version: "v3", auth: await getAuth(prefer) });
 }
 
 const FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -55,7 +67,7 @@ async function findChildFolder(
   parentId: string,
   name: string,
 ): Promise<string | null> {
-  const drive = driveClient();
+  const drive = await driveClient();
   const q = [
     `'${parentId}' in parents`,
     `name = '${name.replace(/'/g, "\\'")}'`,
@@ -73,7 +85,7 @@ async function findChildFolder(
 }
 
 async function createFolder(parentId: string, name: string): Promise<string> {
-  const drive = driveClient();
+  const drive = await driveClient();
   const res = await drive.files.create({
     requestBody: {
       name,
@@ -130,7 +142,7 @@ export async function assertParentFolderAccessible(parentId?: string): Promise<{
 
   for (const attempt of attempts) {
     try {
-      const drive = driveClient(attempt.prefer);
+      const drive = await driveClient(attempt.prefer);
       try {
         const about = await drive.about.get({
           fields: "user(emailAddress,displayName)",
@@ -229,7 +241,7 @@ export async function ensureDealFolder(params: {
     }
   }
   if (!salesId) {
-    const drive = driveClient();
+    const drive = await driveClient();
     const listed = await drive.files.list({
       q: `'${root}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`,
       fields: "files(id, name)",
@@ -270,7 +282,7 @@ export async function ensureDealFolder(params: {
     }
   }
   if (!monthId) {
-    const drive = driveClient();
+    const drive = await driveClient();
     const listed = await drive.files.list({
       q: `'${yearId}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`,
       fields: "files(id, name)",
@@ -299,7 +311,7 @@ export async function ensureDealFolder(params: {
   }
 
   const dealId = await ensureFolder(monthId, params.folderName);
-  const drive = driveClient();
+  const drive = await driveClient();
   const meta = await drive.files.get({
     fileId: dealId,
     fields: "id, webViewLink",
@@ -321,7 +333,7 @@ export async function uploadFileToFolder(params: {
   /** raw base64 (no data: prefix) or full data URL */
   data: string;
 }): Promise<{ fileId: string; fileUrl: string }> {
-  const drive = driveClient();
+  const drive = await driveClient();
   let b64 = params.data;
   if (b64.startsWith("data:")) {
     b64 = b64.split(",")[1] || "";
@@ -353,7 +365,7 @@ export async function findFileInFolder(
   folderId: string,
   fileName: string,
 ): Promise<string | null> {
-  const drive = driveClient();
+  const drive = await driveClient();
   const q = [
     `'${folderId}' in parents`,
     `name = '${fileName.replace(/'/g, "\\'")}'`,
@@ -392,7 +404,7 @@ export async function uploadOrReplaceFile(params: {
     body = Buffer.from(b64, "base64");
   }
 
-  const drive = driveClient();
+  const drive = await driveClient();
   if (existingId) {
     const res = await drive.files.update({
       fileId: existingId,
@@ -553,7 +565,7 @@ export async function probeDrive(): Promise<{
 
     for (const attempt of attempts) {
       try {
-        const drive = driveClient(attempt.prefer);
+        const drive = await driveClient(attempt.prefer);
         tokenUsed = attempt.label;
         try {
           const about = await drive.about.get({

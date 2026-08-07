@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { AuthGate, PageHeader } from "@/components/app-shell";
@@ -13,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { listLeads, listProfiles, updateLead, getMyProfile } from "@/lib/crm/server";
+import { leadsQueryKey } from "@/lib/query-client";
 import {
   CREDIT_PIPELINE_COLUMNS,
   PIPELINES,
@@ -45,45 +47,53 @@ export const Route = createFileRoute("/pipeline")({
 function PipelinePage() {
   const search = Route.useSearch();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const initialBoard = (
     PIPELINES.some((p) => p.id === search.board) ? search.board : "lead"
   ) as PipelineId;
   const [board, setBoard] = useState<PipelineId>(initialBoard);
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [me, setMe] = useState<Profile | null>(null);
   const [assigned, setAssigned] = useState("all");
   const [dragging, setDragging] = useState<string | null>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const boardRef = useRef<HTMLDivElement>(null);
   const update = useServerFn(updateLead);
-  const isAdmin = me?.role === "admin";
+
+  const leadsFilters = useMemo(
+    () => ({ assigned, limit: 200, offset: 0 }),
+    [assigned],
+  );
+
+  const meQ = useQuery({
+    queryKey: ["me"],
+    queryFn: () => getMyProfile(),
+    staleTime: 120_000,
+  });
+  const me = meQ.data ?? null;
+  const isAdmin = me?.role === "admin" || me?.role === "gsm";
+
+  const profilesQ = useQuery({
+    queryKey: ["profiles"],
+    queryFn: () => listProfiles({ data: {} }),
+    staleTime: 120_000,
+  });
+  const profiles = profilesQ.data ?? [];
+
+  const leadsQ = useQuery({
+    queryKey: leadsQueryKey(leadsFilters),
+    queryFn: () => listLeads({ data: leadsFilters }),
+  });
+
+  /** Local optimistic copy while dragging; re-syncs when server data changes. */
+  const [leads, setLeads] = useState<Lead[]>([]);
+  useEffect(() => {
+    if (leadsQ.data?.leads) setLeads(leadsQ.data.leads);
+  }, [leadsQ.data]);
 
   async function load(filter = assigned) {
-    const [rows, people, profile] = await Promise.all([
-      listLeads({ data: { assigned: filter } }),
-      listProfiles({ data: {} }),
-      getMyProfile().catch(() => null),
-    ]);
-    setLeads(rows);
-    setProfiles(people);
-    if (profile) setMe(profile);
+    setAssigned(filter);
+    await queryClient.invalidateQueries({ queryKey: ["leads"] });
   }
-
-  useEffect(() => {
-    void (async () => {
-      const profile = await getMyProfile().catch(() => null);
-      if (profile) {
-        setMe(profile);
-        setAssigned("all");
-        await load("all");
-      } else {
-        await load();
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   function updateScrollButtons() {
     const el = boardRef.current;
