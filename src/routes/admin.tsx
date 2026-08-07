@@ -31,7 +31,9 @@ import {
   updateContractTemplate,
   driveHealth,
 } from "@/lib/crm/server";
-import { STAGES, type AdminMetrics, type Profile, type Role } from "@/lib/crm/types";
+import { getRolePermissionMatrix, setRolePermission } from "@/lib/crm/permissions";
+import { PERMISSION_KEYS, ROLE_LABELS, ROLES, STAGES, type AdminMetrics, type PermissionKey, type Profile, type Role } from "@/lib/crm/types";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn, formatCurrency } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin")({
@@ -89,6 +91,8 @@ function AdminPage() {
   const [contractKey, setContractKey] = useState("qc_individual_en");
   const [contractBody, setContractBody] = useState("");
   const [driveStatus, setDriveStatus] = useState<{ ok: boolean; error?: string } | null>(null);
+  const [permMatrix, setPermMatrix] = useState<Record<string, Record<string, boolean>> | null>(null);
+  const [permBusy, setPermBusy] = useState<string | null>(null);
   const listContracts = useServerFn(listContractTemplates);
   const saveContract = useServerFn(updateContractTemplate);
   const driveProbe = useServerFn(driveHealth);
@@ -111,6 +115,12 @@ function AdminPage() {
     setMetrics(m);
     setUsers(u);
     if (emailSt) setImportStatus(emailSt);
+    try {
+      const matrix = await getRolePermissionMatrix();
+      setPermMatrix(matrix.matrix);
+    } catch {
+      setPermMatrix(null);
+    }
   }
 
   useEffect(() => {
@@ -514,11 +524,11 @@ function AdminPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="admin">Admin</SelectItem>
-                <SelectItem value="rep">Sales rep</SelectItem>
-                <SelectItem value="credit_manager">Credit Manager</SelectItem>
-                <SelectItem value="gsm">General Sales Manager</SelectItem>
-                <SelectItem value="broker">Broker</SelectItem>
+                {ROLES.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {ROLE_LABELS[r]}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Input
@@ -674,9 +684,11 @@ function AdminPage() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="admin">Admin</SelectItem>
-                              <SelectItem value="rep">Sales rep</SelectItem>
-                              <SelectItem value="broker">Broker</SelectItem>
+                              {ROLES.map((r) => (
+                                <SelectItem key={r} value={r}>
+                                  {ROLE_LABELS[r]}
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
@@ -816,7 +828,77 @@ function AdminPage() {
           </div>
         </CardContent>
       </Card>
-</>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="font-display text-xl">Access & permissions</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 overflow-x-auto">
+          <p className="text-sm text-muted-foreground">
+            Toggle what each role can do company-wide. Admin always has full access.
+          </p>
+          {!permMatrix ? (
+            <p className="text-sm text-muted-foreground">Loading matrix…</p>
+          ) : (
+            <table className="w-full min-w-[720px] border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="sticky left-0 bg-card p-2 font-semibold">Permission</th>
+                  {ROLES.filter((r) => r !== "admin").map((r) => (
+                    <th key={r} className="whitespace-nowrap p-2 font-semibold">
+                      {ROLE_LABELS[r]}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {PERMISSION_KEYS.map((p) => (
+                  <tr key={p.key} className="border-b border-border/70">
+                    <td className="sticky left-0 bg-card p-2">
+                      <p className="font-medium">{p.label}</p>
+                      <p className="text-[10px] text-muted-foreground">{p.group}</p>
+                    </td>
+                    {ROLES.filter((r) => r !== "admin").map((r) => {
+                      const on = permMatrix[r]?.[p.key] ?? false;
+                      const cellKey = `${r}:${p.key}`;
+                      return (
+                        <td key={cellKey} className="p-2 text-center">
+                          <Checkbox
+                            checked={on}
+                            disabled={permBusy === cellKey}
+                            onCheckedChange={async (c) => {
+                              const allowed = c === true;
+                              setPermBusy(cellKey);
+                              try {
+                                await setRolePermission({
+                                  data: {
+                                    role: r,
+                                    permission_key: p.key as PermissionKey,
+                                    allowed,
+                                  },
+                                });
+                                setPermMatrix((m) =>
+                                  m ? { ...m, [r]: { ...m[r], [p.key]: allowed } } : m,
+                                );
+                              } catch (e) {
+                                toast.error(e instanceof Error ? e.message : "Could not update");
+                              } finally {
+                                setPermBusy(null);
+                              }
+                            }}
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+
+    </>
   );
 }
 

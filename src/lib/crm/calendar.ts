@@ -20,7 +20,7 @@ async function requireProfile(userId: string): Promise<Profile> {
   const sql = await getSql();
   const rows = await sql<Profile>`
     select id, user_id, email, name, role, active, phone, title,
-           created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
     from profiles where user_id = ${userId} limit 1
   `;
   if (!rows[0]?.active) throw new Error("No active CRM profile");

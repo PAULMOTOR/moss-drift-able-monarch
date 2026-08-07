@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as CalendarRouteImport } from './routes/calendar'
 import { Route as CaptureRouteImport } from './routes/capture'
+import { Route as ComplianceOpsRouteImport } from './routes/compliance-ops'
 import { Route as DataAnalysisRouteImport } from './routes/data-analysis'
 import { Route as HelpRouteImport } from './routes/help'
 import { Route as InventoryRouteImport } from './routes/inventory'
@@ -20,12 +21,14 @@ import { Route as LeadsRouteImport } from './routes/leads'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PipelineRouteImport } from './routes/pipeline'
 import { Route as QuoteRouteImport } from './routes/quote'
+import { Route as ServiceRouteImport } from './routes/service'
 import { Route as TasksRouteImport } from './routes/tasks'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as CreditAppTokenRouteImport } from './routes/credit-app.$token'
 import { Route as CreditDocsTokenRouteImport } from './routes/credit-docs.$token'
 import { Route as LeadsIndexRouteImport } from './routes/leads.index'
 import { Route as LeadsLeadIdRouteImport } from './routes/leads.$leadId'
+import { Route as ServiceEstimateTokenRouteImport } from './routes/service-estimate.$token'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCronImportEmailsRouteImport } from './routes/api/cron/import-emails'
 import { Route as ApiCronRemindersRouteImport } from './routes/api/cron/reminders'
@@ -50,6 +53,11 @@ const CalendarRoute = CalendarRouteImport.update({
 const CaptureRoute = CaptureRouteImport.update({
   id: '/capture',
   path: '/capture',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ComplianceOpsRoute = ComplianceOpsRouteImport.update({
+  id: '/compliance-ops',
+  path: '/compliance-ops',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DataAnalysisRoute = DataAnalysisRouteImport.update({
@@ -87,6 +95,11 @@ const QuoteRoute = QuoteRouteImport.update({
   path: '/quote',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ServiceRoute = ServiceRouteImport.update({
+  id: '/service',
+  path: '/service',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TasksRoute = TasksRouteImport.update({
   id: '/tasks',
   path: '/tasks',
@@ -116,6 +129,11 @@ const LeadsLeadIdRoute = LeadsLeadIdRouteImport.update({
   id: '/$leadId',
   path: '/$leadId',
   getParentRoute: () => LeadsRoute,
+} as any)
+const ServiceEstimateTokenRoute = ServiceEstimateTokenRouteImport.update({
+  id: '/service-estimate/$token',
+  path: '/service-estimate/$token',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
@@ -148,6 +166,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/calendar': typeof CalendarRoute
   '/capture': typeof CaptureRoute
+  '/compliance-ops': typeof ComplianceOpsRoute
   '/data-analysis': typeof DataAnalysisRoute
   '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
@@ -155,11 +174,13 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
+  '/service': typeof ServiceRoute
   '/tasks': typeof TasksRoute
   '/api/health': typeof ApiHealthRoute
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
+  '/service-estimate/$token': typeof ServiceEstimateTokenRoute
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/import-emails': typeof ApiCronImportEmailsRoute
@@ -172,17 +193,20 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/calendar': typeof CalendarRoute
   '/capture': typeof CaptureRoute
+  '/compliance-ops': typeof ComplianceOpsRoute
   '/data-analysis': typeof DataAnalysisRoute
   '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
+  '/service': typeof ServiceRoute
   '/tasks': typeof TasksRoute
   '/api/health': typeof ApiHealthRoute
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
+  '/service-estimate/$token': typeof ServiceEstimateTokenRoute
   '/leads': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/import-emails': typeof ApiCronImportEmailsRoute
@@ -196,6 +220,7 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/calendar': typeof CalendarRoute
   '/capture': typeof CaptureRoute
+  '/compliance-ops': typeof ComplianceOpsRoute
   '/data-analysis': typeof DataAnalysisRoute
   '/help': typeof HelpRoute
   '/inventory': typeof InventoryRoute
@@ -203,11 +228,13 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/pipeline': typeof PipelineRoute
   '/quote': typeof QuoteRoute
+  '/service': typeof ServiceRoute
   '/tasks': typeof TasksRoute
   '/api/health': typeof ApiHealthRoute
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
+  '/service-estimate/$token': typeof ServiceEstimateTokenRoute
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cron/import-emails': typeof ApiCronImportEmailsRoute
@@ -222,6 +249,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/calendar'
     | '/capture'
+    | '/compliance-ops'
     | '/data-analysis'
     | '/help'
     | '/inventory'
@@ -229,11 +257,13 @@ export interface FileRouteTypes {
     | '/login'
     | '/pipeline'
     | '/quote'
+    | '/service'
     | '/tasks'
     | '/api/health'
     | '/credit-app/$token'
     | '/credit-docs/$token'
     | '/leads/$leadId'
+    | '/service-estimate/$token'
     | '/leads/'
     | '/api/auth/$'
     | '/api/cron/import-emails'
@@ -246,17 +276,20 @@ export interface FileRouteTypes {
     | '/admin'
     | '/calendar'
     | '/capture'
+    | '/compliance-ops'
     | '/data-analysis'
     | '/help'
     | '/inventory'
     | '/login'
     | '/pipeline'
     | '/quote'
+    | '/service'
     | '/tasks'
     | '/api/health'
     | '/credit-app/$token'
     | '/credit-docs/$token'
     | '/leads/$leadId'
+    | '/service-estimate/$token'
     | '/leads'
     | '/api/auth/$'
     | '/api/cron/import-emails'
@@ -269,6 +302,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/calendar'
     | '/capture'
+    | '/compliance-ops'
     | '/data-analysis'
     | '/help'
     | '/inventory'
@@ -276,11 +310,13 @@ export interface FileRouteTypes {
     | '/login'
     | '/pipeline'
     | '/quote'
+    | '/service'
     | '/tasks'
     | '/api/health'
     | '/credit-app/$token'
     | '/credit-docs/$token'
     | '/leads/$leadId'
+    | '/service-estimate/$token'
     | '/leads/'
     | '/api/auth/$'
     | '/api/cron/import-emails'
@@ -294,6 +330,7 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   CalendarRoute: typeof CalendarRoute
   CaptureRoute: typeof CaptureRoute
+  ComplianceOpsRoute: typeof ComplianceOpsRoute
   DataAnalysisRoute: typeof DataAnalysisRoute
   HelpRoute: typeof HelpRoute
   InventoryRoute: typeof InventoryRoute
@@ -301,10 +338,12 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   PipelineRoute: typeof PipelineRoute
   QuoteRoute: typeof QuoteRoute
+  ServiceRoute: typeof ServiceRoute
   TasksRoute: typeof TasksRoute
   ApiHealthRoute: typeof ApiHealthRoute
   CreditAppTokenRoute: typeof CreditAppTokenRoute
   CreditDocsTokenRoute: typeof CreditDocsTokenRoute
+  ServiceEstimateTokenRoute: typeof ServiceEstimateTokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCronImportEmailsRoute: typeof ApiCronImportEmailsRoute
   ApiCronRemindersRoute: typeof ApiCronRemindersRoute
@@ -340,6 +379,13 @@ declare module '@tanstack/react-router' {
       path: '/capture'
       fullPath: '/capture'
       preLoaderRoute: typeof CaptureRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/compliance-ops': {
+      id: '/compliance-ops'
+      path: '/compliance-ops'
+      fullPath: '/compliance-ops'
+      preLoaderRoute: typeof ComplianceOpsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/data-analysis': {
@@ -391,6 +437,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof QuoteRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/service': {
+      id: '/service'
+      path: '/service'
+      fullPath: '/service'
+      preLoaderRoute: typeof ServiceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/tasks': {
       id: '/tasks'
       path: '/tasks'
@@ -432,6 +485,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/leads/$leadId'
       preLoaderRoute: typeof LeadsLeadIdRouteImport
       parentRoute: typeof LeadsRoute
+    }
+    '/service-estimate/$token': {
+      id: '/service-estimate/$token'
+      path: '/service-estimate/$token'
+      fullPath: '/service-estimate/$token'
+      preLoaderRoute: typeof ServiceEstimateTokenRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/auth/$': {
       id: '/api/auth/$'
@@ -488,6 +548,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   CalendarRoute: CalendarRoute,
   CaptureRoute: CaptureRoute,
+  ComplianceOpsRoute: ComplianceOpsRoute,
   DataAnalysisRoute: DataAnalysisRoute,
   HelpRoute: HelpRoute,
   InventoryRoute: InventoryRoute,
@@ -495,10 +556,12 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   PipelineRoute: PipelineRoute,
   QuoteRoute: QuoteRoute,
+  ServiceRoute: ServiceRoute,
   TasksRoute: TasksRoute,
   ApiHealthRoute: ApiHealthRoute,
   CreditAppTokenRoute: CreditAppTokenRoute,
   CreditDocsTokenRoute: CreditDocsTokenRoute,
+  ServiceEstimateTokenRoute: ServiceEstimateTokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCronImportEmailsRoute: ApiCronImportEmailsRoute,
   ApiCronRemindersRoute: ApiCronRemindersRoute,

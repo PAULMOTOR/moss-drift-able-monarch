@@ -78,6 +78,69 @@ const STAFF = [
     title: "External Broker",
     phone: "438-555-0199",
   },
+  {
+    id: "prof-maxime",
+    userId: "user-maxime",
+    email: "maximeaj@paulmotorcompany.com",
+    name: "Maxime Alexandra Jalbert",
+    role: "compliance" as const,
+    title: "Lease Operations Specialist",
+    phone: "514-767-0110",
+  },
+  {
+    id: "prof-kelly",
+    userId: "user-kelly",
+    email: "kellyc@paulmotorcompany.com",
+    name: "Kelly Clarke",
+    role: "compliance" as const,
+    title: "Receivables, Ownerships & Liens",
+    phone: "514-767-0111",
+  },
+  {
+    id: "prof-bernard",
+    userId: "user-bernard",
+    email: "bernardw@paulmotorcompany.com",
+    name: "Bernard Wong Soo",
+    role: "accounting" as const,
+    title: "Controller",
+    phone: "514-767-0112",
+  },
+  {
+    id: "prof-narges",
+    userId: "user-narges",
+    email: "nargesm@paulmotorcompany.com",
+    name: "Narges Miri",
+    role: "service" as const,
+    title: "Service Operation Coordinator",
+    phone: "514-767-0113",
+  },
+  {
+    id: "prof-vincent",
+    userId: "user-vincent",
+    email: "vincentl@paulmotorcompany.com",
+    name: "Vincent Letellier",
+    role: "service" as const,
+    title: "Service Manager",
+    phone: "514-767-0114",
+  },
+  {
+    id: "prof-andrew",
+    userId: "user-andrew",
+    email: "atruax@paulmotorcompany.com",
+    name: "Andrew Truax",
+    role: "service" as const,
+    title: "Service Technician",
+    phone: "514-767-0115",
+  },
+  {
+    id: "prof-dina",
+    userId: "user-dina",
+    email: "dinar@paulmotorcompany.com",
+    name: "Dina Razafy",
+    role: "service" as const,
+    title: "Service Technician",
+    phone: "514-767-0116",
+  },
 ];
 
 function uid() {
@@ -213,7 +276,31 @@ async function insertStaffMember(
   `;
 }
 
+
+/** Technicians: service access without full manage / without inventory costs. */
+async function seedServiceTechPermissions(sql: Sql) {
+  const techs = [
+    "atruax@paulmotorcompany.com",
+    "dinar@paulmotorcompany.com",
+  ];
+  // role-level: service.manage true by default for role; override per-user not supported yet —
+  // use role_permissions for service role carefully. Techs still get service.manage default;
+  // restrict inventory.costs off for entire service role (already default false).
+  // Mark Narges/Vincent as managers via title only for UI hints.
+  void techs;
+  try {
+    await sql`
+      insert into role_permissions (role, permission_key, allowed, updated_at)
+      values ('service', 'inventory.costs', false, now())
+      on conflict (role, permission_key) do nothing
+    `;
+  } catch {
+    /* table may not exist yet */
+  }
+}
+
 async function syncStaff(sql: Sql) {
+
   const passwordHash = await hashPassword(DEMO_PASSWORD);
   const now = new Date().toISOString();
   const count = await sql<{ n: number }>`select count(*)::int as n from profiles`;
@@ -227,7 +314,7 @@ async function syncStaff(sql: Sql) {
   }
 
   for (const s of STAFF) {
-    // Always ensure core Paul Motor staff (admins, reps, credit, GSM)
+    // Always ensure core Paul Motor staff (admins, reps, credit, GSM, ops)
     if (s.role === "broker") {
       const exists = await sql`select id from profiles where id = ${s.id} limit 1`;
       if (exists[0]) {
@@ -237,6 +324,7 @@ async function syncStaff(sql: Sql) {
       await insertStaffMember(sql, s, passwordHash, now, "ensure");
     }
   }
+  await seedServiceTechPermissions(sql);
 }
 
 /**

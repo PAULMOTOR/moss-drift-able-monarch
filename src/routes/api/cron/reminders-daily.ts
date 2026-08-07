@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { getSql } from "@/lib/db";
 import { ensureCrmSeeded } from "@/lib/crm/seed";
 import { releaseExpiredPauses, runDailyRepBatch } from "@/lib/crm/reminders";
+import { runComplianceOpsReminders } from "@/lib/crm/compliance-ops";
 
 async function handle(request: Request) {
   const secret = process.env.CRON_SECRET?.trim();
@@ -28,7 +29,8 @@ async function handle(request: Request) {
     await ensureCrmSeeded(sql);
     const released = await releaseExpiredPauses(sql);
     const daily = await runDailyRepBatch(sql);
-    return new Response(JSON.stringify({ ok: true, released, daily }, null, 2), {
+    const complianceOps = await runComplianceOpsReminders(sql);
+    return new Response(JSON.stringify({ ok: true, released, daily, complianceOps }, null, 2), {
       status: 200,
       headers: { "content-type": "application/json" },
     });

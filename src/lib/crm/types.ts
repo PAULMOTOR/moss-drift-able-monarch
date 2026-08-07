@@ -1,4 +1,13 @@
-export const ROLES = ["admin", "rep", "broker", "gsm", "credit_manager"] as const;
+export const ROLES = [
+  "admin",
+  "rep",
+  "broker",
+  "gsm",
+  "credit_manager",
+  "compliance",
+  "accounting",
+  "service",
+] as const;
 export type Role = (typeof ROLES)[number];
 
 export const STAGES = [
@@ -221,6 +230,7 @@ export type Profile = {
   active: boolean;
   phone: string | null;
   title: string | null;
+  avatar_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -451,7 +461,243 @@ export const ROLE_LABELS: Record<Role, string> = {
   broker: "Broker",
   gsm: "General Sales Manager",
   credit_manager: "Credit Manager",
+  compliance: "Compliance",
+  accounting: "Accounting",
+  service: "Service",
 };
+
+/** App permission keys — admins toggle per role in Admin → Access. */
+export const PERMISSION_KEYS = [
+  { key: "leads.early", label: "Early-stage leads (New → Quote)", group: "Leads" },
+  { key: "leads.late", label: "Late-stage leads (Accepted → Won)", group: "Leads" },
+  { key: "leads.create", label: "Create / capture leads", group: "Leads" },
+  { key: "pipeline.access", label: "Pipeline boards", group: "Sales" },
+  { key: "quote.access", label: "Lease quote builder", group: "Sales" },
+  { key: "credit.access", label: "Credit underwriting", group: "Credit" },
+  { key: "compliance.ops", label: "Compliance ops (title, ownership, tracker)", group: "Compliance" },
+  { key: "liens.manage", label: "Register & track vehicle liens", group: "Compliance" },
+  { key: "service.access", label: "Service department", group: "Service" },
+  { key: "service.manage", label: "Manage work orders & estimates", group: "Service" },
+  { key: "inventory.view", label: "View inventory", group: "Inventory" },
+  { key: "inventory.costs", label: "See vehicle costs / prices", group: "Inventory" },
+  { key: "calendar.team", label: "Team calendar (all events)", group: "Calendar" },
+  { key: "tasks.access", label: "Personal tasks", group: "Calendar" },
+  { key: "data.analysis", label: "Data analysis", group: "Admin" },
+  { key: "admin.access", label: "Admin area", group: "Admin" },
+] as const;
+
+export type PermissionKey = (typeof PERMISSION_KEYS)[number]["key"];
+
+/** Default grants when a role has no row in role_permissions. */
+export const DEFAULT_ROLE_PERMISSIONS: Record<Role, PermissionKey[]> = {
+  admin: PERMISSION_KEYS.map((p) => p.key),
+  rep: [
+    "leads.early",
+    "leads.late",
+    "leads.create",
+    "pipeline.access",
+    "quote.access",
+    "credit.access",
+    "inventory.view",
+    "inventory.costs",
+    "calendar.team",
+    "tasks.access",
+  ],
+  broker: [
+    "leads.early",
+    "leads.late",
+    "leads.create",
+    "pipeline.access",
+    "quote.access",
+    "inventory.view",
+    "tasks.access",
+  ],
+  gsm: [
+    "leads.early",
+    "leads.late",
+    "leads.create",
+    "pipeline.access",
+    "quote.access",
+    "credit.access",
+    "compliance.ops",
+    "inventory.view",
+    "inventory.costs",
+    "calendar.team",
+    "tasks.access",
+    "data.analysis",
+  ],
+  credit_manager: [
+    "leads.late",
+    "pipeline.access",
+    "credit.access",
+    "inventory.view",
+    "calendar.team",
+    "tasks.access",
+  ],
+  compliance: [
+    "leads.late",
+    "pipeline.access",
+    "compliance.ops",
+    "liens.manage",
+    "inventory.view",
+    "calendar.team",
+    "tasks.access",
+  ],
+  accounting: [
+    "leads.early",
+    "leads.late",
+    "pipeline.access",
+    "quote.access",
+    "credit.access",
+    "compliance.ops",
+    "liens.manage",
+    "service.access",
+    "service.manage",
+    "inventory.view",
+    "inventory.costs",
+    "calendar.team",
+    "tasks.access",
+    "data.analysis",
+  ],
+  service: [
+    "service.access",
+    "service.manage",
+    "inventory.view",
+    "calendar.team",
+    "tasks.access",
+  ],
+};
+
+/** Stages considered early (hidden from compliance-only early restriction). */
+export const EARLY_LEAD_STAGES = ["new", "contacted", "paused", "quote_sent"] as const;
+export const LATE_LEAD_STAGES = [
+  "lease_accepted",
+  "credit_review",
+  "ready_bc",
+  "won",
+  "lost",
+] as const;
+
+export type ServiceWorkOrderStatus =
+  | "draft"
+  | "estimate"
+  | "pending_approval"
+  | "approved"
+  | "in_progress"
+  | "parts_ordered"
+  | "completed"
+  | "invoiced"
+  | "cancelled";
+
+export type ServiceWorkOrder = {
+  id: string;
+  wo_number: string;
+  inventory_id: string | null;
+  vin: string | null;
+  vehicle_label: string | null;
+  customer_name: string | null;
+  customer_email: string | null;
+  customer_phone: string | null;
+  lead_id: string | null;
+  status: ServiceWorkOrderStatus | string;
+  description: string | null;
+  bay: string | null;
+  assigned_to: string | null;
+  assigned_name?: string | null;
+  created_by: string | null;
+  scheduled_at: string | null;
+  completed_at: string | null;
+  labor_hours: number | null;
+  parts_total: number | null;
+  labor_total: number | null;
+  tax_total: number | null;
+  grand_total: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ServiceEstimate = {
+  id: string;
+  work_order_id: string;
+  version: number;
+  line_items_json: string;
+  subtotal: number | null;
+  tax: number | null;
+  total: number | null;
+  notes: string | null;
+  status: string;
+  customer_token: string | null;
+  sent_to_email: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ServiceInspection = {
+  id: string;
+  inventory_id: string | null;
+  vin: string;
+  vehicle_label: string | null;
+  work_order_id: string | null;
+  inspector_id: string | null;
+  inspector_name?: string | null;
+  status: string;
+  odometer: number | null;
+  findings_json: string;
+  notes: string | null;
+  vin_photo_name: string | null;
+  started_at: string;
+  completed_at: string | null;
+  created_at: string;
+};
+
+export type VehicleLien = {
+  id: string;
+  lead_id: string | null;
+  inventory_id: string | null;
+  vin: string | null;
+  vehicle_label: string | null;
+  lienholder: string | null;
+  registration_province: string | null;
+  registered_at: string | null;
+  registration_ref: string | null;
+  notes: string | null;
+  status: string;
+  signed_lease_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OwnershipRecord = {
+  id: string;
+  lead_id: string;
+  vin: string | null;
+  vehicle_label: string | null;
+  signed_at: string | null;
+  ownership_uploaded: boolean;
+  ownership_file_name: string | null;
+  title_emailed_at: string | null;
+  title_emailed_to: string | null;
+  title_bank: string | null;
+  notes: string | null;
+  lead_name?: string | null;
+};
+
+export const TITLE_BANKS = [
+  { id: "cibc", label: "CIBC", email: "mailbox.waomail@cibc.com" },
+  { id: "rbc", label: "RBC", email: "" },
+  { id: "bmo", label: "BMO", email: "" },
+  { id: "other", label: "Other", email: "" },
+] as const;
+
+export const SERVICE_BAYS = [
+  { id: "lift_1", label: "Lift 1" },
+  { id: "lift_2", label: "Lift 2" },
+  { id: "lift_mobile", label: "Mobile lift" },
+  { id: "detail", label: "Detail bay" },
+  { id: "lot", label: "Lot / other" },
+] as const;
+
 
 export type CreditAppStatus =
   | "draft"

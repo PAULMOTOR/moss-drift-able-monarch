@@ -11,7 +11,9 @@ import {
   Menu,
   Package,
   Shield,
+  ShieldCheck,
   Users,
+  Wrench,
   X,
   Zap,
 } from "lucide-react";
@@ -32,22 +34,47 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { changeOwnPassword, getMyProfile } from "@/lib/crm/server";
-import type { Profile } from "@/lib/crm/types";
+import { changeOwnPassword, getMyProfile, updateOwnAvatar } from "@/lib/crm/server";
+import { getMyPermissions } from "@/lib/crm/permissions";
+import { ROLE_LABELS, type PermissionKey, type Profile } from "@/lib/crm/types";
 import { cn } from "@/lib/utils";
 
-const baseNav = [
-  { to: "/capture", label: "New Lead", icon: Zap, primary: true },
-  { to: "/", label: "Home", icon: LayoutDashboard },
-  { to: "/leads", label: "Leads", icon: Users },
-  { to: "/pipeline", label: "Pipeline", icon: Columns3 },
-  { to: "/calendar", label: "Calendar", icon: CalendarDays },
-  { to: "/tasks", label: "Tasks", icon: ListTodo },
-  { to: "/quote", label: "Lease quote", icon: Calculator },
-  { to: "/inventory", label: "Inventory", icon: Package },
-  { to: "/help", label: "Help", icon: HelpCircle },
-] as const;
+type NavItem = {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  primary?: boolean;
+  perm?: PermissionKey | PermissionKey[];
+  roles?: Profile["role"][];
+};
 
+const baseNav: NavItem[] = [
+  { to: "/capture", label: "New Lead", icon: Zap, primary: true, perm: "leads.create" },
+  { to: "/", label: "Home", icon: LayoutDashboard },
+  { to: "/leads", label: "Leads", icon: Users, perm: ["leads.early", "leads.late"] },
+  { to: "/pipeline", label: "Pipeline", icon: Columns3, perm: "pipeline.access" },
+  { to: "/calendar", label: "Calendar", icon: CalendarDays },
+  { to: "/tasks", label: "Tasks", icon: ListTodo, perm: "tasks.access" },
+  { to: "/quote", label: "Lease quote", icon: Calculator, perm: "quote.access" },
+  { to: "/inventory", label: "Inventory", icon: Package, perm: "inventory.view" },
+  { to: "/service", label: "Service", icon: Wrench, perm: "service.access" },
+  {
+    to: "/compliance-ops",
+    label: "Compliance ops",
+    icon: ShieldCheck,
+    perm: ["compliance.ops", "liens.manage"],
+  },
+  { to: "/help", label: "Help", icon: HelpCircle },
+];
+
+
+function canSeeNav(item: NavItem, role: Profile["role"], perms: Set<string>) {
+  if (role === "admin") return true;
+  if (item.roles && !item.roles.includes(role)) return false;
+  if (!item.perm) return true;
+  const keys = Array.isArray(item.perm) ? item.perm : [item.perm];
+  return keys.some((k) => perms.has(k));
+}
 
 export function AppShell({
   children,
@@ -63,15 +90,26 @@ export function AppShell({
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [pwBusy, setPwBusy] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState(profile.avatar_url);
+  const [perms, setPerms] = useState<Set<string>>(new Set());
   const changePw = useServerFn(changeOwnPassword);
-  const nav = [
-    ...baseNav,
-    ...(profile.role === "admin" || profile.role === "gsm"
-      ? ([{ to: "/data-analysis", label: "Data analysis", icon: BarChart3, primary: false }] as const)
-      : []),
-    ...(profile.role === "admin"
-      ? ([{ to: "/admin", label: "Admin", icon: Shield, primary: false }] as const)
-      : []),
+  const updateAvatar = useServerFn(updateOwnAvatar);
+
+  useEffect(() => {
+    setAvatarUrl(profile.avatar_url);
+    void getMyPermissions()
+      .then((r) => setPerms(new Set(r.permissions)))
+      .catch(() => setPerms(new Set()));
+  }, [profile.id, profile.avatar_url]);
+
+  const nav: NavItem[] = [
+    ...baseNav.filter((item) => canSeeNav(item, profile.role, perms)),
+    ...((profile.role === "admin" || profile.role === "gsm" || perms.has("data.analysis")
+      ? [{ to: "/data-analysis", label: "Data analysis", icon: BarChart3 }]
+      : []) as NavItem[]),
+    ...((profile.role === "admin"
+      ? [{ to: "/admin", label: "Admin", icon: Shield }]
+      : []) as NavItem[]),
   ];
 
   async function submitPassword() {
@@ -149,12 +187,58 @@ export function AppShell({
         </nav>
 
         <div className="border-t border-sidebar-border p-3">
-          <div className="mb-2 rounded-sm border border-border bg-muted/50 px-3 py-2">
-            <p className="truncate text-sm font-semibold">{profile.name}</p>
-            <p className="truncate text-[11px] capitalize text-muted-foreground">
-              {profile.role}
-              {profile.title ? ` · ${profile.title}` : ""}
-            </p>
+          <div className="mb-2 flex items-center gap-2 rounded-sm border border-border bg-muted/50 px-2 py-2">
+            <label className="relative shrink-0 cursor-pointer" title="Change profile photo">
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  className="size-10 rounded-full border border-border object-cover"
+                />
+              ) : (
+                <div className="flex size-10 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-foreground">
+                  {profile.name
+                    .split(" ")
+                    .map((p) => p[0])
+                    .join("")
+                    .slice(0, 2)
+                    .toUpperCase()}
+                </div>
+              )}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  if (f.size > 1_200_000) {
+                    toast.error("Use a photo under ~1MB");
+                    return;
+                  }
+                  try {
+                    const dataUrl = await new Promise<string>((res, rej) => {
+                      const r = new FileReader();
+                      r.onload = () => res(String(r.result));
+                      r.onerror = () => rej(new Error("read failed"));
+                      r.readAsDataURL(f);
+                    });
+                    const updated = await updateAvatar({ data: { avatar_url: dataUrl } });
+                    setAvatarUrl(updated.avatar_url);
+                    toast.success("Profile photo updated");
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : "Upload failed");
+                  }
+                }}
+              />
+            </label>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">{profile.name}</p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {ROLE_LABELS[profile.role] || profile.role}
+                {profile.title ? ` · ${profile.title}` : ""}
+              </p>
+            </div>
           </div>
           <Button
             type="button"

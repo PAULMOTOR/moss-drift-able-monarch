@@ -96,7 +96,7 @@ async function requireProfile(userId: string): Promise<Profile> {
   const sql = await getSql();
   const rows = await sql<Profile>`
     select id, user_id, email, name, role, active, phone, title,
-           created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
     from profiles where user_id = ${userId} limit 1
   `;
   const p = rows[0];
@@ -696,6 +696,8 @@ export const approveDealGsm = createServerFn({ method: "POST" })
     if (data.approve) {
       const { ensureComplianceChecklist } = await import("./compliance");
       await ensureComplianceChecklist(sql, data.leadId);
+      const { ensureOpsTrackingForLead } = await import("./compliance-ops");
+      await ensureOpsTrackingForLead(sql, data.leadId);
     }
 
     const lead = await sql<{ name: string; assigned_to: string | null }>`

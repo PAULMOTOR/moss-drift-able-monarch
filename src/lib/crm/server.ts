@@ -3,6 +3,7 @@ import { hashPassword, verifyPassword } from "better-auth/crypto";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { ensureCrmSeeded, syncRealInventory } from "./seed";
+import { permissionsForRole } from "./permissions";
 import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
@@ -104,7 +105,7 @@ async function requireProfile(userId: string): Promise<Profile> {
   const sql = await boot();
   const rows = await sql<Profile>`
     select id, user_id, email, name, role, active, phone, title,
-           created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
     from profiles where user_id = ${userId} limit 1
   `;
   const p = rows[0];
@@ -124,7 +125,13 @@ function isAdminRole(p: Profile): boolean {
 
 /** Staff who see all leads (not ownership-scoped). */
 function isElevatedStaff(p: Profile): boolean {
-  return p.role === "admin" || p.role === "gsm" || p.role === "credit_manager";
+  return (
+    p.role === "admin" ||
+    p.role === "gsm" ||
+    p.role === "credit_manager" ||
+    p.role === "compliance" ||
+    p.role === "accounting"
+  );
 }
 
 
@@ -224,6 +231,33 @@ const leadSelect = `
     else null end as inventory_label
 `;
 
+
+export const updateOwnAvatar = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { avatar_url: string | null }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    const sql = await boot();
+    const url = data.avatar_url?.trim() || null;
+    if (url && url.length > 2_500_000) {
+      throw new Error("Image too large — use a smaller photo");
+    }
+    await sql`
+      update profiles set avatar_url = ${url}, updated_at = now() where id = ${me.id}
+    `;
+    if (me.user_id) {
+      await sql`
+        update "user" set image = ${url}, "updatedAt" = now() where id = ${me.user_id}
+      `;
+    }
+    const rows = await sql<Profile>`
+      select id, user_id, email, name, role, active, phone, title,
+             avatar_url, created_at::text as created_at, updated_at::text as updated_at
+      from profiles where id = ${me.id}
+    `;
+    return rows[0]!;
+  });
+
 export const getMyProfile = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => requireProfile(context.userId));
@@ -237,14 +271,14 @@ export const listProfiles = createServerFn({ method: "GET" })
     if (data.activeOnly === false) {
       return sql<Profile>`
         select id, user_id, email, name, role, active, phone, title,
-               created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
         from profiles order by
           case role when 'admin' then 0 when 'gsm' then 1 when 'credit_manager' then 2 when 'rep' then 3 else 4 end, name
       `;
     }
     return sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
-             created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
       from profiles where active = true
       order by case role when 'admin' then 0 when 'gsm' then 1 when 'credit_manager' then 2 when 'rep' then 3 else 4 end, name
     `;
@@ -254,11 +288,16 @@ export const listInventory = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .validator((data: { q?: string; status?: string } | undefined) => data ?? {})
   .handler(async ({ context, data }): Promise<InventoryItem[]> => {
-    await requireProfile(context.userId);
+    const me = await requireProfile(context.userId);
+    const perms = await permissionsForRole(me.role);
+    if (me.role !== "admin" && !perms.has("inventory.view")) {
+      throw new Error("Inventory access required");
+    }
+    const showCosts = me.role === "admin" || perms.has("inventory.costs");
     const sql = await boot();
     const q = data.q?.trim() ? `%${data.q.trim().toLowerCase()}%` : null;
     const status = data.status && data.status !== "all" ? data.status : null;
-    return sql<InventoryItem>`
+    const rows = await sql<InventoryItem>`
       select id, year, make, model, trim, vin, stock_number,
              price::float8 as price, mileage, exterior_color, interior_color,
              body_type, transmission, fuel_type, status, source,
@@ -277,6 +316,8 @@ export const listInventory = createServerFn({ method: "GET" })
         )
       order by price desc nulls last, make, model
     `;
+    if (showCosts) return rows;
+    return rows.map((r) => ({ ...r, price: null }));
   });
 
 export type InventoryInput = {
@@ -424,8 +465,20 @@ export const listLeads = createServerFn({ method: "GET" })
     const leadType = data.lead_type && data.lead_type !== "all" ? data.lead_type : null;
     const q = data.q?.trim() ? `%${data.q.trim().toLowerCase()}%` : null;
     const admin = isElevatedStaff(me);
+    const perms = await permissionsForRole(me.role);
+    const canEarly = me.role === "admin" || perms.has("leads.early");
+    const canLate = me.role === "admin" || perms.has("leads.late");
+    // Stage gate for roles like Compliance (late only)
+    const stageAllow: string[] | null =
+      canEarly && canLate
+        ? null
+        : canLate
+          ? ["lease_accepted", "credit_review", "ready_bc", "won", "lost"]
+          : canEarly
+            ? ["new", "contacted", "paused", "quote_sent", "lost"]
+            : [];
 
-    // Admins/GSM/Credit Manager may filter by any owner. Reps/brokers: self + unassigned.
+    // Admins/GSM/Credit/Compliance/Accounting may filter by any owner. Reps/brokers: self + unassigned.
     let assignedFilter: string | null = null;
     let unassignedOnly = false;
     if (admin) {
@@ -434,12 +487,14 @@ export const listLeads = createServerFn({ method: "GET" })
     } else {
       if (data.assigned === "unassigned") unassignedOnly = true;
       else if (data.assigned && data.assigned !== "all" && data.assigned !== me.id) {
-        // ignore other owners — empty via impossible filter
         assignedFilter = "__none__";
       } else if (data.assigned === me.id) {
         assignedFilter = me.id;
       }
-      // else "all" for non-admin => visibility clause only
+    }
+
+    if (stageAllow && stage && !stageAllow.includes(stage)) {
+      return [];
     }
 
     const rows = await sql.query<Record<string, unknown>>(
@@ -468,8 +523,12 @@ export const listLeads = createServerFn({ method: "GET" })
            or lower(coalesce(l.phone, '')) like $4
            or lower(coalesce(l.vehicle_interest, '')) like $4
          )
+         and (
+           $8::text[] is null
+           or l.stage = any($8::text[])
+         )
        order by l.updated_at desc`,
-      [stage, assignedFilter, leadType, q, admin, me.id, unassignedOnly],
+      [stage, assignedFilter, leadType, q, admin, me.id, unassignedOnly, stageAllow],
     );
     return rows.map(mapLead);
   });
@@ -502,6 +561,23 @@ export const getLead = createServerFn({ method: "GET" })
       const assignedTo = (rows[0].assigned_to as string | null) ?? null;
       if (!canAccessLead(me, assignedTo)) {
         throw new Error("You do not have access to this lead");
+      }
+      const perms = await permissionsForRole(me.role);
+      const stage = String(rows[0].stage || "");
+      const early = ["new", "contacted", "paused", "quote_sent"].includes(stage);
+      if (me.role !== "admin") {
+        if (early && !perms.has("leads.early")) {
+          throw new Error("Your role cannot open early-stage leads");
+        }
+        if (!early && !perms.has("leads.late") && stage !== "lost") {
+          // lost allowed if either early or late
+          if (!perms.has("leads.early") && !perms.has("leads.late")) {
+            throw new Error("Your role cannot open leads");
+          }
+          if (!perms.has("leads.late")) {
+            throw new Error("Your role cannot open late-stage leads");
+          }
+        }
       }
       const activities = await sql<LeadActivity>`
         select id, lead_id, kind, body, created_by, created_by_name,
@@ -1592,7 +1668,7 @@ export const adminCreateUser = createServerFn({ method: "POST" })
     `;
     const rows = await sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
-             created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
       from profiles where id = ${profileId}
     `;
     return rows[0]!;
@@ -1617,7 +1693,7 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
     const sql = await boot();
     const prev = await sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
-             created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
       from profiles where id = ${data.id}
     `;
     if (!prev[0]) throw new Error("User not found");
@@ -1688,7 +1764,7 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
 
     const rows = await sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
-             created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
       from profiles where id = ${data.id}
     `;
     return rows[0]!;
@@ -1833,7 +1909,7 @@ export const adminDeleteUser = createServerFn({ method: "POST" })
     const sql = await boot();
     const rows = await sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
-             created_at::text as created_at, updated_at::text as updated_at
+           avatar_url, created_at::text as created_at, updated_at::text as updated_at
       from profiles where id = ${profileId}
     `;
     const p = rows[0];
