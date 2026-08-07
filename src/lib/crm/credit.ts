@@ -8,12 +8,16 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import {
   CUSTOMER_CHECKLIST,
+  LESSEE_DOC_TYPES,
   VEHICLE_CHECKLIST,
+  checklistDef,
+  lesseeDocLabel,
   type CreditApplication,
   type CreditChecklistItem,
   type CreditDocument,
   type CreditDocumentKind,
   type CreditPayload,
+  type LesseeDocTypeKey,
   type Profile,
 } from "./types";
 
@@ -111,16 +115,59 @@ async function seedChecklist(sql: Awaited<ReturnType<typeof getSql>>, appId: str
     await sql`
       insert into credit_checklist (id, application_id, section, item_key, label, notes, done)
       values (${uid()}, ${appId}, 'vehicle', ${item.key}, ${item.label}, '', false)
-      on conflict (application_id, item_key) do nothing
+      on conflict (application_id, item_key) do update set label = excluded.label
     `;
   }
   for (const item of CUSTOMER_CHECKLIST) {
     await sql`
       insert into credit_checklist (id, application_id, section, item_key, label, notes, done)
       values (${uid()}, ${appId}, 'customer', ${item.key}, ${item.label}, '', false)
-      on conflict (application_id, item_key) do nothing
+      on conflict (application_id, item_key) do update set label = excluded.label
     `;
   }
+}
+
+/** Section complete = all non-optional items done. */
+async function refreshChecklistComplete(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  applicationId: string,
+) {
+  const rows = await sql<{ section: string; item_key: string; done: boolean }>`
+    select section, item_key, done from credit_checklist
+    where application_id = ${applicationId}
+  `;
+  const vehKeys = new Set(
+    VEHICLE_CHECKLIST.filter((i) => !i.optionalForComplete).map((i) => i.key),
+  );
+  const custKeys = new Set(
+    CUSTOMER_CHECKLIST.filter((i) => !i.optionalForComplete).map((i) => i.key),
+  );
+  const byKey = new Map(rows.map((r) => [r.item_key, r]));
+  let vehOk = vehKeys.size > 0;
+  for (const k of vehKeys) {
+    if (!byKey.get(k)?.done) {
+      vehOk = false;
+      break;
+    }
+  }
+  let custOk = custKeys.size > 0;
+  for (const k of custKeys) {
+    if (!byKey.get(k)?.done) {
+      custOk = false;
+      break;
+    }
+  }
+  await sql`
+    update credit_applications set
+      vehicle_checklist_complete = ${vehOk},
+      customer_checklist_complete = ${custOk},
+      status = case
+        when status in ('approved', 'declined', 'cancelled', 'pending_gsm') then status
+        else 'in_review'
+      end,
+      updated_at = now()
+    where id = ${applicationId}
+  `;
 }
 
 async function getOrCreateApp(sql: Awaited<ReturnType<typeof getSql>>, leadId: string, meId: string) {
@@ -128,7 +175,11 @@ async function getOrCreateApp(sql: Awaited<ReturnType<typeof getSql>>, leadId: s
     `select * from credit_applications where lead_id = $1 order by created_at desc limit 1`,
     [leadId],
   );
-  if (existing[0]) return mapApp(existing[0]);
+  if (existing[0]) {
+    const app = mapApp(existing[0]);
+    await seedChecklist(sql, app.id);
+    return app;
+  }
   const id = uid();
   const pub = token();
   await sql`
@@ -185,7 +236,12 @@ export const getCreditPackage = createServerFn({ method: "GET" })
       from credit_checklist where application_id = ${app.id}
       order by section, item_key
     `;
-    // Omit heavy equifax blob from package list (still available as document if uploaded)
+    // Stable sort by checklist definition order
+    const order = new Map<string, number>();
+    VEHICLE_CHECKLIST.forEach((i, idx) => order.set(i.key, idx));
+    CUSTOMER_CHECKLIST.forEach((i, idx) => order.set(i.key, 100 + idx));
+    checklist.sort((a, b) => (order.get(a.item_key) ?? 999) - (order.get(b.item_key) ?? 999));
+
     const application: CreditApplication = {
       ...app,
       equifax_file_data: null,
@@ -208,6 +264,9 @@ export const getCreditPackage = createServerFn({ method: "GET" })
       application,
       documents: docs,
       checklist,
+      vehicleDefs: VEHICLE_CHECKLIST,
+      customerDefs: CUSTOMER_CHECKLIST,
+      lesseeDocTypes: [...LESSEE_DOC_TYPES],
       appLink: app.public_token ? `${appBaseUrl()}/credit-app/${app.public_token}` : null,
       docLink: app.doc_request_token
         ? `${appBaseUrl()}/credit-docs/${app.doc_request_token}`
@@ -315,13 +374,14 @@ export const requestCreditReview = createServerFn({ method: "POST" })
     const me = await requireProfile(context.userId);
     const sql = await getSql();
     const app = await getOrCreateApp(sql, data.leadId, me.id);
+    const doNotPull = Boolean(data.doNotPullCredit);
     await sql`
       update credit_applications set
         status = 'credit_requested',
         credit_requested_at = now(),
         credit_requested_by = ${me.id},
         credit_request_notes = ${data.notes?.trim() || null},
-        do_not_pull_credit = ${Boolean(data.doNotPullCredit)},
+        do_not_pull_credit = ${doNotPull},
         equifax_file_name = ${data.equifaxFileName || null},
         equifax_file_data = ${data.equifaxFileData || null},
         updated_at = now()
@@ -341,8 +401,8 @@ export const requestCreditReview = createServerFn({ method: "POST" })
     await sql`
       update leads set
         credit_status = 'credit_requested',
-        stage = case when stage in ('new','contacted','paused','quote_sent') then 'credit_review' else stage end,
-        stage_entered_at = case when stage in ('new','contacted','paused','quote_sent') then now() else stage_entered_at end,
+        stage = case when stage in ('new','contacted','paused','quote_sent','lease_accepted') then 'credit_review' else stage end,
+        stage_entered_at = case when stage in ('new','contacted','paused','quote_sent','lease_accepted') then now() else stage_entered_at end,
         updated_at = now()
       where id = ${data.leadId}
     `;
@@ -352,21 +412,38 @@ export const requestCreditReview = createServerFn({ method: "POST" })
     `;
     const lead = await sql<{ name: string }>`select name from leads where id = ${data.leadId}`;
     const link = `${appBaseUrl()}/leads/${data.leadId}?tab=credit`;
+    const clientName = lead[0]?.name || "Lead";
+    const subject = doNotPull
+      ? `DO NOT PULL CREDIT — ${clientName}`
+      : `Credit review requested — ${clientName}`;
+    const dnpBanner = doNotPull
+      ? `\n\n*** DO NOT PULL CREDIT on this file ***\nThe rep checked “Do not pull credit”. Use the attached Equifax (if any) or existing file only — do not run a new bureau pull.\n`
+      : "";
+    const dnpHtml = doNotPull
+      ? `<div style="background:#7f1d1d;color:#fff;padding:12px 16px;border-radius:4px;margin:12px 0;font-weight:700">
+DO NOT PULL CREDIT — the rep checked this box. Do not run a new bureau pull. Use existing Equifax only.
+</div>`
+      : "";
     for (const cm of cms) {
       await sendCrmEmail(sql, {
         to: cm.email,
-        subject: `Credit review requested — ${lead[0]?.name || "Lead"}`,
+        subject,
         kind: "credit_review_request",
         leadId: data.leadId,
-        text: `${me.name} requested credit approval for ${lead[0]?.name}.\n\nNotes: ${data.notes || "—"}\nDo not pull credit: ${data.doNotPullCredit ? "Yes" : "No"}\n\nOpen: ${link}`,
-        html: `<p><strong>${me.name}</strong> requested credit approval for <strong>${lead[0]?.name}</strong>.</p>
-<p>Notes: ${data.notes || "—"}<br/>Do not pull credit: ${data.doNotPullCredit ? "Yes" : "No"}</p>
+        text: `${me.name} requested credit approval for ${clientName}.${dnpBanner}\nNotes: ${data.notes || "—"}\nDo not pull credit: ${doNotPull ? "YES — DO NOT PULL" : "No"}\n\nOpen: ${link}`,
+        html: `<p><strong>${me.name}</strong> requested credit approval for <strong>${clientName}</strong>.</p>
+${dnpHtml}
+<p>Notes: ${data.notes || "—"}<br/>Do not pull credit: <strong>${doNotPull ? "YES — DO NOT PULL" : "No"}</strong></p>
 <p><a href="${link}">Open deal in CRM</a></p>`,
       });
     }
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
-      values (${uid()}, ${data.leadId}, 'credit', ${`Credit approval requested by ${me.name}`}, ${me.id}, ${me.name})
+      values (
+        ${uid()}, ${data.leadId}, 'credit',
+        ${`Credit approval requested by ${me.name}${doNotPull ? " · DO NOT PULL CREDIT" : ""}`},
+        ${me.id}, ${me.name}
+      )
     `;
     return { ok: true as const };
   });
@@ -391,12 +468,22 @@ export const updateChecklistItem = createServerFn({ method: "POST" })
       limit 1
     `;
     if (!items[0]) throw new Error("Checklist item not found");
-    const section = String((items[0] as { section: string }).section);
+    const section = String((items[0] as { section: string }).section) as "vehicle" | "customer";
     if (section === "vehicle" && !["admin", "rep", "gsm", "credit_manager"].includes(me.role)) {
       throw new Error("Only sales can fill vehicle checklist");
     }
     if (section === "customer" && !["admin", "credit_manager", "gsm"].includes(me.role)) {
       throw new Error("Only Credit Manager / Admin / GSM can fill customer checklist");
+    }
+    const def = checklistDef(section, data.itemKey);
+    if (data.done === true && def?.uploadRequired) {
+      const has = await sql<{ n: number }>`
+        select count(*)::int as n from credit_documents
+        where application_id = ${data.applicationId} and kind = ${data.itemKey}
+      `;
+      if ((has[0]?.n ?? 0) === 0) {
+        throw new Error("Upload a document on this line before marking it complete");
+      }
     }
     await sql`
       update credit_checklist set
@@ -406,21 +493,111 @@ export const updateChecklistItem = createServerFn({ method: "POST" })
         filled_at = now()
       where application_id = ${data.applicationId} and item_key = ${data.itemKey}
     `;
-    const veh = await sql<{ n: number; d: number }>`
-      select count(*)::int as n, count(*) filter (where done)::int as d
-      from credit_checklist where application_id = ${data.applicationId} and section = 'vehicle'
+    await refreshChecklistComplete(sql, data.applicationId);
+    return { ok: true as const };
+  });
+
+/** Staff upload attached to a checklist line (kind = item_key). */
+export const uploadChecklistDocument = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: {
+      leadId: string;
+      applicationId: string;
+      itemKey: string;
+      fileName: string;
+      mimeType?: string;
+      fileData: string;
+    }) => data,
+  )
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    const sql = await getSql();
+    const items = await sql<{ section: string }>`
+      select section from credit_checklist
+      where application_id = ${data.applicationId} and item_key = ${data.itemKey}
+      limit 1
     `;
-    const cust = await sql<{ n: number; d: number }>`
-      select count(*)::int as n, count(*) filter (where done)::int as d
-      from credit_checklist where application_id = ${data.applicationId} and section = 'customer'
-    `;
+    if (!items[0]) throw new Error("Checklist item not found");
+    const section = items[0].section as "vehicle" | "customer";
+    const def = checklistDef(section, data.itemKey);
+    if (!def?.needsUpload) throw new Error("This checklist line does not accept uploads");
+    if (section === "vehicle" && !["admin", "rep", "gsm", "credit_manager"].includes(me.role)) {
+      throw new Error("Not allowed");
+    }
+    if (section === "customer" && !["admin", "credit_manager", "gsm"].includes(me.role)) {
+      throw new Error("Not allowed");
+    }
+    if (data.fileData.length > 6_000_000) throw new Error("File too large (max ~4MB)");
+    const id = uid();
     await sql`
-      update credit_applications set
-        vehicle_checklist_complete = ${veh[0]!.n > 0 && veh[0]!.d === veh[0]!.n},
-        customer_checklist_complete = ${cust[0]!.n > 0 && cust[0]!.d === cust[0]!.n},
-        status = 'in_review',
-        updated_at = now()
-      where id = ${data.applicationId}
+      insert into credit_documents (
+        id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_by, uploaded_via
+      ) values (
+        ${id}, ${data.applicationId}, ${data.leadId}, ${data.itemKey},
+        ${data.fileName}, ${data.mimeType || "application/octet-stream"}, ${data.fileData},
+        ${me.id}, 'crm'
+      )
+    `;
+    // Auto-complete when upload is the signoff (required or optional bill of sale stays optional)
+    if (def.uploadRequired) {
+      await sql`
+        update credit_checklist set done = true, filled_by = ${me.id}, filled_at = now()
+        where application_id = ${data.applicationId} and item_key = ${data.itemKey}
+      `;
+      await refreshChecklistComplete(sql, data.applicationId);
+    }
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+      values (
+        ${uid()}, ${data.leadId}, 'credit',
+        ${`Uploaded ${data.fileName} for checklist: ${def.label}`},
+        ${me.id}, ${me.name}
+      )
+    `;
+    return { ok: true as const, id };
+  });
+
+/** GSM / Admin can remove a credit document. */
+export const deleteCreditDocument = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { documentId: string; leadId: string }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    if (!["admin", "gsm"].includes(me.role)) {
+      throw new Error("Only GSM or Admin can delete credit documents");
+    }
+    const sql = await getSql();
+    const rows = await sql<{ id: string; file_name: string; kind: string; application_id: string }>`
+      select id, file_name, kind, application_id from credit_documents
+      where id = ${data.documentId} and lead_id = ${data.leadId}
+      limit 1
+    `;
+    if (!rows[0]) throw new Error("Document not found");
+    await sql`delete from credit_documents where id = ${rows[0].id}`;
+    // If required-upload line lost its last file, uncheck it
+    const remaining = await sql<{ n: number }>`
+      select count(*)::int as n from credit_documents
+      where application_id = ${rows[0].application_id} and kind = ${rows[0].kind}
+    `;
+    if ((remaining[0]?.n ?? 0) === 0) {
+      const defV = checklistDef("vehicle", rows[0].kind);
+      const defC = checklistDef("customer", rows[0].kind);
+      if (defV?.uploadRequired || defC?.uploadRequired) {
+        await sql`
+          update credit_checklist set done = false
+          where application_id = ${rows[0].application_id} and item_key = ${rows[0].kind}
+        `;
+        await refreshChecklistComplete(sql, rows[0].application_id);
+      }
+    }
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+      values (
+        ${uid()}, ${data.leadId}, 'credit',
+        ${`Deleted document: ${rows[0].file_name} (${rows[0].kind}) by ${me.name}`},
+        ${me.id}, ${me.name}
+      )
     `;
     return { ok: true as const };
   });
@@ -435,7 +612,13 @@ export const requestGsmApproval = createServerFn({ method: "POST" })
     }
     const sql = await getSql();
     const app = await getOrCreateApp(sql, data.leadId, me.id);
-    if (!app.vehicle_checklist_complete || !app.customer_checklist_complete) {
+    await refreshChecklistComplete(sql, app.id);
+    const fresh = await sql.query<Record<string, unknown>>(
+      `select * from credit_applications where id = $1`,
+      [app.id],
+    );
+    const current = mapApp(fresh[0]!);
+    if (!current.vehicle_checklist_complete || !current.customer_checklist_complete) {
       throw new Error("Vehicle and customer checklist sections must both be complete first");
     }
     await sql`
@@ -455,7 +638,7 @@ export const requestGsmApproval = createServerFn({ method: "POST" })
       where active = true and role in ('gsm', 'admin')
     `;
     const lead = await sql<{ name: string }>`select name from leads where id = ${data.leadId}`;
-    const link = `${appBaseUrl()}/leads/${data.leadId}?tab=credit`;
+    const link = `${appBaseUrl()}/leads/${data.leadId}?tab=approval`;
     for (const r of recipients) {
       await sendCrmEmail(sql, {
         to: r.email,
@@ -472,7 +655,15 @@ export const requestGsmApproval = createServerFn({ method: "POST" })
 
 export const approveDealGsm = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((data: { leadId: string; notes?: string; approve: boolean }) => data)
+  .validator(
+    (data: {
+      leadId: string;
+      notes?: string;
+      approve: boolean;
+      /** On decline: who gets the reason email */
+      notify?: "sales" | "credit" | "both";
+    }) => data,
+  )
   .handler(async ({ context, data }) => {
     const me = await requireProfile(context.userId);
     if (!["admin", "gsm"].includes(me.role)) {
@@ -480,13 +671,17 @@ export const approveDealGsm = createServerFn({ method: "POST" })
     }
     const sql = await getSql();
     const app = await getOrCreateApp(sql, data.leadId, me.id);
+    const notes = data.notes?.trim() || "";
+    if (!data.approve && !notes) {
+      throw new Error("Please enter a decline reason");
+    }
     const status = data.approve ? "approved" : "declined";
     await sql`
       update credit_applications set
         status = ${status},
         approved_by = ${me.id},
         approved_at = now(),
-        approval_notes = ${data.notes?.trim() || null},
+        approval_notes = ${notes || null},
         updated_at = now()
       where id = ${app.id}
     `;
@@ -502,11 +697,63 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       const { ensureComplianceChecklist } = await import("./compliance");
       await ensureComplianceChecklist(sql, data.leadId);
     }
+
+    const lead = await sql<{ name: string; assigned_to: string | null }>`
+      select name, assigned_to from leads where id = ${data.leadId} limit 1
+    `;
+    const clientName = lead[0]?.name || "Deal";
+    const link = `${appBaseUrl()}/leads/${data.leadId}?tab=${data.approve ? "compliance" : "credit"}`;
+
+    if (!data.approve) {
+      const notify = data.notify || "both";
+      const recipients: { email: string; name: string; bucket: string }[] = [];
+      if (notify === "sales" || notify === "both") {
+        if (lead[0]?.assigned_to) {
+          const reps = await sql<{ email: string; name: string }>`
+            select email, name from profiles
+            where id = ${lead[0].assigned_to} and active = true limit 1
+          `;
+          if (reps[0]) recipients.push({ ...reps[0], bucket: "sales (vehicle)" });
+        }
+      }
+      if (notify === "credit" || notify === "both") {
+        const cms = await sql<{ email: string; name: string }>`
+          select email, name from profiles
+          where active = true and role in ('credit_manager', 'admin')
+        `;
+        for (const c of cms) {
+          if (!recipients.some((r) => r.email === c.email)) {
+            recipients.push({ ...c, bucket: "credit (customer)" });
+          }
+        }
+      }
+      const notifyLabel =
+        notify === "sales"
+          ? "Sales (vehicle portion)"
+          : notify === "credit"
+            ? "Credit Manager (customer portion)"
+            : "Sales + Credit Manager";
+      for (const r of recipients) {
+        await sendCrmEmail(sql, {
+          to: r.email,
+          subject: `Deal declined — ${clientName}`,
+          kind: "deal_declined",
+          leadId: data.leadId,
+          text: `GSM/Admin ${me.name} declined ${clientName}.\n\nReason:\n${notes}\n\nNotified: ${notifyLabel}\nYour area: ${r.bucket}\n\nOpen: ${link}`,
+          html: `<p><strong>${me.name}</strong> declined <strong>${clientName}</strong>.</p>
+<p><strong>Reason</strong></p>
+<p style="white-space:pre-wrap;border-left:3px solid #b91c1c;padding-left:12px">${notes.replace(/</g, "")}</p>
+<p style="font-size:13px;color:#555">Notified: ${notifyLabel}<br/>Your area: ${r.bucket}</p>
+<p><a href="${link}">Open deal in CRM</a></p>`,
+        });
+      }
+    }
+
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'credit',
-        ${`Deal ${status} by ${me.name}${data.notes ? `: ${data.notes}` : ""}${data.approve ? " · moved to Compliance" : ""}`},
+        ${`Deal ${status} by ${me.name}${notes ? `: ${notes}` : ""}${data.approve ? " · moved to Compliance" : data.notify ? ` · notified ${data.notify}` : ""}`},
         ${me.id}, ${me.name}
       )
     `;
@@ -516,15 +763,37 @@ export const approveDealGsm = createServerFn({ method: "POST" })
 export const requestLesseeDocument = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
-    (data: { leadId: string; kind: "noa_payslip" | "bank_statement"; email?: string }) => data,
+    (data: {
+      leadId: string;
+      /** One or more keys from LESSEE_DOC_TYPES (also accepts legacy noa_payslip / bank_statement). */
+      kinds: string[];
+      email?: string;
+    }) => data,
   )
   .handler(async ({ context, data }) => {
     const me = await requireProfile(context.userId);
+    if (!["admin", "credit_manager", "gsm", "rep"].includes(me.role)) {
+      throw new Error("Not allowed");
+    }
     const sql = await getSql();
     const app = await getOrCreateApp(sql, data.leadId, me.id);
+    const validKeys = new Set<string>([
+      ...LESSEE_DOC_TYPES.map((d) => d.key),
+      // legacy
+      "noa_payslip",
+      "bank_statement",
+    ]);
+    const kinds = [...new Set(data.kinds.map((k) => k.trim()).filter(Boolean))].filter((k) =>
+      validKeys.has(k),
+    );
+    if (kinds.length === 0) throw new Error("Select at least one document type");
+
     const docTok = app.doc_request_token || token();
     await sql`
-      update credit_applications set doc_request_token = ${docTok}, updated_at = now()
+      update credit_applications set
+        doc_request_token = ${docTok},
+        pending_doc_kinds = ${JSON.stringify(kinds)},
+        updated_at = now()
       where id = ${app.id}
     `;
     const leads = await sql<{ email: string; name: string; first_name: string | null }>`
@@ -532,20 +801,29 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
     `;
     const email = (data.email || leads[0]?.email || app.app_email || "").trim().toLowerCase();
     if (!email) throw new Error("Lessee email required");
-    const label =
-      data.kind === "noa_payslip" ? "NOA / payslips" : "Bank / financial statements";
-    const link = `${appBaseUrl()}/credit-docs/${docTok}?kind=${data.kind}`;
+
+    const labels = kinds.map((k) => {
+      if (k === "noa_payslip") return "NOA / payslips";
+      if (k === "bank_statement") return "Bank / financial statements";
+      return lesseeDocLabel(k as LesseeDocTypeKey);
+    });
+    const kindsParam = encodeURIComponent(kinds.join(","));
+    const link = `${appBaseUrl()}/credit-docs/${docTok}?kinds=${kindsParam}`;
+    const listText = labels.map((l) => `• ${l}`).join("\n");
+    const listHtml = labels.map((l) => `<li>${l}</li>`).join("");
+
     const mailResult = await sendCrmEmail(sql, {
       to: email,
-      subject: `Paul Motor Leasing — please upload ${label}`,
+      subject: `Paul Motor Leasing — please upload documents`,
       kind: "lessee_doc_request",
       leadId: data.leadId,
       profileId: me.id,
       fromName: clientFacingFromName(me.name),
       replyTo: replyToForActor(me.email, me.name),
-      text: `Hi,\n\nPlease upload ${label} for your lease application:\n${link}\n\nYou can reopen this link anytime to add more files until complete.\n\n— ${me.name}\nPaul Motor Leasing`,
-      html: `<p>Please upload <strong>${label}</strong> for your lease application.</p>
-<p><a href="${link}" style="background:#008272;color:#fff;padding:10px 16px;text-decoration:none;border-radius:4px">Upload document</a></p>
+      text: `Hi,\n\nPlease upload the following for your lease application:\n${listText}\n\n${link}\n\nYou can reopen this link anytime to add more files until complete.\n\n— ${me.name}\nPaul Motor Leasing`,
+      html: `<p>Please upload the following for your lease application:</p>
+<ul>${listHtml}</ul>
+<p><a href="${link}" style="background:#008272;color:#fff;padding:10px 16px;text-decoration:none;border-radius:4px">Upload documents</a></p>
 <p style="font-size:13px;color:#555">You can reopen this link anytime to add more files until the package is complete.</p>
 <p style="font-size:13px;color:#555">— ${me.name.replace(/</g, "")}<br/>Paul Motor Leasing</p>`,
     });
@@ -557,9 +835,13 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
     }
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
-      values (${uid()}, ${data.leadId}, 'credit', ${`Requested ${label} from lessee → ${email}`}, ${me.id}, ${me.name})
+      values (
+        ${uid()}, ${data.leadId}, 'credit',
+        ${`Requested docs from lessee (${labels.join(", ")}) → ${email}`},
+        ${me.id}, ${me.name}
+      )
     `;
-    return { ok: true as const, link, outboxId: mailResult.outboxId };
+    return { ok: true as const, link, kinds, outboxId: mailResult.outboxId };
   });
 
 // ——— Public (token) endpoints ———
@@ -659,6 +941,13 @@ export const savePublicCreditApp = createServerFn({ method: "POST" })
           updated_at = now()
         where id = ${app.lead_id}
       `;
+    } else if (data.submit) {
+      await sql`
+        update leads set
+          credit_status = 'app_submitted',
+          updated_at = now()
+        where id = ${app.lead_id}
+      `;
     }
     if (data.submit) {
       const lead = await sql.query<Record<string, unknown>>(
@@ -678,8 +967,8 @@ export const savePublicCreditApp = createServerFn({ method: "POST" })
         });
       }
       await sql`
-        insert into lead_activities (id, lead_id, kind, body, created_by_name)
-        values (${uid()}, ${app.lead_id}, 'credit', 'Lessee submitted credit application', 'Lessee portal')
+        insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+        values (${uid()}, ${app.lead_id}, 'credit', 'Lessee submitted credit application', null, 'Lessee portal')
       `;
     }
     return { ok: true as const, status };
@@ -711,11 +1000,12 @@ export const uploadPublicCreditDoc = createServerFn({ method: "POST" })
     if (!rows[0]) throw new Error("Invalid link");
     const app = mapApp(rows[0]);
     if (data.fileData.length > 6_000_000) throw new Error("File too large (max ~4MB)");
+    const kind = String(data.kind || "other").slice(0, 80);
     await sql`
       insert into credit_documents (
         id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
       ) values (
-        ${uid()}, ${app.id}, ${app.lead_id}, ${data.kind},
+        ${uid()}, ${app.id}, ${app.lead_id}, ${kind},
         ${data.fileName}, ${data.mimeType || "application/octet-stream"}, ${data.fileData},
         ${data.via === "doc" ? "lessee_doc_link" : "lessee_app"}
       )
@@ -763,14 +1053,25 @@ export const getPublicDocRequest = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const rows = await sql.query<Record<string, unknown>>(
-      `select a.id, a.lead_id, l.name from credit_applications a
+      `select a.id, a.lead_id, a.pending_doc_kinds, l.name from credit_applications a
        join leads l on l.id = a.lead_id
        where a.doc_request_token = $1 limit 1`,
       [data.token],
     );
     if (!rows[0]) throw new Error("Invalid or expired document link");
+    let pending: string[] = [];
+    try {
+      const raw = rows[0].pending_doc_kinds;
+      if (typeof raw === "string" && raw.trim()) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) pending = parsed.map(String);
+      }
+    } catch {
+      pending = [];
+    }
     return {
       leadName: String(rows[0].name),
       applicationId: String(rows[0].id),
+      pendingKinds: pending,
     };
   });

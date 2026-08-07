@@ -114,6 +114,7 @@ export function defaultLeadTab(lead: {
   const cs = (lead.credit_status || "none").toLowerCase();
   if (stage === "won" || stage === "ready_bc" || cs === "approved") return "compliance";
   if (cs === "pending_gsm") return "approval";
+  if (cs === "declined") return "credit";
   if (
     stage === "credit_review" ||
     [
@@ -123,7 +124,6 @@ export function defaultLeadTab(lead: {
       "ids_uploaded",
       "credit_requested",
       "in_review",
-      "declined",
     ].includes(cs)
   ) {
     return "credit";
@@ -466,14 +466,8 @@ export type CreditAppStatus =
   | "declined"
   | "cancelled";
 
-export type CreditDocumentKind =
-  | "dl_front"
-  | "dl_back"
-  | "id_second"
-  | "noa_payslip"
-  | "bank_statement"
-  | "equifax"
-  | "other";
+/** Free-form document kind (IDs, lessee requests, checklist uploads). */
+export type CreditDocumentKind = string;
 
 /** Serializable form answers (string values only — createServerFn requirement). */
 export type CreditPayload = Record<string, string>;
@@ -532,23 +526,100 @@ export type CreditChecklistItem = {
   filled_at: string | null;
 };
 
-export const VEHICLE_CHECKLIST: { key: string; label: string }[] = [
-  { key: "listing_pics", label: "Listing or pictures of the vehicle" },
+export type ChecklistDef = {
+  key: string;
+  label: string;
+  /** Staff can attach a supporting file on this line. */
+  needsUpload?: boolean;
+  /** Upload is required before marking done (signoff). */
+  uploadRequired?: boolean;
+  /** Not required for section complete / Request GSM. */
+  optionalForComplete?: boolean;
+};
+
+export const VEHICLE_CHECKLIST: ChecklistDef[] = [
+  {
+    key: "listing_pics",
+    label: "Listing & Pictures of Vehicle",
+    needsUpload: true,
+    uploadRequired: true,
+  },
   { key: "price_justified", label: "Selling price of the vehicle is justified" },
   { key: "vehicle_specs", label: "Understanding of the vehicle specs" },
   { key: "market_benchmark", label: "Market benchmark and future value assessed" },
-  { key: "carfax_lien", label: "Carfax and lien check verified" },
+  {
+    key: "carfax_lien",
+    label: "Carfax verified",
+    needsUpload: true,
+    uploadRequired: true,
+  },
   { key: "keys_verified", label: "Number of keys verified; second key will be sent" },
+  {
+    key: "bill_of_sale",
+    label: "Bill of Sale",
+    needsUpload: true,
+    optionalForComplete: true,
+  },
 ];
 
-export const CUSTOMER_CHECKLIST: { key: string; label: string }[] = [
-  { key: "ids_verified", label: "IDs received and verified" },
-  { key: "status_visa", label: "Customer has permanent status or VISA provided" },
-  { key: "equifax", label: "Equifax was pulled and verified" },
-  { key: "phone_interview", label: "Phone interview to verify customer information" },
-  { key: "address_ownership", label: "Address was verified and ownership checked" },
-  { key: "noa_payslips", label: "NOAs/payslips verified (optional)" },
-  { key: "bank_statements", label: "Bank/Financial statements verified (optional)" },
-  { key: "kyc", label: "KYC on the customer (Google, social, CanLII, etc.)" },
-  { key: "money_flow", label: "Understanding of how the customer makes and spends money" },
+export const CUSTOMER_CHECKLIST: ChecklistDef[] = [
+  { key: "ids_verified", label: "IDs received and verified", needsUpload: true },
+  {
+    key: "status_visa",
+    label: "Customer has permanent status or VISA provided",
+    needsUpload: true,
+  },
+  { key: "equifax", label: "Equifax was pulled and verified", needsUpload: true },
+  {
+    key: "phone_interview",
+    label: "Phone interview to verify customer information",
+  },
+  {
+    key: "address_ownership",
+    label: "Address was verified and ownership checked",
+    needsUpload: true,
+  },
+  {
+    key: "noa_payslips",
+    label: "NOAs/payslips verified (optional)",
+    needsUpload: true,
+  },
+  {
+    key: "bank_statements",
+    label: "Bank/Financial statements verified (optional)",
+    needsUpload: true,
+  },
+  {
+    key: "kyc",
+    label: "KYC on the customer (Google, social, CanLII, etc.)",
+    needsUpload: true,
+  },
+  {
+    key: "money_flow",
+    label: "Understanding of how the customer makes and spends money",
+  },
 ];
+
+/** Docs the Credit Manager can request from the lessee (generic request dialog). */
+export const LESSEE_DOC_TYPES = [
+  { key: "personal_bank_statements", label: "Personal bank statements" },
+  { key: "business_bank_statements", label: "Business bank statements" },
+  { key: "noas", label: "NOAs" },
+  { key: "tax_bill", label: "Tax bill" },
+  { key: "t4", label: "T4" },
+  { key: "mortgage_statement", label: "Mortgage statement" },
+  { key: "school_letter", label: "School Letter" },
+  { key: "visa_status", label: "VISA (student/work)" },
+  { key: "enrollment_letter", label: "Enrollment letter" },
+] as const;
+
+export type LesseeDocTypeKey = (typeof LESSEE_DOC_TYPES)[number]["key"];
+
+export function checklistDef(section: "vehicle" | "customer", key: string): ChecklistDef | undefined {
+  const list = section === "vehicle" ? VEHICLE_CHECKLIST : CUSTOMER_CHECKLIST;
+  return list.find((i) => i.key === key);
+}
+
+export function lesseeDocLabel(key: string) {
+  return LESSEE_DOC_TYPES.find((d) => d.key === key)?.label ?? key.replace(/_/g, " ");
+}
