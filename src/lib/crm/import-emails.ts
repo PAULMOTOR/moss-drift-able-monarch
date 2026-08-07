@@ -72,7 +72,9 @@ function extractFromAddress(from: string): string {
 
 /**
  * Find an open lead that is likely the same person + same car.
- * Open = not won/lost. Window = 90 days.
+ * Open = not won/lost. Window = 90 days (180 for website lease apps).
+ *
+ * Website lease applications always attach to an existing lead (person match only).
  */
 async function findDuplicateLead(
   sql: Sql,
@@ -82,13 +84,17 @@ async function findDuplicateLead(
     stock: string | null;
     vehicle: string | null;
     lead_type: LeadType;
+    /** Person-only match (any vehicle / type) — used for website lease apps. */
+    personOnly?: boolean;
   },
 ): Promise<{ id: string; name: string } | null> {
   const email = opts.email;
   const phone = opts.phone;
   if (!email && !phone) return null;
 
-  const candidates = await sql<{
+  const windowDays = opts.personOnly ? 180 : 90;
+
+  const candidates = await sql.query<{
     id: string;
     name: string;
     email: string | null;
@@ -97,21 +103,30 @@ async function findDuplicateLead(
     inventory_id: string | null;
     stock_number: string | null;
     lead_type: string;
-  }>`
-    select l.id, l.name, l.email, l.phone, l.vehicle_interest, l.inventory_id,
-           i.stock_number, l.lead_type
-    from leads l
-    left join inventory i on i.id = l.inventory_id
-    where l.stage not in ('won', 'lost')
-      and l.created_at > now() - interval '90 days'
-    order by l.updated_at desc
-    limit 80
-  `;
+  }>(
+    `select l.id, l.name, l.email, l.phone, l.vehicle_interest, l.inventory_id,
+            i.stock_number, l.lead_type
+     from leads l
+     left join inventory i on i.id = l.inventory_id
+     where l.stage not in ('won', 'lost')
+       and l.created_at > now() - make_interval(days => $1)
+     order by l.updated_at desc
+     limit 120`,
+    [windowDays],
+  );
 
   const wantStock = opts.stock;
   const wantVeh = opts.vehicle;
 
-  for (const c of candidates) {
+  const ordered = opts.personOnly
+    ? [...candidates].sort((a, b) => {
+        const rank = (t: string) =>
+          t === "inventory" ? 0 : t === "lease" ? 1 : t === "general" ? 3 : 2;
+        return rank(a.lead_type) - rank(b.lead_type);
+      })
+    : candidates;
+
+  for (const c of ordered) {
     const cPhone = normalizePhone(c.phone);
     const cEmail = normalizeEmail(c.email);
     const personMatch =
@@ -121,6 +136,10 @@ async function findDuplicateLead(
         (phone === cPhone || cPhone.endsWith(phone) || phone.endsWith(cPhone)));
 
     if (!personMatch) continue;
+
+    if (opts.personOnly) {
+      return { id: c.id, name: c.name };
+    }
 
     const cStock = stockKey(c.stock_number);
     if (wantStock && cStock && wantStock === cStock) {
@@ -145,9 +164,30 @@ async function findDuplicateLead(
     if (opts.lead_type === "general" && c.lead_type === "general") {
       return { id: c.id, name: c.name };
     }
+
+    if (
+      opts.lead_type === "lease" &&
+      (c.lead_type === "lease" || c.lead_type === "inventory")
+    ) {
+      return { id: c.id, name: c.name };
+    }
   }
 
   return null;
+}
+
+/** TAdvantage / website lease application forms — never open a new lead. */
+function isWebsiteLeaseApplication(
+  leadType: LeadType,
+  portal: EmailPortal,
+  rule: string,
+  source: string,
+): boolean {
+  if (leadType !== "lease") return false;
+  if (portal === "tadvantage") return true;
+  if (source === "web") return true;
+  if (/tadvantage:(financing|leasing)/i.test(rule)) return true;
+  return false;
 }
 
 async function matchInventory(
@@ -272,12 +312,20 @@ async function processMessage(
   const inv = await matchInventory(sql, stock, vehicle || null);
   if (inv && !vehicle) vehicle = inv.label;
 
+  const websiteLease = isWebsiteLeaseApplication(
+    leadType,
+    portal,
+    classified.rule,
+    source,
+  );
+
   const dup = await findDuplicateLead(sql, {
     email: customerEmail,
     phone: customerPhone,
     stock,
     vehicle: vehicleKey(vehicle),
     lead_type: leadType,
+    personOnly: websiteLease,
   });
 
   const notesParts = [
@@ -302,7 +350,9 @@ async function processMessage(
         updated_at = now()
       where id = ${dup.id}
     `;
-    const activityBody = `Duplicate email merged (same person + vehicle).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${(msg.bodyText || msg.snippet).slice(0, 1200)}`;
+    const activityBody = websiteLease
+      ? `Website lease application attached to existing lead (not a new lead).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${(msg.bodyText || msg.snippet).slice(0, 1200)}`
+      : `Duplicate email merged (same person + vehicle).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${(msg.bodyText || msg.snippet).slice(0, 1200)}`;
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by_name)
       values (
@@ -332,7 +382,31 @@ async function processMessage(
     };
   }
 
+  // Website lease apps always belong on an existing deal — never open a new lead
+  if (websiteLease) {
+    await sql`
+      insert into email_imports (
+        id, gmail_message_id, gmail_thread_id, from_address, subject, received_at,
+        lead_id, status, reason, lead_type, portal, raw_snippet
+      ) values (
+        ${uid()}, ${msg.id}, ${msg.threadId}, ${extractFromAddress(msg.from)},
+        ${msg.subject}, ${msg.internalDate ? new Date(msg.internalDate).toISOString() : null},
+        null, 'skipped', 'lease-app-no-existing-lead', ${leadType}, ${portal},
+        ${msg.snippet.slice(0, 500)}
+      )
+      on conflict (gmail_message_id) do nothing
+    `;
+    return {
+      status: "skipped",
+      reason:
+        "Website lease application with no matching open lead (email/phone). Not creating a new lead — attach manually if needed.",
+      lead_type: leadType,
+      portal,
+    };
+  }
+
   const leadId = uid();
+  // Inventory → Lucas; general stays unassigned (GSM/Admin digests)
   const lucasId = leadType === "inventory" ? await resolveLucasProfileId(sql) : null;
   const nameParts = name.trim().split(/\s+/).filter(Boolean);
   const firstName = nameParts[0] || name;

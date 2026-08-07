@@ -684,7 +684,9 @@ export const captureLead = createServerFn({ method: "POST" })
     const lucasId = await resolveLucasProfileId(sql);
     let assigned = data.assigned_to || null;
     if (!assigned) {
+      // Inventory → Lucas; general → unassigned (GSM/Admin digests); others → creator
       if (leadType === "inventory" && lucasId) assigned = lucasId;
+      else if (leadType === "general") assigned = null;
       else assigned = me.id;
     }
 

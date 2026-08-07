@@ -103,6 +103,7 @@ type UncontactedLead = {
   rep_email: string | null;
   rep_name: string | null;
   days_open: number;
+  lead_type: string;
 };
 
 async function fetchUncontactedLeads(sql: Sql, minDays?: number): Promise<UncontactedLead[]> {
@@ -117,11 +118,13 @@ async function fetchUncontactedLeads(sql: Sql, minDays?: number): Promise<Uncont
     rep_email: string | null;
     rep_name: string | null;
     days_open: number;
+    lead_type: string;
   }>`
     select l.id, l.name, l.phone, l.email, l.vehicle_interest,
            l.created_at::text as created_at, l.assigned_to,
            p.email as rep_email, p.name as rep_name,
-           greatest(0, floor(extract(epoch from (now() - l.created_at)) / 86400))::int as days_open
+           greatest(0, floor(extract(epoch from (now() - l.created_at)) / 86400))::int as days_open,
+           coalesce(l.lead_type, 'inventory') as lead_type
     from leads l
     left join profiles p on p.id = l.assigned_to and p.active = true
     where l.stage = 'new'
@@ -141,7 +144,13 @@ function formatLeadLine(l: UncontactedLead, base: string, withRep = false) {
       : `${Math.max(1, Math.floor((Date.now() - new Date(l.created_at).getTime()) / 3600000))}h old`;
   const contact = [l.phone, l.email].filter(Boolean).join(" · ") || "no contact";
   const rep = withRep ? ` · Owner: ${l.rep_name || "Unassigned"}` : "";
-  return `• ${l.name} (${age}) — ${contact} — ${l.vehicle_interest || "—"}${rep}\n  ${base}/leads/${l.id}?tab=lead`;
+  const kind =
+    l.lead_type === "general"
+      ? "General inquiry"
+      : l.lead_type === "lease"
+        ? "Lease"
+        : "Inventory";
+  return `• [${kind}] ${l.name} (${age}) — ${contact} — ${l.vehicle_interest || "—"}${rep}\n  ${base}/leads/${l.id}?tab=lead`;
 }
 
 /**
@@ -169,8 +178,12 @@ export async function runUncontactedRepBatches(
   const kind = slot === "am" ? "uncontacted_rep_am" : "uncontacted_rep_pm";
   const slotLabel = slot === "am" ? "9:00 AM" : "2:00 PM";
 
+  // Sales rep digests: inventory/lease only. General inquiries go to GSM/Admin.
   const leads = (await fetchUncontactedLeads(sql)).filter(
-    (l) => l.assigned_to && l.rep_email,
+    (l) =>
+      l.assigned_to &&
+      l.rep_email &&
+      l.lead_type !== "general",
   );
 
   const byRep = new Map<
@@ -271,6 +284,124 @@ export async function runUncontactedRepBatches(
     slot,
     reason: "ok" as const,
     clock,
+  };
+}
+
+/**
+ * Weekdays 9am and 2pm (America/Toronto): general-inquiry New leads (usually unassigned)
+ * go to GSM + Admins — never to Lucas / sales rep digests.
+ */
+export async function runGeneralInquiryBatches(
+  sql: Sql,
+  options?: { forceSlot?: UncontactedSlot; ignoreSchedule?: boolean },
+) {
+  await releaseExpiredPauses(sql);
+  const clock = getTorontoClock();
+
+  if (!options?.ignoreSchedule) {
+    if (!clock.isWeekday) {
+      return { sent: 0, skipped: 0, reason: "weekend" as const, clock, leads: 0 };
+    }
+    if (!clock.isAmSlot && !clock.isPmSlot) {
+      return { sent: 0, skipped: 0, reason: "outside_slots" as const, clock, leads: 0 };
+    }
+  }
+
+  const slot: UncontactedSlot =
+    options?.forceSlot || (clock.isPmSlot ? "pm" : "am");
+  const kind = slot === "am" ? "general_inquiry_am" : "general_inquiry_pm";
+  const slotLabel = slot === "am" ? "9:00 AM" : "2:00 PM";
+
+  const already = await sql<{ n: number }>`
+    select count(*)::int as n from reminder_sends
+    where kind = ${kind}
+      and meta = ${clock.dateKey}
+  `;
+  if ((already[0]?.n ?? 0) > 0) {
+    return { sent: 0, skipped: 1, reason: "already_sent" as const, clock, leads: 0 };
+  }
+
+  const generals = (await fetchUncontactedLeads(sql)).filter(
+    (l) => l.lead_type === "general",
+  );
+  if (generals.length === 0) {
+    return { sent: 0, skipped: 0, reason: "none" as const, clock, leads: 0 };
+  }
+
+  const managers = await sql<{ id: string; email: string; name: string }>`
+    select id, email, name from profiles
+    where active = true and role in ('gsm', 'admin')
+    order by case role when 'gsm' then 0 else 1 end, name
+  `;
+  if (managers.length === 0) {
+    return { sent: 0, skipped: 0, reason: "no_managers" as const, clock, leads: generals.length };
+  }
+
+  const base = appBaseUrl();
+  const lines = generals.map((l) => formatLeadLine(l, base, true));
+  const subject = `[CRM] General inquiries (${slotLabel}) — ${generals.length} need follow-up`;
+  const text = [
+    `GSM / Admins,`,
+    ``,
+    `These General Contact / website inquiries are still in New Lead (${slotLabel} check-in).`,
+    `They are not routed to sales reps (Lucas) — please own or reassign them:`,
+    ``,
+    lines.join("\n\n"),
+    ``,
+    `— PAUL MOTOR CO. CRM`,
+  ].join("\n");
+
+  const htmlLines = generals
+    .map((l) => {
+      const age =
+        l.days_open >= 1
+          ? `${l.days_open}d uncontacted`
+          : `${Math.max(1, Math.floor((Date.now() - new Date(l.created_at).getTime()) / 3600000))}h old`;
+      const contact = [l.phone, l.email].filter(Boolean).join(" · ") || "no contact";
+      return (
+        `<li style="margin-bottom:10px"><strong><a href="${base}/leads/${l.id}?tab=lead">` +
+        `${escapeHtml(l.name)}</a></strong>` +
+        `<span style="color:#666"> (${escapeHtml(age)})</span><br/>` +
+        `<span style="font-size:13px;color:#444">${escapeHtml(contact)}` +
+        `${l.vehicle_interest ? ` — ${escapeHtml(l.vehicle_interest)}` : ""}<br/>` +
+        `Owner: ${escapeHtml(l.rep_name || "Unassigned")}</span></li>`
+      );
+    })
+    .join("");
+
+  let sent = 0;
+  for (const m of managers) {
+    await sendCrmEmail(sql, {
+      to: m.email,
+      subject,
+      text,
+      html:
+        `<div style="font-family:system-ui,sans-serif;max-width:560px;line-height:1.45">` +
+        `<p>GSM / Admins,</p>` +
+        `<p>These <strong>General Contact</strong> / website inquiries are still in ` +
+        `<strong>New Lead</strong> (${escapeHtml(slotLabel)}). They are not sent to sales reps:</p>` +
+        `<ul style="padding-left:18px">${htmlLines}</ul>` +
+        `<p style="font-size:13px;color:#555">Please contact, reassign, or close as appropriate.</p>` +
+        `<p style="font-size:13px;color:#555">— PAUL MOTOR CO. CRM</p></div>`,
+      kind,
+      profileId: m.id,
+    });
+    sent += 1;
+  }
+
+  await sql`
+    insert into reminder_sends (id, kind, profile_id, lead_id, meta)
+    values (${uid()}, ${kind}, ${managers[0]!.id}, null, ${clock.dateKey})
+  `;
+
+  return {
+    sent,
+    skipped: 0,
+    reason: "ok" as const,
+    clock,
+    leads: generals.length,
+    managers: managers.length,
+    slot,
   };
 }
 
@@ -385,8 +516,9 @@ export async function runStaleUncontactedEscalation(
 export async function runScheduledUncontactedReminders(sql: Sql) {
   const released = await releaseExpiredPauses(sql);
   const repBatch = await runUncontactedRepBatches(sql);
+  const generalBatch = await runGeneralInquiryBatches(sql);
   const escalation = await runStaleUncontactedEscalation(sql);
-  return { released, repBatch, escalation };
+  return { released, repBatch, generalBatch, escalation };
 }
 
 /** @deprecated Name kept for old cron imports — now runs scheduled batch logic. */
@@ -430,6 +562,7 @@ export async function runDailyRepBatch(sql: Sql) {
       from leads
       where assigned_to = ${rep.id}
         and stage not in ('won', 'lost', 'paused')
+        and coalesce(lead_type, 'inventory') <> 'general'
         and (pause_until is null or pause_until > now())
       order by
         case stage
