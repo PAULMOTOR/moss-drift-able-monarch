@@ -293,7 +293,7 @@ function PublicCreditAppPage() {
               <Field label="Province *" value={payload.biz_province} onChange={(v) => setField("biz_province", v)} />
               {/^\s*(ON|Ontario)\s*$/i.test(payload.biz_province || "") ? (
                 <Field
-                  label="RIN Number * (Ontario)"
+                  label="RIN Number (Ontario)"
                   value={payload.biz_rin}
                   onChange={(v) => setField("biz_rin", v)}
                   className="sm:col-span-3"

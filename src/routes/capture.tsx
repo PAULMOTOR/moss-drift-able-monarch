@@ -310,7 +310,7 @@ function CapturePage() {
         },
       });
       toast.success("Lead captured");
-      void navigate({ to: "/leads/$leadId", params: { leadId: lead.id } });
+      void navigate({ to: "/leads/$leadId", params: { leadId: lead.id }, search: {} });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not save lead");
     } finally {

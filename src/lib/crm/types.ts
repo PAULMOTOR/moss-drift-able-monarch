@@ -2,18 +2,164 @@ export const ROLES = ["admin", "rep", "broker", "gsm", "credit_manager"] as cons
 export type Role = (typeof ROLES)[number];
 
 export const STAGES = [
-  { id: "new", label: "New Lead", short: "New" },
-  { id: "contacted", label: "Contacted", short: "Contacted" },
-  { id: "paused", label: "Paused", short: "Paused" },
-  { id: "quote_sent", label: "Quote Sent", short: "Quote" },
-  { id: "credit_review", label: "Credit Underwriting", short: "Credit" },
-  { id: "ready_bc", label: "Ready for Business Central", short: "BC Ready" },
-  { id: "won", label: "Closed Won", short: "Won" },
-  { id: "lost", label: "Closed Lost", short: "Lost" },
+  { id: "new", label: "New Lead", short: "New", pipeline: "lead" as const },
+  { id: "contacted", label: "Contacted", short: "Contacted", pipeline: "lead" as const },
+  { id: "paused", label: "Paused", short: "Paused", pipeline: "lead" as const },
+  { id: "quote_sent", label: "Quote Sent", short: "Quote", pipeline: "lead" as const },
+  {
+    id: "lease_accepted",
+    label: "Lease Accepted",
+    short: "Accepted",
+    pipeline: "lead" as const,
+  },
+  {
+    id: "credit_review",
+    label: "Credit Underwriting",
+    short: "Credit",
+    pipeline: "credit" as const,
+  },
+  {
+    id: "ready_bc",
+    label: "Compliance",
+    short: "Compliance",
+    pipeline: "compliance" as const,
+  },
+  { id: "won", label: "Closed Won", short: "Won", pipeline: "compliance" as const },
+  { id: "lost", label: "Closed Lost", short: "Lost", pipeline: "lead" as const },
 ] as const;
 
-
 export type StageId = (typeof STAGES)[number]["id"];
+
+export const LEAD_TABS = [
+  { id: "lead", label: "Lead", description: "Early stage · contact, quotes, activity" },
+  { id: "credit", label: "Credit", description: "Underwriting · docs & checklists" },
+  { id: "approval", label: "Approval", description: "GSM / Admin recap & decision" },
+  { id: "compliance", label: "Compliance", description: "Post-approval funding package" },
+] as const;
+
+export type LeadTabId = (typeof LEAD_TABS)[number]["id"];
+
+export const PIPELINES = [
+  {
+    id: "lead",
+    label: "Lead pipeline",
+    description: "Inquiry → quote → lease acceptance",
+  },
+  {
+    id: "credit",
+    label: "Credit pipeline",
+    description: "App, IDs, docs → underwriting → GSM",
+  },
+  {
+    id: "compliance",
+    label: "Compliance pipeline",
+    description: "After approval → funding & registration",
+  },
+] as const;
+
+export type PipelineId = (typeof PIPELINES)[number]["id"];
+
+export const CREDIT_PIPELINE_COLUMNS = [
+  { id: "app_requested", label: "App sent", short: "App" },
+  { id: "app_submitted", label: "App received", short: "Received" },
+  { id: "ids_uploaded", label: "IDs in", short: "IDs" },
+  { id: "credit_requested", label: "In review", short: "Review" },
+  { id: "pending_gsm", label: "GSM queue", short: "GSM" },
+  { id: "approved", label: "Approved", short: "OK" },
+  { id: "declined", label: "Declined", short: "No" },
+] as const;
+
+export type CreditPipelineColumnId = (typeof CREDIT_PIPELINE_COLUMNS)[number]["id"];
+
+export const COMPLIANCE_ITEMS: {
+  key: string;
+  label: string;
+  needsUpload?: boolean;
+  needsBank?: boolean;
+}[] = [
+  { key: "signed_lease", label: "Signed lease uploaded", needsUpload: true },
+  { key: "void_check", label: "Void check uploaded", needsUpload: true },
+  { key: "insurance", label: "Insurance confirmation", needsUpload: true },
+  { key: "tracker", label: "Tracker(s): TAG and/or GPS" },
+  { key: "dod_received", label: "DOD (amount due on delivery) received" },
+  { key: "no_lien", label: "No lien confirmation uploaded", needsUpload: true },
+  { key: "vehicle_paid", label: "Vehicle PAID for" },
+  { key: "pml_lien", label: "PML lien on lease" },
+  { key: "bank_funding", label: "Bank funding requested", needsBank: true },
+  {
+    key: "reg_title",
+    label: "Reg/Title uploaded (PML as owner/lessor)",
+    needsUpload: true,
+  },
+  { key: "reg_title_cibc", label: "Reg/Title sent to CIBC" },
+  { key: "second_key", label: "2nd key requested / received" },
+];
+
+export const FUNDING_BANKS = ["RBC", "BMO", "CIBC"] as const;
+
+export function stagesForPipeline(pipeline: PipelineId) {
+  return STAGES.filter((s) => s.pipeline === pipeline);
+}
+
+export function pipelineForStage(stage: string): PipelineId {
+  const found = STAGES.find((s) => s.id === stage);
+  return found?.pipeline ?? "lead";
+}
+
+export function defaultLeadTab(lead: {
+  stage?: string | null;
+  credit_status?: string | null;
+}): LeadTabId {
+  const stage = (lead.stage || "new").toLowerCase();
+  const cs = (lead.credit_status || "none").toLowerCase();
+  if (stage === "won" || stage === "ready_bc" || cs === "approved") return "compliance";
+  if (cs === "pending_gsm") return "approval";
+  if (
+    stage === "credit_review" ||
+    [
+      "app_requested",
+      "app_submitted",
+      "app_in_progress",
+      "ids_uploaded",
+      "credit_requested",
+      "in_review",
+      "declined",
+    ].includes(cs)
+  ) {
+    return "credit";
+  }
+  return "lead";
+}
+
+export function creditColumnForLead(lead: {
+  credit_status?: string | null;
+  stage?: string | null;
+}): CreditPipelineColumnId | null {
+  const cs = (lead.credit_status || "none").toLowerCase();
+  if (cs === "in_review") return "credit_requested";
+  if (CREDIT_PIPELINE_COLUMNS.some((c) => c.id === cs)) {
+    return cs as CreditPipelineColumnId;
+  }
+  if (lead.stage === "credit_review" && (cs === "none" || !cs)) return "app_requested";
+  return null;
+}
+
+export type ComplianceChecklistItem = {
+  id: string;
+  lead_id: string;
+  item_key: string;
+  label: string;
+  sort_order: number;
+  done: boolean;
+  notes: string;
+  meta: string;
+  file_name: string | null;
+  mime_type: string | null;
+  has_file: boolean;
+  filled_by: string | null;
+  filled_at: string | null;
+  updated_at: string;
+};
 
 export const LEAD_TYPES = [
   {
@@ -109,6 +255,7 @@ export type CreditStatus =
   | "none"
   | "app_requested"
   | "app_submitted"
+  | "ids_uploaded"
   | "credit_requested"
   | "in_review"
   | "pending_gsm"

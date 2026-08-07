@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, CalendarPlus, FileUp, Mail, Phone, Trash2, X } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
-import { CreditUnderwritingPanel } from "@/components/credit-underwriting-panel";
 import { StageBadge } from "@/components/stage-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,15 +35,21 @@ import {
   deleteLeaseQuote,
   getMyProfile,
 } from "@/lib/crm/server";
+import { CreditUnderwritingPanel } from "@/components/credit-underwriting-panel";
+import { CompliancePanel } from "@/components/compliance-panel";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  LEAD_TABS,
   LEAD_TYPES,
   REVIEW_STATUSES,
   SOURCES,
   STAGES,
+  defaultLeadTab,
   vehicleLabel,
   type InventoryItem,
   type Lead,
   type LeadActivity,
+  type LeadTabId,
   type Profile,
 } from "@/lib/crm/types";
 import {
@@ -115,6 +120,10 @@ function openFileDataUrl(dataUrl: string, fileName = "quote.pdf") {
 
 
 export const Route = createFileRoute("/leads/$leadId")({
+  validateSearch: (s: Record<string, unknown>): { tab?: string } => {
+    if (typeof s.tab === "string" && s.tab) return { tab: s.tab };
+    return {};
+  },
   component: LeadDetail,
 });
 
@@ -122,7 +131,9 @@ const MAX_PDF_BYTES = 4 * 1024 * 1024;
 
 function LeadDetail() {
   const { leadId } = Route.useParams();
+  const search = Route.useSearch();
   const navigate = useNavigate();
+  const [tab, setTab] = useState<LeadTabId>("lead");
   const getLeadFn = useServerFn(getLead);
   const updateFn = useServerFn(updateLead);
   const deleteFn = useServerFn(deleteLead);
@@ -223,6 +234,15 @@ function LeadDetail() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
+
+  useEffect(() => {
+    if (!lead) return;
+    const fromSearch = LEAD_TABS.some((t) => t.id === search.tab)
+      ? (search.tab as LeadTabId)
+      : null;
+    setTab(fromSearch || defaultLeadTab(lead));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leadId, lead?.stage, lead?.credit_status, search.tab]);
 
   async function patch(partial: Record<string, unknown>) {
     if (!lead) return;
@@ -398,12 +418,163 @@ function LeadDetail() {
         }
       />
 
-      {me ? (
-        <div className="mb-6">
-          <CreditUnderwritingPanel leadId={lead.id} me={me} />
-        </div>
-      ) : null}
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          const next = v as LeadTabId;
+          setTab(next);
+          void navigate({
+            to: "/leads/$leadId",
+            params: { leadId: lead.id },
+            search: { tab: next },
+            replace: true,
+          });
+        }}
+        className="mb-4"
+      >
+        <TabsList className="mb-4 flex h-auto w-full flex-wrap justify-start gap-1 bg-muted/50 p-1">
+          {LEAD_TABS.map((t) => (
+            <TabsTrigger
+              key={t.id}
+              value={t.id}
+              className="flex-1 min-w-[5.5rem] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+            >
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
+        <TabsContent value="credit" className="mt-0 space-y-4">
+          {me ? <CreditUnderwritingPanel leadId={lead.id} me={me} /> : null}
+        </TabsContent>
+
+        <TabsContent value="approval" className="mt-0 space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Management approval</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <p className="text-muted-foreground">
+                Full deal recap for GSM and Admins — credit package, accepted quote, and approve / decline.
+              </p>
+              <dl className="grid gap-2 sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs text-muted-foreground">Client</dt>
+                  <dd className="font-medium">{lead.name}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Credit status</dt>
+                  <dd className="font-medium capitalize">
+                    {(lead.credit_status || "none").replace(/_/g, " ")}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Stage</dt>
+                  <dd className="font-medium">
+                    {STAGES.find((s) => s.id === lead.stage)?.label || lead.stage}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Vehicle</dt>
+                  <dd className="font-medium">{lead.vehicle_interest || lead.inventory_label || "—"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Est. value</dt>
+                  <dd className="font-medium">
+                    {lead.estimated_value != null ? formatCurrency(lead.estimated_value) : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Accepted quote</dt>
+                  <dd className="font-medium">
+                    {savedQuotes.find((q) => q.status === "accepted" || q.id === lead.accepted_quote_id)
+                      ? `Option ${
+                          savedQuotes.find(
+                            (q) => q.status === "accepted" || q.id === lead.accepted_quote_id,
+                          )?.accepted_option || "—"
+                        }`
+                      : lead.accepted_quote_id
+                        ? "On file"
+                        : "None yet"}
+                  </dd>
+                </div>
+              </dl>
+              {savedQuotes.some((q) => q.status === "accepted" || q.id === lead.accepted_quote_id) ? (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    type="button"
+                    onClick={async () => {
+                      const q = savedQuotes.find(
+                        (x) => x.status === "accepted" || x.id === lead.accepted_quote_id,
+                      );
+                      if (!q) return;
+                      try {
+                        const full = await getQuote({ data: { id: q.id } });
+                        if (full?.retail_html) {
+                          openFileDataUrl(
+                            `data:text/html;base64,${btoa(unescape(encodeURIComponent(full.retail_html)))}`,
+                            "quote.html",
+                          );
+                        } else if (full?.pdf_data) {
+                          openFileDataUrl(full.pdf_data, full.pdf_name || "quote.pdf");
+                        } else {
+                          toast.error("No quote preview available");
+                        }
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : "Could not open quote");
+                      }
+                    }}
+                  >
+                    View accepted quote
+                  </Button>
+                </div>
+              ) : null}
+              {me ? <CreditUnderwritingPanel leadId={lead.id} me={me} /> : null}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="compliance" className="mt-0 space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Compliance & funding</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <CompliancePanel leadId={lead.id} />
+            </CardContent>
+          </Card>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={async () => {
+                if (lead.drive_folder_url) {
+                  const ok = window.confirm(
+                    "Update the existing Drive package with the latest files?",
+                  );
+                  if (!ok) return;
+                }
+                setBusy(true);
+                try {
+                  const r = await readyBc({ data: { leadId: lead.id } });
+                  toast.success("Drive package updated");
+                  if (r.folderUrl) window.open(r.folderUrl, "_blank");
+                  await load();
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Drive failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {lead.drive_folder_url ? "Update Drive package" : "Push to Drive"}
+            </Button>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="lead" className="mt-0">
       <div className="grid gap-6 lg:grid-cols-5">
         <div className="space-y-6 lg:col-span-3">
           <Card>
@@ -1046,6 +1217,10 @@ function LeadDetail() {
           </Card>
         </div>
       </div>
+
+        </TabsContent>
+      </Tabs>
+
     </>
   );
 }

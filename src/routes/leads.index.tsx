@@ -14,7 +14,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { listLeads, listProfiles } from "@/lib/crm/server";
-import { LEAD_TYPES, STAGES, sourceLabel, type Lead, type Profile } from "@/lib/crm/types";
+import {
+  LEAD_TYPES,
+  STAGES,
+  defaultLeadTab,
+  sourceLabel,
+  type Lead,
+  type Profile,
+} from "@/lib/crm/types";
 import { cn, formatCurrency, formatRelative } from "@/lib/utils";
 
 export const Route = createFileRoute("/leads/")({
@@ -156,6 +163,7 @@ function LeadsPage() {
                 key={lead.id}
                 to="/leads/$leadId"
                 params={{ leadId: lead.id }}
+                search={{ tab: defaultLeadTab(lead) }}
                 className="block rounded-xl border border-border/80 bg-background/40 p-4 transition-colors hover:border-primary/30"
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">

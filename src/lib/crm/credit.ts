@@ -494,14 +494,19 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       update leads set
         credit_status = ${status},
         stage = case when ${data.approve} then 'ready_bc' else stage end,
+        stage_entered_at = case when ${data.approve} then now() else stage_entered_at end,
         updated_at = now()
       where id = ${data.leadId}
     `;
+    if (data.approve) {
+      const { ensureComplianceChecklist } = await import("./compliance");
+      await ensureComplianceChecklist(sql, data.leadId);
+    }
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'credit',
-        ${`Deal ${status} by ${me.name}${data.notes ? `: ${data.notes}` : ""}`},
+        ${`Deal ${status} by ${me.name}${data.notes ? `: ${data.notes}` : ""}${data.approve ? " · moved to Compliance" : ""}`},
         ${me.id}, ${me.name}
       )
     `;
@@ -727,7 +732,13 @@ export const uploadPublicCreditDoc = createServerFn({ method: "POST" })
         where id = ${app.id}
       `;
       await sql`
-        update leads set credit_status = 'app_submitted', updated_at = now() where id = ${app.lead_id}
+        update leads set
+          credit_status = case
+            when credit_status in ('app_requested','app_submitted','none','app_in_progress') then 'ids_uploaded'
+            else credit_status
+          end,
+          updated_at = now()
+        where id = ${app.lead_id}
       `;
       const lead = await sql.query<Record<string, unknown>>(
         `select l.name, p.email as rep_email from leads l

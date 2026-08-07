@@ -723,6 +723,7 @@ export const updateLead = createServerFn({ method: "POST" })
     (data: Partial<CaptureLeadInput> & {
       id: string;
       stage?: string;
+      credit_status?: string | null;
       google_review_status?: string;
       google_review_at?: string | null;
       google_review_link?: string | null;
@@ -829,6 +830,11 @@ export const updateLead = createServerFn({ method: "POST" })
         },
         assigned_to = ${nextAssigned},
         stage = ${stage},
+        credit_status = ${
+          data.credit_status !== undefined
+            ? data.credit_status || "none"
+            : (prev.credit_status as string | null) || "none"
+        },
         stage_entered_at = ${
           stageChanged
             ? new Date().toISOString()
@@ -888,6 +894,15 @@ export const updateLead = createServerFn({ method: "POST" })
           ${me.id}, ${me.name}
         )
       `;
+    }
+
+    const nextCredit =
+      data.credit_status !== undefined
+        ? data.credit_status || "none"
+        : (prev.credit_status as string | null) || "none";
+    if (stage === "ready_bc" || nextCredit === "approved") {
+      const { ensureComplianceChecklist } = await import("./compliance");
+      await ensureComplianceChecklist(sql, data.id);
     }
 
     // Notify rep when assignment changes (or first assign)
@@ -2195,6 +2210,14 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
           quote_pdf_data = ${pdfData},
           guarantor = ${payload.client.guarantor || null},
           estimated_value = ${opt.cost + opt.extra + opt.profit},
+          stage = case
+            when stage in ('new','contacted','paused','quote_sent') then 'lease_accepted'
+            else stage
+          end,
+          stage_entered_at = case
+            when stage in ('new','contacted','paused','quote_sent') then now()
+            else stage_entered_at
+          end,
           updated_at = now()
         where id = ${row.lead_id}
       `;

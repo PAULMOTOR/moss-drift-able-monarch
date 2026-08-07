@@ -81,7 +81,24 @@ function HelpPage() {
         <Section id="leads" icon={Columns3} title="Leads & pipeline">
           <ul className="space-y-2 text-sm leading-relaxed">
             <li>
-              <strong>Stages:</strong> New → Contacted → Paused → Quote Sent → Ready for Business Central → Closed Won / Lost.
+              <strong>Three pipelines</strong> (switch boards at the top of Pipeline):
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-muted-foreground">
+                <li>
+                  <strong>Lead</strong> — New → Contacted → Paused → Quote Sent → Lease Accepted → Lost
+                </li>
+                <li>
+                  <strong>Credit</strong> — App sent → received → IDs → underwriting → GSM queue → Approved / Declined
+                </li>
+                <li>
+                  <strong>Compliance</strong> — after GSM/Admin approval: funding package checklist → Closed Won
+                </li>
+              </ul>
+            </li>
+            <li>
+              <strong>Deal tabs</strong> on every lead: <em>Lead</em> (early contact & quotes),{" "}
+              <em>Credit</em> (underwriting), <em>Approval</em> (GSM/Admin recap),{" "}
+              <em>Compliance</em> (signed lease, void check, insurance, trackers, DOD, liens, bank funding, reg/title, 2nd key).
+              Opening a pipeline card jumps to the right tab.
             </li>
             <li>
               <strong>Paused:</strong> schedule a call-back appointment on the lead. Automatic hourly/daily reminders skip paused leads until the date.
@@ -93,7 +110,8 @@ function HelpPage() {
                 <li>Choose the stage in the dropdown, or</li>
                 <li>Drag the card on Pipeline</li>
               </ul>
-              Draft saves and Accept do <em>not</em> change the stage by themselves.
+              Draft saves do <em>not</em> change the stage. Accepting an option moves the lead to{" "}
+              <em>Lease Accepted</em>.
             </li>
             <li>
               <strong>Lead types:</strong> Inventory (stock units), Lease (broker / quote request), General Interest (TAdvantage contact forms).

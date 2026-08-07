@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
@@ -14,9 +14,16 @@ import {
 } from "@/components/ui/select";
 import { listLeads, listProfiles, updateLead, getMyProfile } from "@/lib/crm/server";
 import {
+  CREDIT_PIPELINE_COLUMNS,
+  PIPELINES,
   STAGES,
+  creditColumnForLead,
+  defaultLeadTab,
   daysInStage,
+  stagesForPipeline,
+  type CreditPipelineColumnId,
   type Lead,
+  type PipelineId,
   type Profile,
   type StageId,
 } from "@/lib/crm/types";
@@ -24,6 +31,10 @@ import { cn, formatCurrency } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, Zap } from "lucide-react";
 
 export const Route = createFileRoute("/pipeline")({
+  validateSearch: (s: Record<string, unknown>): { board?: string } => {
+    if (typeof s.board === "string" && s.board) return { board: s.board };
+    return {};
+  },
   component: () => (
     <AuthGate>
       <PipelinePage />
@@ -32,6 +43,12 @@ export const Route = createFileRoute("/pipeline")({
 });
 
 function PipelinePage() {
+  const search = Route.useSearch();
+  const navigate = useNavigate();
+  const initialBoard = (
+    PIPELINES.some((p) => p.id === search.board) ? search.board : "lead"
+  ) as PipelineId;
+  const [board, setBoard] = useState<PipelineId>(initialBoard);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [me, setMe] = useState<Profile | null>(null);
@@ -59,10 +76,8 @@ function PipelinePage() {
       const profile = await getMyProfile().catch(() => null);
       if (profile) {
         setMe(profile);
-        // Non-admins: own + unassigned only (server enforces; use "all" meaning visible scope)
-        const filter = profile.role === "admin" ? "all" : "all";
-        setAssigned(filter);
-        await load(filter);
+        setAssigned("all");
+        await load("all");
       } else {
         await load();
       }
@@ -92,7 +107,7 @@ function PipelinePage() {
       ro.disconnect();
       window.removeEventListener("resize", updateScrollButtons);
     };
-  }, [leads, assigned]);
+  }, [leads, assigned, board]);
 
   function scrollBoard(dir: "left" | "right") {
     const el = boardRef.current;
@@ -101,19 +116,53 @@ function PipelinePage() {
     el.scrollBy({ left: dir === "left" ? -amount : amount, behavior: "smooth" });
   }
 
-  const columns = useMemo(() => {
-    const map = Object.fromEntries(STAGES.map((s) => [s.id, [] as Lead[]])) as Record<
-      StageId,
-      Lead[]
-    >;
+  const leadColumns = useMemo(() => {
+    const stages = stagesForPipeline("lead");
+    const map: Record<string, Lead[]> = {};
+    for (const s of stages) map[s.id] = [];
     for (const lead of leads) {
-      const stage = (lead.stage in map ? lead.stage : "new") as StageId;
-      map[stage].push(lead);
+      if (lead.stage === "lost") {
+        map.lost?.push(lead);
+        continue;
+      }
+      if (stages.some((s) => s.id === lead.stage)) {
+        map[lead.stage]?.push(lead);
+      } else if (
+        !["credit_review", "ready_bc", "won"].includes(lead.stage) &&
+        !creditColumnForLead(lead)
+      ) {
+        map.new?.push(lead);
+      }
+    }
+    return { stages, map };
+  }, [leads]);
+
+  const creditColumns = useMemo(() => {
+    const map: Record<string, Lead[]> = {};
+    for (const c of CREDIT_PIPELINE_COLUMNS) map[c.id] = [];
+    for (const lead of leads) {
+      const col = creditColumnForLead(lead);
+      if (col) map[col]?.push(lead);
+      else if (lead.stage === "credit_review") map.app_requested?.push(lead);
     }
     return map;
   }, [leads]);
 
-  async function moveLead(leadId: string, stage: StageId) {
+  const complianceColumns = useMemo(() => {
+    const stages = stagesForPipeline("compliance");
+    const map: Record<string, Lead[]> = {};
+    for (const s of stages) map[s.id] = [];
+    for (const lead of leads) {
+      if (lead.stage === "ready_bc" || lead.stage === "won") {
+        map[lead.stage]?.push(lead);
+      } else if ((lead.credit_status || "").toLowerCase() === "approved") {
+        map.ready_bc?.push(lead);
+      }
+    }
+    return { stages, map };
+  }, [leads]);
+
+  async function moveLeadStage(leadId: string, stage: StageId) {
     const lead = leads.find((l) => l.id === leadId);
     if (!lead || lead.stage === stage) return;
     setLeads((prev) =>
@@ -126,24 +175,51 @@ function PipelinePage() {
     try {
       await update({ data: { id: leadId, stage } });
       toast.success(`Moved to ${STAGES.find((s) => s.id === stage)?.label}`);
-      await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Move failed");
       await load();
     }
   }
 
+  async function moveLeadCredit(leadId: string, col: CreditPipelineColumnId) {
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+    setLeads((prev) =>
+      prev.map((l) =>
+        l.id === leadId
+          ? {
+              ...l,
+              credit_status: col,
+              stage: col === "approved" ? "ready_bc" : "credit_review",
+              stage_entered_at: new Date().toISOString(),
+            }
+          : l,
+      ),
+    );
+    try {
+      await update({
+        data: {
+          id: leadId,
+          credit_status: col,
+          stage: col === "approved" ? "ready_bc" : "credit_review",
+        } as never,
+      });
+      toast.success(`Credit: ${CREDIT_PIPELINE_COLUMNS.find((c) => c.id === col)?.label}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Move failed");
+      await load();
+    }
+  }
+
+  const boardMeta = PIPELINES.find((p) => p.id === board)!;
+
   return (
     <>
       <PageHeader
         title="Pipeline"
-        description={
-          isAdmin
-            ? "Drag cards across stages. Filter by owner. Use the arrows or scrollbar to move sideways."
-            : "Your pipeline — leads assigned to you and unassigned leads you can claim."
-        }
+        description={boardMeta.description}
         actions={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {isAdmin ? (
               <Select
                 value={assigned}
@@ -152,7 +228,7 @@ function PipelinePage() {
                   void load(v);
                 }}
               >
-                <SelectTrigger className="w-44">
+                <SelectTrigger className="h-9 w-[180px]">
                   <SelectValue placeholder="Owner" />
                 </SelectTrigger>
                 <SelectContent>
@@ -166,149 +242,191 @@ function PipelinePage() {
                 </SelectContent>
               </Select>
             ) : null}
-            <Button asChild>
+            <Button asChild size="sm" variant="outline">
               <Link to="/capture">
                 <Zap className="size-4" />
-                New Lead
+                New lead
               </Link>
             </Button>
           </div>
         }
       />
 
-      {/* Always-visible horizontal navigation for mice without side-scroll */}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border bg-card px-3 py-2 shadow-sm">
-        <p className="text-xs text-muted-foreground sm:text-sm">
-          Scroll stages sideways
+      <div className="mb-4 flex flex-wrap gap-2">
+        {PIPELINES.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => {
+              setBoard(p.id);
+              void navigate({ to: "/pipeline", search: { board: p.id }, replace: true });
+            }}
+            className={cn(
+              "rounded-sm border px-3 py-2 text-left text-sm font-semibold transition-colors",
+              board === p.id
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-card text-foreground hover:bg-muted",
+            )}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="relative mb-2 flex items-center gap-2">
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          className="shrink-0"
+          disabled={!canScrollLeft}
+          onClick={() => scrollBoard("left")}
+        >
+          <ChevronLeft className="size-4" />
+        </Button>
+        <p className="flex-1 text-center text-xs text-muted-foreground">
+          Drag cards · click a card to open the matching deal tab
         </p>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-9 gap-1 px-3"
-            disabled={!canScrollLeft}
-            onClick={() => scrollBoard("left")}
-            aria-label="Scroll pipeline left"
-          >
-            <ChevronLeft className="size-4" />
-            <span className="hidden sm:inline">Left</span>
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-9 gap-1 px-3"
-            disabled={!canScrollRight}
-            onClick={() => scrollBoard("right")}
-            aria-label="Scroll pipeline right"
-          >
-            <span className="hidden sm:inline">Right</span>
-            <ChevronRight className="size-4" />
-          </Button>
-        </div>
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          className="shrink-0"
+          disabled={!canScrollRight}
+          onClick={() => scrollBoard("right")}
+        >
+          <ChevronRight className="size-4" />
+        </Button>
       </div>
 
       <div
         ref={boardRef}
-        className="pipeline-h-scroll flex gap-3 overflow-x-auto pb-3 snap-x"
-        onScroll={updateScrollButtons}
+        className="flex gap-3 overflow-x-auto pb-4 pt-1"
+        style={{ scrollbarGutter: "stable" }}
       >
-        {STAGES.map((stage) => {
-          const items = columns[stage.id];
-          const value = items.reduce((s, l) => s + (l.estimated_value ?? 0), 0);
-          return (
-            <div
-              key={stage.id}
-              className="w-[280px] shrink-0 snap-start sm:w-[300px]"
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                const id = e.dataTransfer.getData("text/lead-id") || dragging;
-                if (id) void moveLead(id, stage.id);
-                setDragging(null);
-              }}
-            >
-              <div className="mb-2 px-1">
-                <h2 className="text-base font-semibold leading-tight">{stage.short}</h2>
-                <p className="text-xs text-muted-foreground">
-                  {items.length} · {formatCurrency(value)}
-                </p>
-              </div>
-              <div
-                className={cn(
-                  "min-h-[460px] space-y-2 rounded-sm border border-dashed border-border bg-muted/30 p-2",
-                  dragging && "border-primary/40 bg-primary/5",
-                )}
-              >
-                {items.map((lead) => (
-                  <Card
-                    key={lead.id}
-                    draggable
-                    onDragStart={(e) => {
-                      setDragging(lead.id);
-                      e.dataTransfer.setData("text/lead-id", lead.id);
-                    }}
-                    onDragEnd={() => setDragging(null)}
-                    className={cn(
-                      "cursor-grab active:cursor-grabbing",
-                      dragging === lead.id && "opacity-50",
-                    )}
-                  >
-                    <CardContent className="space-y-2 p-3">
-                      <Link
-                        to="/leads/$leadId"
-                        params={{ leadId: lead.id }}
-                        className="font-medium hover:text-primary"
-                      >
-                        {lead.name}
-                      </Link>
-                      <p className="line-clamp-2 text-xs text-muted-foreground">
-                        {lead.vehicle_interest || lead.inventory_label || "—"}
-                      </p>
-                      <div className="flex flex-wrap gap-1 text-[10px] uppercase tracking-wide">
-                        <span
-                          className={cn(
-                            "rounded px-1.5 py-0.5",
-                            lead.lead_type === "lease"
-                              ? "bg-accent text-accent-foreground"
-                              : lead.lead_type === "general"
-                                ? "bg-muted text-foreground"
-                                : "bg-primary/15 text-primary",
-                          )}
-                        >
-                          {lead.lead_type === "lease"
-                            ? "Lease"
-                            : lead.lead_type === "general"
-                              ? "General"
-                              : "Inv"}
-                        </span>
-                        {lead.quote_sent ? (
-                          <span className="rounded bg-primary/15 px-1.5 py-0.5 text-primary">
-                            Quote{lead.quote_pdf_name ? "+PDF" : ""}
-                          </span>
-                        ) : null}
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-                          Review {lead.google_review_status.replace("_", " ")}
-                        </span>
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-                          {daysInStage(lead.stage_entered_at)}d
-                        </span>
-                      </div>
-                      <div className="flex justify-between text-xs text-muted-foreground">
-                        <span className="truncate">{lead.assigned_name || "Unassigned"}</span>
-                        <span className="tabular text-foreground">
-                          {formatCurrency(lead.estimated_value)}
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+        {board === "lead"
+          ? leadColumns.stages.map((stage) => (
+              <Column
+                key={stage.id}
+                title={stage.short}
+                count={leadColumns.map[stage.id]?.length || 0}
+                onDrop={(id) => void moveLeadStage(id, stage.id)}
+                dragging={dragging}
+                setDragging={setDragging}
+                leads={leadColumns.map[stage.id] || []}
+                tabFor={() => defaultLeadTab({ stage: stage.id })}
+              />
+            ))
+          : null}
+
+        {board === "credit"
+          ? CREDIT_PIPELINE_COLUMNS.map((col) => (
+              <Column
+                key={col.id}
+                title={col.short}
+                count={creditColumns[col.id]?.length || 0}
+                onDrop={(id) => void moveLeadCredit(id, col.id)}
+                dragging={dragging}
+                setDragging={setDragging}
+                leads={creditColumns[col.id] || []}
+                tabFor={(lead) => defaultLeadTab(lead)}
+              />
+            ))
+          : null}
+
+        {board === "compliance"
+          ? complianceColumns.stages.map((stage) => (
+              <Column
+                key={stage.id}
+                title={stage.short}
+                count={complianceColumns.map[stage.id]?.length || 0}
+                onDrop={(id) => void moveLeadStage(id, stage.id)}
+                dragging={dragging}
+                setDragging={setDragging}
+                leads={complianceColumns.map[stage.id] || []}
+                tabFor={() => "compliance"}
+              />
+            ))
+          : null}
       </div>
     </>
+  );
+}
+
+function Column({
+  title,
+  count,
+  leads,
+  onDrop,
+  dragging,
+  setDragging,
+  tabFor,
+}: {
+  title: string;
+  count: number;
+  leads: Lead[];
+  onDrop: (id: string) => void;
+  dragging: string | null;
+  setDragging: (id: string | null) => void;
+  tabFor: (lead: Lead) => string;
+}) {
+  return (
+    <div
+      className="flex w-[260px] shrink-0 flex-col rounded-sm border border-border bg-muted/30"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        const id = e.dataTransfer.getData("text/lead-id") || dragging;
+        if (id) onDrop(id);
+        setDragging(null);
+      }}
+    >
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <h2 className="text-sm font-semibold">{title}</h2>
+        <span className="tabular text-xs text-muted-foreground">{count}</span>
+      </div>
+      <div className="flex max-h-[calc(100dvh-260px)] flex-col gap-2 overflow-y-auto p-2">
+        {leads.map((lead) => (
+          <Card
+            key={lead.id}
+            draggable
+            onDragStart={(e) => {
+              setDragging(lead.id);
+              e.dataTransfer.setData("text/lead-id", lead.id);
+            }}
+            onDragEnd={() => setDragging(null)}
+            className={cn(
+              "cursor-grab border-border shadow-sm active:cursor-grabbing",
+              dragging === lead.id && "opacity-50",
+            )}
+          >
+            <CardContent className="space-y-1 p-3">
+              <Link
+                to="/leads/$leadId"
+                params={{ leadId: lead.id }}
+                search={{ tab: tabFor(lead) }}
+                className="block text-sm font-semibold text-foreground hover:text-primary"
+              >
+                {lead.name}
+              </Link>
+              <p className="truncate text-xs text-muted-foreground">
+                {lead.vehicle_interest || lead.inventory_label || "—"}
+              </p>
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span className="capitalize">{lead.lead_type}</span>
+                <span>
+                  {lead.estimated_value
+                    ? formatCurrency(lead.estimated_value)
+                    : `${daysInStage(lead.stage_entered_at)}d`}
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+        {leads.length === 0 ? (
+          <p className="px-1 py-6 text-center text-xs text-muted-foreground">Empty</p>
+        ) : null}
+      </div>
+    </div>
   );
 }
