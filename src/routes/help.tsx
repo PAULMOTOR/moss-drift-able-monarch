@@ -166,7 +166,7 @@ function HelpPage() {
               <strong>Trade-in lien:</strong> net equity = trade-in − lien. Negative equity increases amount financed (cap. cost).
             </li>
             <li>
-              <strong>Deposit % / Residual %</strong> stay in sync with the dollar fields (based on price + profit).
+              <strong>Cash down % / Residual %</strong> stay in sync with the dollar fields (based on price + profit). Cash down is taxed and reduces the loan balance; <strong>Security deposit</strong> is refundable, not taxed, and does not reduce the balance.
             </li>
             <li>
               <strong>Yield %</strong> is for <em>you</em> only (interest + handling). Customers never see it on shared PDFs.

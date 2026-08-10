@@ -246,6 +246,7 @@ function QuotePage() {
             tradeIn: o.tradeIn,
             tradeInLien: o.tradeInLien ?? 0,
             deposit: o.deposit,
+            securityDeposit: o.securityDeposit ?? 0,
             termMonths: o.termMonths,
             ratePct: o.ratePct,
             residual: o.residual,
@@ -980,12 +981,12 @@ function QuotePage() {
               />
               <div className="grid grid-cols-2 gap-2">
                 <MoneyField
-                  label="Deposit $ (cash down)"
+                  label="Cash down $"
                   value={options[i].deposit}
                   onChange={(v) => setDepositDollar(i, v)}
                 />
                 <MoneyField
-                  label="Deposit %"
+                  label="Cash down %"
                   value={
                     vehicleTotalForOption(i) > 0
                       ? Math.round((options[i].deposit / vehicleTotalForOption(i)) * 1000) / 10
@@ -994,6 +995,11 @@ function QuotePage() {
                   onChange={(v) => setDepositPct(i, v)}
                 />
               </div>
+              <MoneyField
+                label="Security deposit $ (not taxed · does not reduce balance)"
+                value={options[i].securityDeposit || 0}
+                onChange={(v) => patchOption(i, { securityDeposit: v })}
+              />
               <div className="grid grid-cols-2 gap-2">
                 <MoneyField label="Term (mo)" value={options[i].termMonths} onChange={(v) => patchOption(i, { termMonths: Math.round(v) })} />
                 <MoneyField label="Rate %" value={options[i].ratePct} onChange={(v) => patchOption(i, { ratePct: v })} />
@@ -1027,8 +1033,9 @@ function QuotePage() {
                   value={formatMoney((options[i].tradeIn || 0) - (options[i].tradeInLien || 0))}
                 />
                 <Row label="Financed (cap. cost)" value={formatMoney(o.financed)} bold />
-                <Row label="Cash-down" value={formatMoney(o.deposit)} bold />
-                <Row label="Deposit %" value={`${o.depositPct.toFixed(1)}%`} />
+                <Row label="Cash down" value={formatMoney(o.deposit)} bold />
+                <Row label="Cash down %" value={`${o.depositPct.toFixed(1)}%`} />
+                <Row label="Security deposit" value={formatMoney(o.securityDeposit || 0)} bold />
                 <Row label="Term" value={`${o.termMonths} mo`} bold />
                 <Row label="Residual %" value={`${o.residualPct.toFixed(1)}%`} />
                 <Row label="Int. rate" value={`${o.ratePct.toFixed(2)}%`} />

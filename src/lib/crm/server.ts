@@ -2331,7 +2331,7 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
       payload.options.map((o, i) =>
         i === data.optionNumber - 1
           ? o
-          : { ...o, cost: 0, payment: 0, deposit: 0, residual: 0 },
+          : { ...o, cost: 0, payment: 0, deposit: 0, securityDeposit: 0, residual: 0 },
       ),
       taxRate,
     );

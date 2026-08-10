@@ -2,9 +2,13 @@
  * Paul Motor lease quote engine — mirrors the company Google Sheet (QUOTE tab).
  *
  * Core payment:
- *   financed = cost + extra + profit - tradeIn - deposit
+ *   financed = cost + extra + profit - tradeIn - cashDown(deposit field)
  *   basePmt  = PMT(rate/12, term, -financed, residual)
  *   payment  = basePmt + handling
+ *
+ * Cash down (`deposit`): taxed; reduces cap cost / loan balance.
+ * Security deposit (`securityDeposit`): NOT taxed; does NOT reduce financed;
+ * appears on 1st invoice + lease contract only.
  *
  * Pro-rata (1st invoice / due on delivery):
  *   proRata = totalPayment * (daysLeftInMonth / daysInMonth)
@@ -41,7 +45,17 @@ export type LeaseOptionInput = {
   tradeIn: number;
   /** Outstanding lien / loan on trade-in. Net equity = tradeIn - tradeInLien (can be negative). */
   tradeInLien: number;
+  /**
+   * Cash down (down payment) — NOT a refundable deposit.
+   * Taxed at delivery; reduces capitalized cost / loan balance.
+   * Field name `deposit` kept for saved-quote compatibility.
+   */
   deposit: number;
+  /**
+   * Refundable security deposit — not taxed; does not reduce loan balance.
+   * Optional on older saved quotes (defaults to 0).
+   */
+  securityDeposit?: number;
   termMonths: number;
   ratePct: number;
   residual: number;
@@ -333,7 +347,8 @@ export function calcLeaseOption(
   const profit = input.profit || 0;
   const tradeIn = input.tradeIn || 0;
   const tradeInLien = Math.max(0, input.tradeInLien || 0);
-  const deposit = input.deposit || 0;
+  const deposit = input.deposit || 0; // cash down
+  const securityDeposit = Math.max(0, input.securityDeposit || 0);
   const termMonths = Math.max(1, Math.round(input.termMonths || 1));
   const ratePct = Math.max(0, input.ratePct || 0);
   const residual = Math.max(0, input.residual || 0);
@@ -342,7 +357,7 @@ export function calcLeaseOption(
   const vehicleTotal = cost + extra + profit;
   // Net trade equity (can be negative = negative equity added to cap cost)
   const tradeNet = round2(tradeIn - tradeInLien);
-  // Cap cost: price - trade equity - deposit  (negative equity increases financed)
+  // Cap cost: price - trade equity - cash down only (security deposit does NOT reduce balance)
   const financed = round2(Math.max(0, vehicleTotal - tradeNet - deposit));
   const depositPct = vehicleTotal > 0 ? round2((deposit / vehicleTotal) * 100) : 0;
   const residualPct = vehicleTotal > 0 ? round2((residual / vehicleTotal) * 100) : 0;
@@ -402,7 +417,7 @@ export function calcLeaseOption(
       : payment;
   const proRataTax = taxSplitOnAmount(proRata, rates).total;
 
-  // Cash-down / cap cost reduction: full GST + locked PST due at delivery
+  // Cash down: full GST + locked PST due at delivery (security deposit is untaxed)
   const downpaymentTax = taxSplitOnAmount(deposit, rates).total;
   // Doc / prep / freight-style fees: both GST and locked PST (BC)
   const adminTax = taxSplitOnAmount(admin, rates).total;
@@ -411,8 +426,16 @@ export function calcLeaseOption(
   const licenseTax = taxSplitOnAmount(license, rates).total;
   const tireTaxTax = taxSplitOnAmount(tireTax, rates).total;
 
+  // Security deposit is included pre-tax with $0 tax
   const dueSubtotal = round2(
-    deposit + proRata + admin + tracker + lienPpsa + license + tireTax,
+    deposit +
+      securityDeposit +
+      proRata +
+      admin +
+      tracker +
+      lienPpsa +
+      license +
+      tireTax,
   );
   const dueTax = round2(
     downpaymentTax + proRataTax + adminTax + trackerTax + lienTax + licenseTax + tireTaxTax,
@@ -429,6 +452,7 @@ export function calcLeaseOption(
     tradeIn,
     tradeInLien,
     deposit,
+    securityDeposit,
     termMonths,
     ratePct,
     residual,
@@ -482,6 +506,7 @@ export function emptyOption(partial?: Partial<LeaseOptionInput>): LeaseOptionInp
     tradeIn: 0,
     tradeInLien: 0,
     deposit: 0,
+    securityDeposit: 0,
     termMonths: 36,
     ratePct: 6.99,
     residual: 0,
@@ -541,7 +566,8 @@ export function buildRetailQuoteHtml(
           <tr class="emph"><td>Price</td><td class="num">${formatMoney(o.cost + o.extra + o.profit)}</td></tr>
           <tr><td>Trade-In</td><td class="num">${formatMoney(o.tradeIn)}</td></tr>
           <tr><td>Trade-In Lien</td><td class="num">${formatMoney(o.tradeInLien || 0)}</td></tr>
-          <tr class="emph"><td>Cash-down</td><td class="num">${formatMoney(o.deposit)} <span class="pct">(${o.depositPct.toFixed(1)}%)</span></td></tr>
+          <tr class="emph"><td>Cash down</td><td class="num">${formatMoney(o.deposit)} <span class="pct">(${o.depositPct.toFixed(1)}%)</span></td></tr>
+          <tr><td>Security deposit</td><td class="num">${formatMoney(o.securityDeposit || 0)}</td></tr>
           <tr><td>Term</td><td class="num">${o.termMonths} mo</td></tr>
           <tr><td>Residual</td><td class="num">${formatMoney(o.residual)} <span class="pct">(${o.residualPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Int. Rate</td><td class="num">${o.ratePct.toFixed(2)}%</td></tr>
@@ -673,7 +699,8 @@ ${escapeHtml(client.phone || "")}</p>
 <table>
   <thead><tr><th>Item</th><th class="num">Amount</th></tr></thead>
   <tbody>
-    <tr><td>Downpayment (cash)</td><td class="num">${formatMoney(option.deposit)}</td></tr>
+    <tr><td>Cash down (down payment)</td><td class="num">${formatMoney(option.deposit)}</td></tr>
+    <tr><td>Security deposit (refundable, not taxed)</td><td class="num">${formatMoney(option.securityDeposit || 0)}</td></tr>
     <tr><td>Pro-rata lease (${option.daysLeftMonth} of ${option.daysInMonth} days)</td><td class="num">${formatMoney(option.proRata)}</td></tr>
     <tr><td>Document / admin fees</td><td class="num">${formatMoney(option.admin)}</td></tr>
     <tr><td>Anti-theft / tracker</td><td class="num">${formatMoney(option.tracker)}</td></tr>
@@ -748,6 +775,8 @@ export function renderContractTemplate(
     price: formatMoney(option.cost + option.extra + option.profit),
 
     deposit: formatMoney(option.deposit),
+    cash_down: formatMoney(option.deposit),
+    security_deposit: formatMoney(option.securityDeposit || 0),
     trade_in: formatMoney(option.tradeIn),
     financed: formatMoney(option.financed),
     residual: formatMoney(option.residual),
@@ -786,7 +815,8 @@ export function defaultContractBody(style: ContractStyleKey): string {
 <p><strong>Véhicule :</strong> {{vehicle}} · VIN {{vin}} · Couleur {{color}} · {{km}} km</p>
 <ol>
 <li><strong>Location.</strong> Terme de {{term}} mois, du {{start_date}} au {{end_date}}.</li>
-<li><strong>Montant servant à déterminer le loyer.</strong> Prix {{price}} ; acompte {{deposit}} ; échange {{trade_in}} ; net {{financed}}.</li>
+<li><strong>Montant servant à déterminer le loyer.</strong> Prix {{price}} ; mise de fonds (cash down) {{cash_down}} ; échange {{trade_in}} ; net {{financed}}.</li>
+<li><strong>Dépôt de garantie.</strong> {{security_deposit}} (remboursable, non imposable, ne réduit pas le capital).</li>
 <li><strong>Taux d'intérêt.</strong> {{rate}} l'an.</li>
 <li><strong>Loyer mensuel.</strong> Base {{payment}} + taxes {{tax}} = {{total_payment}}.</li>
 <li><strong>Valeur résiduelle.</strong> {{residual}} (plus taxes et frais de transfert de 200 $).</li>
@@ -830,7 +860,8 @@ commencing on <strong>{{start_date}}</strong> and ending on <strong>{{end_date}}
 <h2>3. AMOUNT USED IN DETERMINING RENT</h2>
 <table class="nums">
   <tr><td>Selling / capitalized cost</td><td class="num">{{price}}</td></tr>
-  <tr><td>Cash deposit / down payment</td><td class="num">{{deposit}}</td></tr>
+  <tr><td>Cash down (down payment)</td><td class="num">{{cash_down}}</td></tr>
+  <tr><td>Security deposit (refundable, not taxed)</td><td class="num">{{security_deposit}}</td></tr>
   <tr><td>Trade-in allowance</td><td class="num">{{trade_in}}</td></tr>
   <tr><td><strong>Amount used in determining rent (financed)</strong></td><td class="num"><strong>{{financed}}</strong></td></tr>
   <tr><td>Residual / purchase option (ex tax)</td><td class="num">{{residual}}</td></tr>
@@ -847,10 +878,12 @@ commencing on <strong>{{start_date}}</strong> and ending on <strong>{{end_date}}
 
 <h2>5. AMOUNTS PAYABLE UPON DELIVERY</h2>
 <table class="nums">
+  <tr><td>Cash down (down payment)</td><td class="num">{{cash_down}}</td></tr>
+  <tr><td>Security deposit (refundable, not taxed)</td><td class="num">{{security_deposit}}</td></tr>
   <tr><td>Pro-rata rent for delivery month</td><td class="num">{{pro_rata}}</td></tr>
   <tr><td><strong>Total due on delivery (estimate)</strong></td><td class="num"><strong>{{due_total}}</strong></td></tr>
 </table>
-<p>Amounts due on delivery may include cash deposit, pro-rata rent, administration, tracker, lien/PPSA, license, tire tax and applicable taxes, as itemized on the First Invoice attached or delivered with this Agreement.</p>
+<p>Amounts due on delivery may include cash down (taxed), security deposit (not taxed, refundable), pro-rata rent, administration, tracker, lien/PPSA, license, tire tax and applicable taxes, as itemized on the First Invoice attached or delivered with this Agreement.</p>
 
 <h2>6. RESIDUAL / PURCHASE OPTION</h2>
 <p>At the end of the Term, subject to the Lessee’s compliance with this Agreement, the Lessee may purchase the Vehicle for the residual amount of <strong>{{residual}}</strong>, plus applicable taxes and a transfer fee of <strong>$200.00</strong>, unless a different fee is required by law or by the Lessor’s then-current policy disclosed in writing.</p>
