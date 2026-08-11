@@ -28,20 +28,29 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
   }
   matched.push(`type:${lead_type}`);
 
+  const isAutoTrader =
+    portalRule.startsWith("autotrader:") ||
+    /dealerleads\.trader|1-source@|autotrader\.ca/i.test(`${fromLine}\n${text}`);
+  const at = isAutoTrader ? parseAutoTraderLead(text) : null;
+  if (at) matched.push("autotrader-parser");
+
   // Never treat form titles / dealer branding as the client name
   const name =
+    (at?.name && !isDealerOrSelfName(at.name) ? at.name : "") ||
     pickClientName(text, subjectLine, lead_type, portalRule) ||
     "";
 
   if (name) matched.push("name");
 
   const email =
+    (at?.email || "") ||
     pickLabeled(text, ["email", "e-mail", "email address", "from email", "customer email", "work email", "business email"]) ||
     extractEmail(text) ||
     "";
   if (email) matched.push("email");
 
   const phone =
+    (at?.phone || "") ||
     pickLabeled(text, [
       "phone",
       "telephone",
@@ -58,6 +67,7 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
   if (phone) matched.push("phone");
 
   const stock_number =
+    (at?.stock || "") ||
     pickLabeled(text, [
       "stock number",
       "stock #",
@@ -74,6 +84,7 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
   if (stock_number) matched.push("stock");
 
   const vehicle_interest =
+    (at?.vehicle || "") ||
     pickLabeled(text, [
       "vehicle of interest",
       "vehicle interest",
@@ -95,18 +106,21 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
   if (vehicle_interest) matched.push("vehicle");
 
   const notesBits: string[] = [];
-  const message = pickLabeled(text, [
-    "message",
-    "comments",
-    "comment",
-    "notes",
-    "note",
-    "inquiry",
-    "details",
-    "additional information",
-    "additional info",
-    "body",
-  ]);
+  const message =
+    (at?.message || "") ||
+    pickLabeled(text, [
+      "message",
+      "comments",
+      "comment",
+      "notes",
+      "note",
+      "inquiry",
+      "details",
+      "additional information",
+      "additional info",
+      "body",
+      "message from customer",
+    ]);
   if (message) {
     notesBits.push(message);
     matched.push("message");
@@ -263,7 +277,7 @@ function isDealerOrSelfName(value: string): boolean {
     return true;
   }
   if (
-    /^(tadvantage|cargurus|autotrader|trader\.ca|dealer leads?|no-?reply|donotreply|mailer-daemon)\b/.test(
+    /^(tadvantage|cargurus|autotrader|trader|trader\.ca|dealer leads?|no-?reply|donotreply|mailer-daemon)\b/.test(
       v,
     )
   ) {
@@ -293,7 +307,11 @@ function isFormTitle(value: string, subjectLine: string): boolean {
 }
 
 function isPortalSenderName(value: string): boolean {
-  return /tadvantage|cargurus|autotrader|dealer|no.?reply|notifications?/i.test(value);
+  const v = value.trim();
+  if (/^trader$/i.test(v)) return true;
+  return /tadvantage|cargurus|autotrader|\btrader\b|dealerleads|dealer\s*leads?|no.?reply|notifications?/i.test(
+    v,
+  );
 }
 
 function detectLeadType(lower: string, flat: string): LeadType {
@@ -365,9 +383,175 @@ function extractEmail(text: string): string {
 }
 
 function extractPhone(text: string): string {
-  const m = text.match(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/);
-  return m?.[0]?.trim() || "";
+  // AutoTrader / portal dealer account IDs look like phone numbers — strip them first
+  const scrubbed = text
+    .replace(/Customer\s*no\.?\s*[:#]?\s*\d{6,}/gi, " ")
+    .replace(/Customer\s*number\s*[:#]?\s*\d{6,}/gi, " ");
+  const banned = collectDealerCustomerNumbers(text);
+  const matches = [
+    ...scrubbed.matchAll(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/g),
+  ];
+  for (const m of matches) {
+    const raw = m[0]?.trim() || "";
+    const digits = raw.replace(/\D/g, "");
+    const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+    if (banned.has(last10) || banned.has(digits)) continue;
+    if (/^1000\d{6}$/.test(last10) && /customer\s*no/i.test(text)) continue;
+    return raw;
+  }
+  return "";
 }
+
+function collectDealerCustomerNumbers(text: string): Set<string> {
+  const s = new Set<string>();
+  for (const m of text.matchAll(/Customer\s*no\.?\s*[:#]?\s*(\d{6,})/gi)) {
+    const d = m[1].replace(/\D/g, "");
+    s.add(d);
+    if (d.length >= 10) s.add(d.slice(-10));
+  }
+  for (const m of text.matchAll(/Customer\s*number\s*[:#]?\s*(\d{6,})/gi)) {
+    const d = m[1].replace(/\D/g, "");
+    s.add(d);
+    if (d.length >= 10) s.add(d.slice(-10));
+  }
+  return s;
+}
+
+/**
+ * AutoTrader / Trader.ca leads (1-Source@dealerleads.trader.ca).
+ * Buyer is in "New inquiry from X for your Y" + "Message from customer".
+ * Dealer "Customer no." is NOT the buyer phone.
+ */
+function parseAutoTraderLead(text: string): {
+  name?: string;
+  phone?: string;
+  email?: string;
+  vehicle?: string;
+  stock?: string;
+  message?: string;
+} {
+  const out: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    vehicle?: string;
+    stock?: string;
+    message?: string;
+  } = {};
+  const banned = collectDealerCustomerNumbers(text);
+
+  const inq =
+    text.match(
+      /New\s+inquiry\s*(?:\r?\n|\s)+from\s+([^\n]+?)\s+for your\s+([^\n]+)/i,
+    ) ||
+    text.match(
+      /from\s+([A-Za-z][A-Za-z .'-]{0,40}?)\s+for your\s+((?:19|20)\d{2}[^\n]{3,80})/i,
+    );
+  if (inq) {
+    const n = inq[1].trim().replace(/\s+/g, " ");
+    if (n && !isDealerOrSelfName(n) && !isPortalSenderName(n)) out.name = n;
+    out.vehicle = inq[2].trim().replace(/\s+/g, " ");
+  }
+
+  const stock =
+    text.match(/Stock\s*number\s*[:#]?\s*([A-Z0-9-]{2,20})/i) ||
+    text.match(/Stock\s*#\s*[:#]?\s*([A-Z0-9-]{2,20})/i);
+  if (stock) out.stock = stock[1].trim().toUpperCase();
+
+  const msgMatch = text.match(
+    /Message from customer\s*([\s\S]*?)(?=\n\s*Your vehicle\b|\n\s*View listing\b|\n\s*View vehicle\b|\n\s*Condition\s*:|$)/i,
+  );
+  if (msgMatch?.[1]) {
+    const block = msgMatch[1].trim();
+    out.message = block.slice(0, 1200);
+
+    // Collapsed signature first: Eric7866894629eklein@sonnohomes.com
+    const collapsed = block.match(
+      /([A-Za-z][A-Za-z .'-]{1,30}?)(\d{10}|\d{3}[-.\s]?\d{3}[-.\s]?\d{4})\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i,
+    );
+    if (collapsed) {
+      if (!out.name) out.name = collapsed[1].trim();
+      out.phone = collapsed[2].trim();
+      out.email = collapsed[3].toLowerCase();
+    }
+
+    const emails = [...block.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map(
+      (m) => m[0],
+    );
+    const goodEmail = emails.find((e) => {
+      if (/dealerleads|trader\.ca|noreply|no-reply|donotreply|paulmotor|autotrader/i.test(e)) {
+        return false;
+      }
+      const local = e.split("@")[0] || "";
+      // Reject local-parts that swallowed name+phone
+      if (/\d{7,}/.test(local)) return false;
+      return true;
+    });
+    if (goodEmail) out.email = goodEmail.toLowerCase();
+
+    if (!out.phone) {
+      const phones = [
+        ...block.matchAll(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/g),
+      ].map((m) => m[0]);
+      for (const ph of phones) {
+        const digits = ph.replace(/\D/g, "");
+        const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+        if (banned.has(last10) || banned.has(digits)) continue;
+        if (/^1000\d{6}$/.test(last10) && banned.size > 0) continue;
+        out.phone = ph.trim();
+        break;
+      }
+    }
+
+    const lines = block
+      .split(/\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    for (let i = lines.length - 1; i >= 0 && i >= lines.length - 8; i--) {
+      const line = lines[i];
+      if (!out.email) {
+        const em = line.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+        if (
+          em &&
+          !/dealerleads|trader\.ca|noreply/i.test(em[0]) &&
+          !/\d{7,}/.test(em[0].split("@")[0] || "")
+        ) {
+          out.email = em[0].toLowerCase();
+        }
+      }
+      if (!out.phone) {
+        const ph = line.match(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/);
+        if (ph) {
+          const digits = ph[0].replace(/\D/g, "");
+          const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+          if (!banned.has(last10) && !banned.has(digits)) out.phone = ph[0].trim();
+        }
+      }
+      if (
+        !out.name &&
+        /^[A-Za-z][A-Za-z .'-]{1,40}$/.test(line) &&
+        !/message|available|interesting|text me|car ?fax|trade|partner|inquiry/i.test(line)
+      ) {
+        out.name = line;
+      }
+    }
+  }
+
+  if (!out.phone) {
+    const ph = extractPhone(text);
+    if (ph) out.phone = ph;
+  }
+  if (!out.email) {
+    const em = extractEmail(text);
+    if (em && !/dealerleads|trader\.ca/i.test(em)) {
+      const local = em.split("@")[0] || "";
+      if (!/\d{7,}/.test(local)) out.email = em;
+    }
+  }
+
+  return out;
+}
+
 
 function extractStock(text: string): string {
   const m =

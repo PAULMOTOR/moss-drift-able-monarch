@@ -35,6 +35,44 @@ function uid() {
   return crypto.randomUUID();
 }
 
+/** AutoTrader "Customer no." and similar dealer account IDs must never be buyer phones. */
+function isDealerAccountPhone(
+  phone: string | null | undefined,
+  body?: string | null,
+): boolean {
+  if (!phone) return false;
+  const digits = phone.replace(/\D/g, "");
+  const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+  if (!last10) return false;
+  if (body) {
+    const re = new RegExp(
+      `Customer\\s*no\\.?\\s*[:#]?\\s*${last10}`,
+      "i",
+    );
+    if (re.test(body)) return true;
+    if (body.includes(digits) && /Customer\s*no/i.test(body) && /^1000\d{6}$/.test(last10)) {
+      return true;
+    }
+  }
+  // Common AutoTrader dealer customer number shape when portal is AT
+  if (/^1000\d{6}$/.test(last10) && body && /autotrader|dealerleads|trader\.ca/i.test(body)) {
+    return true;
+  }
+  return false;
+}
+
+function isJunkLeadName(name: string | null | undefined): boolean {
+  if (!name) return true;
+  const n = name.trim().toLowerCase();
+  if (!n) return true;
+  if (/^(trader|autotrader|email lead|cargurus|tadvantage|dealer|unknown|no name)$/i.test(n)) {
+    return true;
+  }
+  if (/dealerleads|1-source|no-?reply/i.test(n)) return true;
+  return false;
+}
+
+
 export type ImportResult = {
   ok: boolean;
   configured: boolean;
@@ -279,18 +317,32 @@ async function processMessage(
   const source = classified.source;
 
   let customerEmail = normalizeEmail(parsed.email);
-  if (customerEmail && /tadvantage|cargurus|trader\.ca|dealerleads|noreply/i.test(customerEmail)) {
+  if (
+    customerEmail &&
+    /tadvantage|cargurus|trader\.ca|dealerleads|noreply|1-source|autotrader/i.test(
+      customerEmail,
+    )
+  ) {
     customerEmail = null;
   }
-  const customerPhone = normalizePhone(parsed.phone);
+  // Reject AutoTrader dealer account IDs mistaken as phones (e.g. Customer no. 1000004136)
+  let customerPhone = normalizePhone(parsed.phone);
+  if (customerPhone && isDealerAccountPhone(customerPhone, msg.bodyText || raw)) {
+    customerPhone = null;
+  }
   const stock = stockKey(parsed.stock_number);
   let vehicle = parsed.vehicle_interest?.trim() || "";
-  const name =
-    (parsed.name?.trim() && !/paul\s*motor/i.test(parsed.name)
+  let name =
+    (parsed.name?.trim() &&
+    !/paul\s*motor/i.test(parsed.name) &&
+    !isJunkLeadName(parsed.name)
       ? parsed.name.trim()
       : "") ||
     (customerEmail ? customerEmail.split("@")[0] : "") ||
     "Email lead";
+  if (isJunkLeadName(name)) {
+    name = customerEmail ? customerEmail.split("@")[0] : "Email lead";
+  }
 
   if (!customerEmail && !customerPhone && !vehicle && !stock && name === "Email lead") {
     if (portal === "other") {
@@ -337,6 +389,43 @@ async function processMessage(
   const mergeBlock = `\n\n---\n${notes}`;
 
   if (dup) {
+    // If the existing lead still has junk AutoTrader fields, overwrite with real buyer contact
+    const existing = await sql.query<{
+      name: string;
+      phone: string | null;
+      email: string | null;
+      first_name: string | null;
+      last_name: string | null;
+    }>(
+      `select name, phone, email, first_name, last_name from leads where id = $1`,
+      [dup.id],
+    );
+    const ex = existing[0];
+    const nextPhone =
+      customerPhone &&
+      (!normalizePhone(ex?.phone) ||
+        isDealerAccountPhone(normalizePhone(ex?.phone), msg.bodyText || raw) ||
+        isJunkLeadName(ex?.name || ""))
+        ? parsed.phone || customerPhone
+        : null;
+    const nextEmail =
+      customerEmail &&
+      (!normalizeEmail(ex?.email) ||
+        /trader\.ca|dealerleads|tonyroadranger|100000/i.test(ex?.email || "") ||
+        isJunkLeadName(ex?.name || ""))
+        ? customerEmail
+        : null;
+    const nextName =
+      name &&
+      name !== "Email lead" &&
+      !isJunkLeadName(name) &&
+      isJunkLeadName(ex?.name || "")
+        ? name
+        : null;
+    const nameParts = nextName ? nextName.trim().split(/\s+/).filter(Boolean) : [];
+    const nextFirst = nameParts[0] || null;
+    const nextLast = nameParts.length > 1 ? nameParts.slice(1).join(" ") : null;
+
     await sql`
       update leads set
         notes = case
@@ -345,8 +434,11 @@ async function processMessage(
         end,
         vehicle_interest = coalesce(nullif(vehicle_interest, ''), ${vehicle || null}),
         inventory_id = coalesce(inventory_id, ${inv?.id ?? null}),
-        phone = coalesce(nullif(phone, ''), ${customerPhone ? parsed.phone || null : null}),
-        email = coalesce(nullif(email, ''), ${customerEmail}),
+        phone = coalesce(${nextPhone}, nullif(phone, ''), ${customerPhone ? parsed.phone || null : null}),
+        email = coalesce(${nextEmail}, nullif(email, ''), ${customerEmail}),
+        name = coalesce(${nextName}, name),
+        first_name = case when ${nextFirst}::text is not null then ${nextFirst} else first_name end,
+        last_name = case when ${nextLast}::text is not null then ${nextLast} else last_name end,
         updated_at = now()
       where id = ${dup.id}
     `;
@@ -426,7 +518,7 @@ async function processMessage(
       ${firstName},
       ${lastName},
       ${partyType},
-      ${parsed.phone || null},
+      ${customerPhone ? (parsed.phone || customerPhone) : null},
       ${customerEmail},
       ${source},
       ${leadType},
