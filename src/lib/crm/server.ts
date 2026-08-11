@@ -573,9 +573,15 @@ export const listLeads = createServerFn({ method: "GET" })
          and (
            $4::text is null
            or lower(l.name) like $4
+           or lower(coalesce(l.first_name, '')) like $4
+           or lower(coalesce(l.last_name, '')) like $4
            or lower(coalesce(l.email, '')) like $4
            or lower(coalesce(l.phone, '')) like $4
            or lower(coalesce(l.vehicle_interest, '')) like $4
+           or lower(coalesce(l.notes, '')) like $4
+           or lower(coalesce(i.stock_number, '')) like $4
+           or lower(coalesce(i.vin, '')) like $4
+           or lower(coalesce(i.make, '') || ' ' || coalesce(i.model, '')) like $4
          )
          and (
            $8::text[] is null

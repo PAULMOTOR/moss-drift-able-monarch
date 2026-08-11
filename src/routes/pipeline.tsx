@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { listLeads, listProfiles, updateLead, getMyProfile } from "@/lib/crm/server";
 import { leadsQueryKey } from "@/lib/query-client";
+import { Input } from "@/components/ui/input";
 import {
   CREDIT_PIPELINE_COLUMNS,
   PIPELINES,
@@ -30,7 +31,7 @@ import {
   type StageId,
 } from "@/lib/crm/types";
 import { cn, formatCurrency } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, Zap } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Search, X, Zap } from "lucide-react";
 
 export const Route = createFileRoute("/pipeline")({
   validateSearch: (s: Record<string, unknown>): { board?: string } => {
@@ -53,6 +54,10 @@ function PipelinePage() {
   ) as PipelineId;
   const [board, setBoard] = useState<PipelineId>(initialBoard);
   const [assigned, setAssigned] = useState("all");
+  const [dealQ, setDealQ] = useState("");
+  const [dealQDebounced, setDealQDebounced] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchWrapRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -63,6 +68,38 @@ function PipelinePage() {
     () => ({ assigned, limit: 200, offset: 0 }),
     [assigned],
   );
+
+  useEffect(() => {
+    const tmr = window.setTimeout(() => setDealQDebounced(dealQ.trim()), 280);
+    return () => window.clearTimeout(tmr);
+  }, [dealQ]);
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!searchWrapRef.current?.contains(e.target as Node)) setSearchOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  const dealSearchFilters = useMemo(
+    () => ({
+      q: dealQDebounced,
+      assigned,
+      limit: 25,
+      offset: 0,
+    }),
+    [dealQDebounced, assigned],
+  );
+
+  const dealSearchQ = useQuery({
+    queryKey: ["pipeline-deal-search", dealSearchFilters],
+    queryFn: () => listLeads({ data: dealSearchFilters }),
+    enabled: dealQDebounced.length >= 2,
+    staleTime: 15_000,
+  });
+  const searchHits = dealSearchQ.data?.leads ?? [];
+  const searchTotal = dealSearchQ.data?.total ?? 0;
 
   const meQ = useQuery({
     queryKey: ["me"],
@@ -281,6 +318,113 @@ function PipelinePage() {
             {p.label}
           </button>
         ))}
+      </div>
+
+      <div ref={searchWrapRef} className="relative z-30 mb-4 max-w-xl">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={dealQ}
+            onChange={(e) => {
+              setDealQ(e.target.value);
+              setSearchOpen(true);
+            }}
+            onFocus={() => setSearchOpen(true)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setSearchOpen(false);
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            placeholder="Search all pipelines — name, phone, email, vehicle, stock, VIN…"
+            className="h-10 pl-9 pr-9"
+            aria-label="Search deals across all pipelines"
+            autoComplete="off"
+          />
+          {dealQ ? (
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              onClick={() => {
+                setDealQ("");
+                setDealQDebounced("");
+                setSearchOpen(false);
+              }}
+              aria-label="Clear search"
+            >
+              <X className="size-4" />
+            </button>
+          ) : null}
+        </div>
+        {searchOpen && dealQDebounced.length >= 2 ? (
+          <div className="absolute left-0 right-0 mt-1 max-h-[min(420px,55vh)] overflow-y-auto rounded-sm border border-border bg-card shadow-lg">
+            {dealSearchQ.isFetching ? (
+              <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                Searching…
+              </div>
+            ) : searchHits.length === 0 ? (
+              <p className="px-3 py-4 text-sm text-muted-foreground">
+                No deals match “{dealQDebounced}”.
+              </p>
+            ) : (
+              <ul className="divide-y divide-border py-1">
+                {searchHits.map((lead) => {
+                  const stageLabel =
+                    STAGES.find((s) => s.id === lead.stage)?.label || lead.stage;
+                  const tab = defaultLeadTab(lead);
+                  const pipelineHint =
+                    tab === "compliance"
+                      ? "Compliance"
+                      : tab === "credit" || tab === "approval"
+                        ? "Credit"
+                        : "Lead";
+                  return (
+                    <li key={lead.id}>
+                      <Link
+                        to="/leads/$leadId"
+                        params={{ leadId: lead.id }}
+                        search={{ tab }}
+                        onClick={() => setSearchOpen(false)}
+                        className="block px-3 py-2.5 transition-colors hover:bg-muted/80"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-sm font-semibold text-foreground">
+                            {lead.name}
+                          </span>
+                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {pipelineHint}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                          {lead.vehicle_interest || lead.inventory_label || "—"}
+                          {lead.phone ? ` · ${lead.phone}` : ""}
+                          {lead.email ? ` · ${lead.email}` : ""}
+                        </p>
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                          {stageLabel}
+                          {lead.credit_status && lead.credit_status !== "none"
+                            ? ` · credit: ${lead.credit_status.replace(/_/g, " ")}`
+                            : ""}
+                          {lead.assigned_name ? ` · ${lead.assigned_name}` : ""}
+                        </p>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {searchTotal > searchHits.length ? (
+              <p className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+                Showing {searchHits.length} of {searchTotal} — refine your search for more.
+              </p>
+            ) : null}
+          </div>
+        ) : searchOpen && dealQ.trim().length > 0 && dealQ.trim().length < 2 ? (
+          <div className="absolute left-0 right-0 mt-1 rounded-sm border border-border bg-card px-3 py-3 text-xs text-muted-foreground shadow-lg">
+            Type at least 2 characters to search across Lead, Credit, and Compliance.
+          </div>
+        ) : null}
       </div>
 
       <div className="relative mb-2 flex items-center gap-2">
