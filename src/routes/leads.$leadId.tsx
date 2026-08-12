@@ -377,7 +377,17 @@ function LeadDetail() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button asChild size="sm" variant="outline">
-              <Link to="/quote" search={{ leadId: lead.id }}>
+              <Link
+                to="/quote"
+                search={{
+                  leadId: lead.id,
+                  quoteId:
+                    savedQuotes.find(
+                      (q) =>
+                        q.status === "accepted" || q.id === lead.accepted_quote_id,
+                    )?.id || savedQuotes[0]?.id,
+                }}
+              >
                 Lease quote
               </Link>
             </Button>

@@ -1,5 +1,5 @@
-import { createFileRoute, Link, useSearch } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { AuthGate, PageHeader } from "@/components/app-shell";
@@ -67,8 +67,19 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function pickPreferredQuote(
+  rows: Array<{ id: string; status: string }>,
+  requested?: string,
+): string | null {
+  if (requested && rows.some((r) => r.id === requested)) return requested;
+  const accepted = rows.find((r) => r.status === "accepted");
+  if (accepted) return accepted.id;
+  return rows[0]?.id ?? null;
+}
+
 function QuotePage() {
   const search = useSearch({ from: "/quote" });
+  const navigate = useNavigate();
   const save = useServerFn(saveLeaseQuote);
   const acceptFn = useServerFn(acceptLeaseQuoteOption);
   const getQuoteFn = useServerFn(getLeaseQuote);
@@ -94,6 +105,7 @@ function QuotePage() {
   const [leadId, setLeadId] = useState(search.leadId || "");
   const [quoteId, setQuoteId] = useState<string | null>(search.quoteId || null);
   const [salesman, setSalesman] = useState("");
+  const openedQuoteRef = useRef<string | null>(search.quoteId || null);
 
   const [client, setClient] = useState<ClientQuoteInfo>({
     clientName: "",
@@ -139,10 +151,11 @@ function QuotePage() {
   async function refreshSaved(forLead = leadId) {
     if (!forLead) {
       setSaved([]);
-      return;
+      return [];
     }
     const rows = await listLeaseQuotes({ data: { leadId: forLead } });
     setSaved(rows);
+    return rows;
   }
 
   useEffect(() => {
@@ -161,15 +174,25 @@ function QuotePage() {
   }, [user?.id]);
 
   useEffect(() => {
-    void refreshSaved(leadId);
+    let cancelled = false;
+    void (async () => {
+      if (!leadId) {
+        setSaved([]);
+        return;
+      }
+      const rows = await refreshSaved(leadId);
+      if (cancelled) return;
+      const preferred = pickPreferredQuote(rows, search.quoteId);
+      if (preferred && openedQuoteRef.current !== preferred) {
+        openedQuoteRef.current = preferred;
+        await loadQuote(preferred, { silent: true, syncUrl: true });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leadId]);
-
-  useEffect(() => {
-    if (!search.quoteId) return;
-    void loadQuote(search.quoteId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search.quoteId]);
+  }, [leadId, search.quoteId]);
 
   useEffect(() => {
     if (!leadId) return;
@@ -177,6 +200,8 @@ function QuotePage() {
       .then((res) => {
         const lead = res?.lead;
         if (!lead) return;
+        // A saved quote owns the form — don't overwrite with a generic lead template
+        if (openedQuoteRef.current) return;
         setClient((c) => ({
           ...c,
           clientName: lead.name || c.clientName,
@@ -219,11 +244,22 @@ function QuotePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId, inventory.length]);
 
-  async function loadQuote(id: string) {
+  async function loadQuote(
+    id: string,
+    opts?: { silent?: boolean; syncUrl?: boolean },
+  ) {
     try {
       const q = await getQuoteFn({ data: { id } });
+      openedQuoteRef.current = q.id;
       setQuoteId(q.id);
       if (q.lead_id) setLeadId(q.lead_id);
+      if (opts?.syncUrl) {
+        void navigate({
+          to: "/quote",
+          search: { leadId: q.lead_id || leadId || undefined, quoteId: q.id },
+          replace: true,
+        });
+      }
       const payload = JSON.parse(q.payload) as {
         client: ClientQuoteInfo;
         options: LeaseOptionResult[];
@@ -254,7 +290,7 @@ function QuotePage() {
           })),
         );
       }
-      toast.success("Quote reopened");
+      if (!opts?.silent) toast.success("Quote reopened");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not open quote");
     }
@@ -415,9 +451,14 @@ function QuotePage() {
     setBusy(true);
     try {
       await deleteQuoteFn({ data: { id } });
-      if (quoteId === id) setQuoteId(null);
+      if (quoteId === id) {
+        openedQuoteRef.current = null;
+        setQuoteId(null);
+      }
       toast.success("Quote deleted");
-      await refreshSaved();
+      const rows = await refreshSaved();
+      const next = pickPreferredQuote(rows);
+      if (next) await loadQuote(next, { silent: true, syncUrl: true });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Delete failed");
     } finally {
@@ -711,7 +752,12 @@ function QuotePage() {
               saved.map((q) => (
                 <div
                   key={q.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border px-3 py-2 text-sm"
+                  className={
+                    "flex flex-wrap items-center justify-between gap-2 rounded-sm border px-3 py-2 text-sm " +
+                    (q.id === quoteId
+                      ? "border-primary bg-primary/5"
+                      : "border-border")
+                  }
                 >
                   <div>
                     <p className="font-medium">
@@ -728,7 +774,7 @@ function QuotePage() {
                       type="button"
                       size="sm"
                       variant="outline"
-                      onClick={() => void loadQuote(q.id)}
+                      onClick={() => void loadQuote(q.id, { syncUrl: true })}
                     >
                       <FolderOpen className="size-4" />
                       Reopen
