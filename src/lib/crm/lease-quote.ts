@@ -2,7 +2,12 @@
  * Paul Motor lease quote engine — mirrors the company Google Sheet (QUOTE tab).
  *
  * Core payment:
- *   financed = cost + extra + profit - tradeIn - cashDown(deposit field)
+ *   financed (payment cap) = cost + extra + profit - tradeIn + payout - cashDown
+ *   tax cap (individual + trade) = cost + extra + profit - tradeIn - cashDown
+ *     → monthly tax = statutory tax on PMT(tax cap), applied onto PMT(payment cap)
+ *   Business / no trade: no tax credit (tax the real payment).
+ *   Financed trade payout includes tax (use as-is). Lease buyout is pre-tax
+ *     → individual payout funded = lien × (1 + combined tax).
  *   basePmt  = PMT(rate/12, term, -financed, residual)
  *   payment  = basePmt + handling
  *
@@ -91,6 +96,17 @@ export type LeaseOptionResult = LeaseOptionInput & {
   dueSubtotal: number;
   dueTax: number;
   dueTotal: number;
+  /** Cap cost used for the customer payment (includes payout). */
+  paymentCapCost: number;
+  /** Cap cost used for tax / tax-credit (trade allowance only; no lien). */
+  taxCapCost: number;
+  /** Cheque we write for the trade payout (lien, or lien+tax if leased individual). */
+  payoutFunded: number;
+  taxCreditApplied: boolean;
+  paymentTaxBase: number;
+  /** NAV special-code rates: tax$ / real payment (can be negative). */
+  effectiveGstRate: number;
+  effectivePstRate: number;
   /** Tax meta (BC TRV / locked PST, etc.) */
   taxProvince: string;
   gstRate: number;
@@ -151,6 +167,12 @@ export type ClientQuoteInfo = {
   tradeModel?: string;
   tradeTrim?: string;
   tradeKm?: number | null;
+  /**
+   * How the trade is paid out.
+   * financed = bank loan balance already includes tax (cheque = lien).
+   * leased  = lessor buyout is pre-tax; we fund lien + tax (individuals).
+   */
+  tradeKind?: "financed" | "leased";
 };
 
 export function round2(n: number): number {
@@ -268,6 +290,19 @@ export function resolveLeaseTaxRates(
       isBc: true,
     };
   }
+  if (p === "QC") {
+    const gstRate = 0.05;
+    const pstRate = 0.09975;
+    return {
+      province: "QC",
+      gstRate,
+      pstRate,
+      combinedRate: gstRate + pstRate,
+      trv: round2(trv),
+      trvBand: "",
+      isBc: false,
+    };
+  }
   const combined = taxRateForProvince(p);
   return {
     province: p,
@@ -284,15 +319,31 @@ export function resolveLeaseTaxRates(
 export function taxSplitOnAmount(
   amount: number,
   rates: LeaseTaxRates,
+  allowNegative = false,
 ): { gst: number; pst: number; total: number } {
-  const a = Math.max(0, amount || 0);
-  if (rates.isBc) {
-    const gst = round2(a * rates.gstRate);
-    const pst = round2(a * rates.pstRate);
-    return { gst, pst, total: round2(gst + pst) };
-  }
-  const total = round2(a * rates.combinedRate);
-  return { gst: total, pst: 0, total };
+  const a = allowNegative ? Number(amount) || 0 : Math.max(0, amount || 0);
+  const gst = round2(a * rates.gstRate);
+  const pst = round2(a * rates.pstRate);
+  return { gst, pst, total: round2(gst + pst) };
+}
+
+export type TradeTaxCtx = {
+  partyType?: string;
+  tradeKind?: "financed" | "leased";
+};
+
+/** Cheque to pay off the trade. Lease buyouts are pre-tax; bank loans already include tax. */
+export function tradePayoutFunded(
+  lien: number,
+  kind: "financed" | "leased" | undefined,
+  partyType: string | undefined,
+  combinedRate: number,
+): number {
+  const L = Math.max(0, lien || 0);
+  if (L <= 0) return 0;
+  const isBiz = (partyType || "individual").toLowerCase() === "business";
+  if (kind === "leased" && !isBiz) return round2(L * (1 + (combinedRate || 0)));
+  return round2(L);
 }
 
 
@@ -348,6 +399,7 @@ export function calcLeaseOption(
   proRataCtx?: { startDate: string; daysLeftOverride?: number | null },
   /** Keep inception PST when reopening a saved BC quote. */
   locked?: { pstRate?: number | null },
+  tradeCtx?: TradeTaxCtx,
 ): LeaseOptionResult {
   const cost = Math.max(0, input.cost || 0);
   const extra = input.extra || 0; // always 0 in new UI
@@ -362,20 +414,6 @@ export function calcLeaseOption(
   const handling = Math.max(0, input.handling || 0);
 
   const vehicleTotal = cost + extra + profit;
-  // Net trade equity (can be negative = negative equity added to cap cost)
-  const tradeNet = round2(tradeIn - tradeInLien);
-  // Cap cost: price - trade equity - cash down only (security deposit does NOT reduce balance)
-  const financed = round2(Math.max(0, vehicleTotal - tradeNet - deposit));
-  const depositPct = vehicleTotal > 0 ? round2((deposit / vehicleTotal) * 100) : 0;
-  const residualPct = vehicleTotal > 0 ? round2((residual / vehicleTotal) * 100) : 0;
-
-  const monthlyRate = ratePct / 100 / 12;
-  const basePmt = pmt(monthlyRate, termMonths, -financed, residual);
-  const payment = round2(basePmt + handling);
-  const depreciation = round2((financed - residual) / termMonths);
-  const interest = round2(payment - depreciation - handling);
-  // Yield = effective annual rate of the full payment (interest rate + handling)
-  const yieldPct = yieldPctFromPayment(termMonths, payment, financed, residual);
 
   // --- Tax (BC: lock PST from TRV = gross cap cost; GST 5% always) ---
   const trv = grossCapitalizedCost({ cost, extra, profit });
@@ -399,9 +437,40 @@ export function calcLeaseOption(
     );
   }
 
-  const payTax = taxSplitOnAmount(payment, rates);
+  const partyType = (tradeCtx?.partyType || "individual").toLowerCase();
+  const isBusiness = partyType === "business";
+  const tradeKind = tradeCtx?.tradeKind === "leased" ? "leased" : "financed";
+  const payoutFunded = tradePayoutFunded(
+    tradeInLien,
+    tradeKind,
+    partyType,
+    rates.combinedRate,
+  );
+  // Payment cap: price − trade + payout − cash down (security deposit excluded)
+  const paymentCapCost = round2(vehicleTotal - tradeIn + payoutFunded - deposit);
+  const financed = round2(Math.max(0, paymentCapCost));
+  // Tax cap (NAV col. A): price − trade − cash down. Lien never enters the tax base.
+  const taxCapCost = round2(vehicleTotal - tradeIn - deposit);
+  const taxCreditApplied = !isBusiness && tradeIn > 0;
+
+  const monthlyRate = ratePct / 100 / 12;
+  const basePmt = pmt(monthlyRate, termMonths, -financed, residual);
+  const payment = round2(basePmt + handling);
+  const taxBasePmt = taxCreditApplied
+    ? round2(pmt(monthlyRate, termMonths, -taxCapCost, residual) + handling)
+    : payment;
+
+  const payTax = taxSplitOnAmount(taxBasePmt, rates, taxCreditApplied);
   const taxOnPayment = payTax.total;
   const totalPayment = round2(payment + taxOnPayment);
+  const effectiveGstRate = payment !== 0 ? payTax.gst / payment : 0;
+  const effectivePstRate = payment !== 0 ? payTax.pst / payment : 0;
+
+  const depositPct = vehicleTotal > 0 ? round2((deposit / vehicleTotal) * 100) : 0;
+  const residualPct = vehicleTotal > 0 ? round2((residual / vehicleTotal) * 100) : 0;
+  const depreciation = round2((financed - residual) / termMonths);
+  const interest = round2(payment - depreciation - handling);
+  const yieldPct = yieldPctFromPayment(termMonths, payment, financed, residual);
 
   const admin = fees.admin || 0;
   const tracker = fees.tracker || 0;
@@ -422,7 +491,10 @@ export function calcLeaseOption(
     daysInMonth > 0
       ? round2(payment * (daysLeftMonth / daysInMonth))
       : payment;
-  const proRataTax = taxSplitOnAmount(proRata, rates).total;
+  const proRataTax =
+    daysInMonth > 0 && taxCreditApplied
+      ? round2(taxOnPayment * (daysLeftMonth / daysInMonth))
+      : taxSplitOnAmount(proRata, rates).total;
 
   // Cash down: full GST + locked PST due at delivery (security deposit is untaxed)
   const downpaymentTax = taxSplitOnAmount(deposit, rates).total;
@@ -465,6 +537,13 @@ export function calcLeaseOption(
     residual,
     handling,
     financed,
+    paymentCapCost,
+    taxCapCost,
+    payoutFunded,
+    taxCreditApplied,
+    paymentTaxBase: taxBasePmt,
+    effectiveGstRate,
+    effectivePstRate,
     depositPct,
     residualPct,
     yieldPct,
@@ -599,7 +678,7 @@ export function buildRetailQuoteHtml(
           <tr><td>Residual</td><td class="num">${formatMoney(o.residual)} <span class="pct">(${o.residualPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Int. Rate</td><td class="num">${o.ratePct.toFixed(2)}%</td></tr>
           <tr class="emph"><td>Lease Payment</td><td class="num">${formatMoney(o.payment)}</td></tr>
-          <tr class="emph"><td>Taxes (${escapeHtml((client.province || "QC").toUpperCase())}${o.taxProvince === "BC" ? ` GST ${((o.gstRate || 0) * 100).toFixed(0)}% + PST ${((o.pstRate || 0) * 100).toFixed(0)}%` : ""})</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
+          <tr class="emph"><td>Taxes (${escapeHtml((client.province || "QC").toUpperCase())}${o.taxCreditApplied ? " tax credit" : ""}${o.taxProvince === "BC" ? ` GST ${((o.gstRate || 0) * 100).toFixed(0)}% + PST ${((o.pstRate || 0) * 100).toFixed(0)}%` : ""})</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
           <tr class="total"><td>Total Payment</td><td class="num">${formatMoney(o.totalPayment)}</td></tr>
           <tr><td>Pro-rata (${o.daysLeftMonth}/${o.daysInMonth} d)</td><td class="num">${formatMoney(o.proRata)}</td></tr>
           <tr class="total"><td>Due on delivery</td><td class="num">${formatMoney(o.dueTotal)}</td></tr>

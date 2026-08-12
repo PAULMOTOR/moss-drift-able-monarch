@@ -163,7 +163,7 @@ function HelpPage() {
               <strong>Option 1</strong> is your working column. Options 2–3 start empty — use <strong>Copy from left</strong>, then tweak term/rate/residual.
             </li>
             <li>
-              <strong>Trade-in lien:</strong> net equity = trade-in − lien. Negative equity increases amount financed (cap. cost).
+              <strong>Trade-in tax credit (individuals):</strong> tax is calculated on (price − cash down − trade), but the payment is calculated on (price − cash down − trade + payout). Businesses get no tax credit. <strong>Financed</strong> payouts already include tax; <strong>leased</strong> buyouts are pre-tax so we fund buyout + tax.
             </li>
             <li>
               <strong>Cash down % / Residual %</strong> stay in sync with the dollar fields (based on price + profit). Cash down is taxed and reduces the loan balance; <strong>Security deposit</strong> is refundable, not taxed, and does not reduce the balance.

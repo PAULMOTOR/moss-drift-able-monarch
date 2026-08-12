@@ -146,6 +146,7 @@ function QuotePage() {
     tradeModel: "",
     tradeTrim: "",
     tradeKm: null,
+    tradeKind: "financed",
   });
 
   const [options, setOptions] = useState<LeaseOptionInput[]>([
@@ -283,6 +284,7 @@ function QuotePage() {
           tradeModel: payload.client.tradeModel || "",
           tradeTrim: payload.client.tradeTrim || "",
           tradeKm: payload.client.tradeKm ?? null,
+          tradeKind: payload.client.tradeKind === "leased" ? "leased" : "financed",
         });
       }
       if (payload.options?.length) {
@@ -438,7 +440,10 @@ function QuotePage() {
   const calculated: LeaseOptionResult[] = useMemo(
     () =>
       options.map((o) =>
-        calcLeaseOption(o, client.province || "QC", fees, proRataCtx),
+        calcLeaseOption(o, client.province || "QC", fees, proRataCtx, undefined, {
+          partyType: client.partyType,
+          tradeKind: client.tradeKind === "leased" ? "leased" : "financed",
+        }),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
@@ -1004,6 +1009,34 @@ function QuotePage() {
                   onChange={(v) => setClient((c) => ({ ...c, tradeKm: v.trim() ? Number(v) || 0 : null }))}
                 />
               </div>
+              <div className="grid gap-1.5">
+                <Label>Trade payout</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={client.tradeKind !== "leased" ? "default" : "outline"}
+                    onClick={() => setClient((c) => ({ ...c, tradeKind: "financed" }))}
+                  >
+                    Financed (payout includes tax)
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={client.tradeKind === "leased" ? "default" : "outline"}
+                    onClick={() => setClient((c) => ({ ...c, tradeKind: "leased" }))}
+                  >
+                    Leased (buyout is pre-tax)
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {client.partyType === "business"
+                    ? "Business: no consumer tax credit on the trade or the payout. Lien is added as entered."
+                    : client.tradeKind === "leased"
+                      ? "Lease buyout is pre-tax — we fund buyout + GST/QST (or HST) on the payout. Tax credit still uses price − trade (not the lien)."
+                      : "Bank loan payout already includes tax — we fund the lien as entered. Individual tax credit: tax the (price − trade) payment, finance the (price − trade + payout) payment."}
+                </p>
+              </div>
             </div>
 
             <Field
@@ -1035,7 +1068,13 @@ function QuotePage() {
               <Label>Contract style</Label>
               <Select
                 value={client.contractStyle}
-                onValueChange={(v) => setClient((c) => ({ ...c, contractStyle: v }))}
+                onValueChange={(v) =>
+                  setClient((c) => ({
+                    ...c,
+                    contractStyle: v,
+                    partyType: /business/i.test(v) ? "business" : "individual",
+                  }))
+                }
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -1172,10 +1211,14 @@ function QuotePage() {
                   bold
                 />
                 <Row
-                  label="Trade equity (trade − lien)"
-                  value={formatMoney((options[i].tradeIn || 0) - (options[i].tradeInLien || 0))}
+                  label="Trade equity (allowance − payout we fund)"
+                  value={formatMoney((options[i].tradeIn || 0) - (o.payoutFunded || 0))}
                 />
-                <Row label="Financed (cap. cost)" value={formatMoney(o.financed)} bold />
+                <Row label="Payout we fund" value={formatMoney(o.payoutFunded || 0)} />
+                <Row label="Payment cap (financed)" value={formatMoney(o.financed)} bold />
+                {o.taxCreditApplied ? (
+                  <Row label="Tax cap (price − trade − cash down)" value={formatMoney(o.taxCapCost)} />
+                ) : null}
                 <Row label="Cash down" value={formatMoney(o.deposit)} bold />
                 <Row label="Cash down %" value={`${o.depositPct.toFixed(1)}%`} />
                 <Row label="Security deposit" value={formatMoney(o.securityDeposit || 0)} bold />
@@ -1194,8 +1237,38 @@ function QuotePage() {
                     <Row label="TRV (gross cap)" value={formatMoney(o.trv)} />
                     <Row label="Buyout tax (end)" value={formatMoney(o.residualTax)} />
                   </>
+                ) : o.taxProvince === "QC" ? (
+                  <>
+                    <Row
+                      label={`GST ${(o.gstRate * 100).toFixed(2)}%${o.taxCreditApplied ? " on tax-cap pmt" : ""}`}
+                      value={formatMoney(o.gstOnPayment)}
+                    />
+                    <Row
+                      label={`QST ${(o.pstRate * 100).toFixed(3)}%${o.taxCreditApplied ? " on tax-cap pmt" : ""}`}
+                      value={formatMoney(o.pstOnPayment)}
+                    />
+                    <Row label="Taxes total" value={formatMoney(o.taxOnPayment)} bold />
+                    {o.taxCreditApplied ? (
+                      <Row
+                        label="NAV tax codes"
+                        value={`GST ${(o.effectiveGstRate * 100).toFixed(4)}% · QST ${(o.effectivePstRate * 100).toFixed(4)}%`}
+                      />
+                    ) : null}
+                  </>
                 ) : (
-                  <Row label="Taxes" value={formatMoney(o.taxOnPayment)} bold />
+                  <>
+                    <Row
+                      label={o.taxCreditApplied ? "Tax (on tax-cap payment)" : "Taxes"}
+                      value={formatMoney(o.taxOnPayment)}
+                      bold
+                    />
+                    {o.taxCreditApplied ? (
+                      <Row
+                        label="NAV tax code"
+                        value={`${(o.effectiveGstRate * 100).toFixed(4)}%`}
+                      />
+                    ) : null}
+                  </>
                 )}
                 <Row label="Total payment" value={formatMoney(o.totalPayment)} bold />
                 <Row label={`Pro-rata (${o.daysLeftMonth}/${o.daysInMonth}d)`} value={formatMoney(o.proRata)} />
