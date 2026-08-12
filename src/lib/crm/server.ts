@@ -7,6 +7,7 @@ import { permissionsForRole } from "./permissions";
 import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
+import { attachUnmatchedLeaseApp, listUnmatchedLeaseApps } from "./lease-app-import";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
@@ -1706,6 +1707,26 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
       })),
       funnel,
     };
+  });
+
+
+export const listUnmatchedLeaseAppsFn = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const me = await requireProfile(context.userId);
+    if (!isElevatedStaff(me)) throw new Error("Not allowed");
+    const sql = await boot();
+    return listUnmatchedLeaseApps(sql);
+  });
+
+export const attachUnmatchedLeaseAppFn = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { importId: string; leadId: string }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    if (!isElevatedStaff(me)) throw new Error("Not allowed");
+    const sql = await boot();
+    return attachUnmatchedLeaseApp(sql, data);
   });
 
 export const adminRunEmailImport = createServerFn({ method: "POST" })

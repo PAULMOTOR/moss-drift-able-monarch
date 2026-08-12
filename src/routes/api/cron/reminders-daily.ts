@@ -3,6 +3,7 @@ import { getSql } from "@/lib/db";
 import { labCronBlockedResponse, shouldBlockLabSideEffects } from "@/lib/crm/lab-guard";
 import { ensureCrmSeeded } from "@/lib/crm/seed";
 import { releaseExpiredPauses, runDailyRepBatch } from "@/lib/crm/reminders";
+import { runUnmatchedLeaseAppDigest } from "@/lib/crm/lease-app-import";
 import { runComplianceOpsReminders } from "@/lib/crm/compliance-ops";
 
 async function handle(request: Request) {
@@ -35,7 +36,8 @@ async function handle(request: Request) {
     const released = await releaseExpiredPauses(sql);
     const daily = await runDailyRepBatch(sql);
     const complianceOps = await runComplianceOpsReminders(sql);
-    return new Response(JSON.stringify({ ok: true, released, daily, complianceOps }, null, 2), {
+    const unmatchedApps = await runUnmatchedLeaseAppDigest(sql);
+    return new Response(JSON.stringify({ ok: true, released, daily, complianceOps, unmatchedApps }, null, 2), {
       status: 200,
       headers: { "content-type": "application/json" },
     });

@@ -161,6 +161,17 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
         : "email"
       : source;
 
+  const company =
+    pickLabeled(text, [
+      "company name",
+      "business name",
+      "legal name",
+      "raison sociale",
+      "nom de l'entreprise",
+      "entreprise",
+    ]) || "";
+  if (company) matched.push("company");
+
   const score = matched.filter((m) => !m.startsWith("type:")).length;
   const confidence: ParsedEmailLead["confidence"] =
     score >= 4 ? "high" : score >= 2 ? "medium" : "low";
@@ -173,6 +184,7 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
     vehicle_interest: vehicle_interest.trim(),
     stock_number: stock_number.trim().toUpperCase(),
     notes: notesBits.join("\n").trim(),
+    company: company.trim(),
     source: sourceFinal,
     confidence,
     matched_fields: matched,

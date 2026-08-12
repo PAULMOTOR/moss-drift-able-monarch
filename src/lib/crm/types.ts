@@ -429,6 +429,7 @@ export type ParsedEmailLead = {
   vehicle_interest: string;
   stock_number: string;
   notes: string;
+  company?: string;
   source: SourceId;
   confidence: "high" | "medium" | "low";
   matched_fields: string[];
