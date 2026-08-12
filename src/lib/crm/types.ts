@@ -458,6 +458,17 @@ export function leadTypeLabel(id: string) {
   return LEAD_TYPES.find((t) => t.id === id)?.label ?? id;
 }
 
+/** Person name, plus company when this is a business file. */
+export function leadDisplayName(lead: {
+  name: string;
+  legal_entity_name?: string | null;
+  party_type?: string | null;
+}) {
+  const biz = (lead.legal_entity_name || "").trim();
+  if (lead.party_type === "business" && biz) return `${lead.name} · ${biz}`;
+  return lead.name;
+}
+
 export function vehicleLabel(item: Pick<InventoryItem, "year" | "make" | "model" | "trim">) {
   return [item.year, item.make, item.model, item.trim].filter(Boolean).join(" ");
 }

@@ -578,6 +578,7 @@ export const listLeads = createServerFn({ method: "GET" })
            or lower(l.name) like $4
            or lower(coalesce(l.first_name, '')) like $4
            or lower(coalesce(l.last_name, '')) like $4
+           or lower(coalesce(l.legal_entity_name, '')) like $4
            or lower(coalesce(l.email, '')) like $4
            or lower(coalesce(l.phone, '')) like $4
            or lower(coalesce(l.vehicle_interest, '')) like $4
@@ -726,6 +727,7 @@ export type CaptureLeadInput = {
   source_email_raw?: string | null;
   estimated_value?: number | null;
   destination?: string | null;
+  legal_entity_name?: string | null;
 };
 
 export const captureLead = createServerFn({ method: "POST" })
@@ -784,12 +786,12 @@ export const captureLead = createServerFn({ method: "POST" })
 
     await sql`
       insert into leads (
-        id, name, first_name, last_name, party_type, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
+        id, name, first_name, last_name, party_type, legal_entity_name, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
         assigned_to, stage, stage_entered_at, quote_sent, quote_sent_at,
         quote_link, quote_notes, quote_pdf_name, quote_pdf_data, source_email_raw,
         estimated_value, destination, created_by
       ) values (
-        ${leadId}, ${name}, ${firstName}, ${lastName}, ${partyType}, ${data.phone?.trim() || null},
+        ${leadId}, ${name}, ${firstName}, ${lastName}, ${partyType}, ${partyType === "business" ? data.legal_entity_name?.trim() || null : null}, ${data.phone?.trim() || null},
         ${data.email?.trim().toLowerCase() || null},
         ${data.source || "phone"}, ${leadType}, ${data.notes?.trim() || null},
         ${vehicleInterest}, ${data.inventory_id || null},
@@ -984,6 +986,13 @@ export const updateLead = createServerFn({ method: "POST" })
         first_name = ${nextFirst},
         last_name = ${nextLast},
         party_type = ${nextParty},
+        legal_entity_name = ${
+          data.legal_entity_name !== undefined
+            ? (nextParty === "business" ? data.legal_entity_name?.trim() || null : null)
+            : nextParty === "business"
+              ? (prev.legal_entity_name as string | null)
+              : null
+        },
         phone = ${data.phone !== undefined ? data.phone?.trim() || null : (prev.phone as string | null)},
         email = ${data.email !== undefined ? data.email?.trim().toLowerCase() || null : (prev.email as string | null)},
         source = ${data.source ?? String(prev.source)},

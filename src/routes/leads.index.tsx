@@ -20,6 +20,7 @@ import {
   STAGES,
   defaultLeadTab,
   leadTypeLabel,
+  leadDisplayName,
   sourceLabel,
 } from "@/lib/crm/types";
 import { leadsQueryKey } from "@/lib/query-client";
@@ -166,7 +167,7 @@ function LeadsPage() {
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 className="h-11 pl-9"
-                placeholder="Search name, phone, email, vehicle…"
+                placeholder="Search name, business, phone, email, vehicle…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 onKeyDown={(e) => {
@@ -257,7 +258,7 @@ function LeadsPage() {
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-medium">{lead.name}</p>
+                      <p className="font-medium">{leadDisplayName(lead)}</p>
                       <span
                         className={cn(
                           "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",

@@ -211,7 +211,10 @@ function QuotePage() {
         if (openedQuoteRef.current) return;
         setClient((c) => ({
           ...c,
-          clientName: lead.name || c.clientName,
+          clientName:
+            lead.party_type === "business" && lead.legal_entity_name
+              ? lead.legal_entity_name
+              : lead.name || c.clientName,
           phone: lead.phone || c.phone,
           email: lead.email || c.email,
           notes: lead.notes || c.notes,

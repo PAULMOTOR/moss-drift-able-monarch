@@ -79,6 +79,7 @@ function CapturePage() {
     first_name: "",
     last_name: "",
     party_type: "individual" as "individual" | "business",
+    legal_entity_name: "",
     phone: "",
     email: "",
     source: "phone",
@@ -298,6 +299,7 @@ function CapturePage() {
           first_name: form.first_name || undefined,
           last_name: form.last_name || undefined,
           party_type: form.party_type || "individual",
+          legal_entity_name: form.party_type === "business" ? form.legal_entity_name.trim() || null : null,
           quote_sent: form.quote_sent,
           quote_sent_at:
             form.quote_sent && form.quote_sent_at
@@ -507,6 +509,23 @@ Message: Interested in a viewing this weekend.`}
                 </SelectContent>
               </Select>
             </div>
+
+            {form.party_type === "business" ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="legal_entity_name">Business name *</Label>
+                <Input
+                  id="legal_entity_name"
+                  className="h-12 text-base"
+                  placeholder="Legal company name"
+                  value={form.legal_entity_name}
+                  onChange={(e) => setForm((f) => ({ ...f, legal_entity_name: e.target.value }))}
+                  required
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  The file stays under the contact person and the company — search finds either.
+                </p>
+              </div>
+            ) : null}
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">

@@ -45,6 +45,7 @@ import {
   LEAD_TABS,
   LEAD_TYPES,
   leadTypeLabel,
+  leadDisplayName,
   REVIEW_STATUSES,
   SOURCES,
   STAGES,
@@ -159,6 +160,7 @@ function LeadDetail() {
   const [editFirst, setEditFirst] = useState("");
   const [editLast, setEditLast] = useState("");
   const [editParty, setEditParty] = useState<"individual" | "business">("individual");
+  const [editEntity, setEditEntity] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -225,6 +227,7 @@ function LeadDetail() {
         "",
     );
     setEditParty(detail.lead.party_type === "business" ? "business" : "individual");
+    setEditEntity(detail.lead.legal_entity_name || "");
     setEditPhone(detail.lead.phone || "");
     setEditEmail(detail.lead.email || "");
     setActivities(detail.activities);
@@ -277,6 +280,7 @@ function LeadDetail() {
       setEditFirst(updated.first_name || updated.name.split(" ")[0] || "");
       setEditLast(updated.last_name || updated.name.split(" ").slice(1).join(" ") || "");
       setEditParty(updated.party_type === "business" ? "business" : "individual");
+      setEditEntity(updated.legal_entity_name || "");
       setEditPhone(updated.phone || "");
       setEditEmail(updated.email || "");
       await load();
@@ -303,11 +307,16 @@ function LeadDetail() {
       toast.error("Add a phone or email");
       return;
     }
+    if (editParty === "business" && !editEntity.trim()) {
+      toast.error("Add the business name");
+      return;
+    }
     await patch({
       name,
       first_name: first || null,
       last_name: last || null,
       party_type: editParty,
+      legal_entity_name: editParty === "business" ? editEntity.trim() : null,
       phone: phone || null,
       email: email || null,
     });
@@ -374,7 +383,7 @@ function LeadDetail() {
 
       <PageHeader
         title={lead.name}
-        description={[lead.phone, lead.email].filter(Boolean).join(" · ") || "No contact yet"}
+        description={[lead.party_type === "business" ? lead.legal_entity_name : null, lead.phone, lead.email].filter(Boolean).join(" · ") || "No contact yet"}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button asChild size="sm" variant="outline">
@@ -1048,6 +1057,17 @@ function LeadDetail() {
                   </SelectContent>
                 </Select>
               </Field>
+              {editParty === "business" ? (
+                <Field label="Business name">
+                  <Input
+                    value={editEntity}
+                    onChange={(e) => setEditEntity(e.target.value)}
+                    placeholder="Legal company name"
+                    disabled={busy}
+                    className="h-11"
+                  />
+                </Field>
+              ) : null}
               <Field label="Phone">
                 <div className="flex gap-2">
                   <Input

@@ -30,6 +30,7 @@ import {
   type Profile,
   type StageId,
   leadTypeLabel,
+  leadDisplayName,
 } from "@/lib/crm/types";
 import { cn, formatCurrency } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, Loader2, Search, X, Zap } from "lucide-react";
@@ -391,7 +392,7 @@ function PipelinePage() {
                       >
                         <div className="flex items-start justify-between gap-2">
                           <span className="text-sm font-semibold text-foreground">
-                            {lead.name}
+                            {leadDisplayName(lead)}
                           </span>
                           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                             {pipelineHint}
@@ -562,7 +563,7 @@ function Column({
                 search={{ tab: tabFor(lead) }}
                 className="block text-sm font-semibold text-foreground hover:text-primary"
               >
-                {lead.name}
+                {leadDisplayName(lead)}
               </Link>
               <p className="truncate text-xs text-muted-foreground">
                 {lead.vehicle_interest || lead.inventory_label || "—"}
