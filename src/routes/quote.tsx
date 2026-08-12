@@ -140,6 +140,12 @@ function QuotePage() {
     daysLeftOverride: null,
     contractStyle: "qc_individual_en",
     partyType: "individual",
+    tradeVin: "",
+    tradeYear: null,
+    tradeMake: "",
+    tradeModel: "",
+    tradeTrim: "",
+    tradeKm: null,
   });
 
   const [options, setOptions] = useState<LeaseOptionInput[]>([
@@ -271,6 +277,12 @@ function QuotePage() {
           daysLeftOverride: payload.client.daysLeftOverride ?? null,
           contractStyle: payload.client.contractStyle || "qc_individual_en",
           partyType: payload.client.partyType || "individual",
+          tradeVin: payload.client.tradeVin || "",
+          tradeYear: payload.client.tradeYear ?? null,
+          tradeMake: payload.client.tradeMake || "",
+          tradeModel: payload.client.tradeModel || "",
+          tradeTrim: payload.client.tradeTrim || "",
+          tradeKm: payload.client.tradeKm ?? null,
         });
       }
       if (payload.options?.length) {
@@ -371,6 +383,36 @@ function QuotePage() {
           ? `${result.message} · matched stock #${invMatch.stock_number || "—"}`
           : `${result.message} · enter colour manually (not in VIN)`,
       );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "VIN decode failed");
+    } finally {
+      setVinBusy(false);
+    }
+  }
+
+  async function explodeTradeVin() {
+    const vin = normalizeVin(client.tradeVin || "");
+    if (vin.length !== 17) {
+      toast.error("Enter the trade-in 17-character VIN first");
+      return;
+    }
+    setVinBusy(true);
+    try {
+      const result = await decodeVinFn({ data: { vin } });
+      if (!result.ok) {
+        toast.error(result.message);
+        setClient((c) => ({ ...c, tradeVin: result.vin || c.tradeVin }));
+        return;
+      }
+      setClient((c) => ({
+        ...c,
+        tradeVin: result.vin,
+        tradeYear: result.year ?? c.tradeYear,
+        tradeMake: result.make || c.tradeMake,
+        tradeModel: result.model || c.tradeModel,
+        tradeTrim: result.trim || c.tradeTrim,
+      }));
+      toast.success(`${result.message} · enter trade kilometres`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "VIN decode failed");
     } finally {
@@ -909,6 +951,61 @@ function QuotePage() {
               </p>
             </div>
             <Field label="Stock #" value={client.stock} onChange={(v) => setClient((c) => ({ ...c, stock: v }))} />
+
+            <div className="sm:col-span-2 rounded-sm border border-border bg-muted/30 p-3 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">Trade-in vehicle</p>
+                <p className="text-[11px] text-muted-foreground">
+                  VIN explode fills year / make / model / trim for Chris on the contract. KM is manual.
+                </p>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Trade VIN</Label>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    value={client.tradeVin || ""}
+                    onChange={(e) =>
+                      setClient((c) => ({
+                        ...c,
+                        tradeVin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, "").slice(0, 17),
+                      }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void explodeTradeVin();
+                      }
+                    }}
+                    placeholder="Trade-in 17-character VIN"
+                    className="font-mono tracking-wide uppercase"
+                    maxLength={17}
+                    autoComplete="off"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={vinBusy || normalizeVin(client.tradeVin || "").length !== 17}
+                    onClick={() => void explodeTradeVin()}
+                    className="shrink-0"
+                  >
+                    <Search className="size-4" />
+                    {vinBusy ? "Decoding…" : "Explode VIN"}
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Trade year" value={client.tradeYear?.toString() || ""} onChange={(v) => setClient((c) => ({ ...c, tradeYear: v ? Number(v) : null }))} />
+                <Field label="Trade make" value={client.tradeMake || ""} onChange={(v) => setClient((c) => ({ ...c, tradeMake: v }))} />
+                <Field label="Trade model" value={client.tradeModel || ""} onChange={(v) => setClient((c) => ({ ...c, tradeModel: v }))} />
+                <Field label="Trade trim" value={client.tradeTrim || ""} onChange={(v) => setClient((c) => ({ ...c, tradeTrim: v }))} />
+                <Field
+                  label="Trade kilometres"
+                  value={client.tradeKm != null ? String(client.tradeKm) : ""}
+                  onChange={(v) => setClient((c) => ({ ...c, tradeKm: v.trim() ? Number(v) || 0 : null }))}
+                />
+              </div>
+            </div>
+
             <Field
               label="KM allowance (per year)"
               value={String(client.kmPerYear || "")}

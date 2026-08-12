@@ -189,6 +189,18 @@ export const LEAD_TYPES = [
     short: "General",
     description: "General contact / web inquiry (TAdvantage Contact Us, etc.)",
   },
+  {
+    id: "cash",
+    label: "Cash / retail",
+    short: "Cash",
+    description: "Cash buyer or customer financing elsewhere — still a deal we track",
+  },
+  {
+    id: "wholesale",
+    label: "Wholesale",
+    short: "Wholesale",
+    description: "Dealer-to-dealer / wholesale sale — who bought it and where it went",
+  },
 ] as const;
 
 export type LeadType = (typeof LEAD_TYPES)[number]["id"];
@@ -312,6 +324,7 @@ export type Lead = {
   google_review_at: string | null;
   google_review_link: string | null;
   estimated_value: number | null;
+  destination?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

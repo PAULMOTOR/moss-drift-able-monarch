@@ -217,6 +217,7 @@ function mapLead(r: Record<string, unknown>): Lead {
     updated_at: String(r.updated_at),
     assigned_name: (r.assigned_name as string) ?? null,
     inventory_label: (r.inventory_label as string) ?? null,
+    destination: (r.destination as string) ?? null,
   };
 }
 
@@ -233,6 +234,7 @@ const leadSelect = `
   l.google_review_at::text as google_review_at,
   l.google_review_link,
   l.estimated_value::float8 as estimated_value,
+  l.destination,
   l.created_by,
   l.created_at::text as created_at,
   l.updated_at::text as updated_at,
@@ -257,6 +259,7 @@ const leadListSelect = `
   l.google_review_at::text as google_review_at,
   l.google_review_link,
   l.estimated_value::float8 as estimated_value,
+  l.destination,
   l.created_by,
   l.created_at::text as created_at,
   l.updated_at::text as updated_at,
@@ -722,6 +725,7 @@ export type CaptureLeadInput = {
   quote_pdf_data?: string | null;
   source_email_raw?: string | null;
   estimated_value?: number | null;
+  destination?: string | null;
 };
 
 export const captureLead = createServerFn({ method: "POST" })
@@ -773,7 +777,7 @@ export const captureLead = createServerFn({ method: "POST" })
     let assigned = data.assigned_to || null;
     if (!assigned) {
       // Inventory → Lucas; general → unassigned (GSM/Admin digests); others → creator
-      if (leadType === "inventory" && lucasId) assigned = lucasId;
+      if ((leadType === "inventory" || leadType === "cash" || leadType === "wholesale") && lucasId) assigned = lucasId;
       else if (leadType === "general") assigned = null;
       else assigned = me.id;
     }
@@ -783,7 +787,7 @@ export const captureLead = createServerFn({ method: "POST" })
         id, name, first_name, last_name, party_type, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
         assigned_to, stage, stage_entered_at, quote_sent, quote_sent_at,
         quote_link, quote_notes, quote_pdf_name, quote_pdf_data, source_email_raw,
-        estimated_value, created_by
+        estimated_value, destination, created_by
       ) values (
         ${leadId}, ${name}, ${firstName}, ${lastName}, ${partyType}, ${data.phone?.trim() || null},
         ${data.email?.trim().toLowerCase() || null},
@@ -798,6 +802,7 @@ export const captureLead = createServerFn({ method: "POST" })
         ${data.quote_pdf_data || null},
         ${data.source_email_raw?.trim() || null},
         ${estimated},
+        ${data.destination?.trim() || null},
         ${me.id}
       )
     `;
@@ -993,6 +998,11 @@ export const updateLead = createServerFn({ method: "POST" })
           data.inventory_id !== undefined
             ? data.inventory_id || null
             : (prev.inventory_id as string | null)
+        },
+        destination = ${
+          data.destination !== undefined
+            ? data.destination?.trim() || null
+            : (prev.destination as string | null)
         },
         assigned_to = ${nextAssigned},
         stage = ${stage},

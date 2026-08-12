@@ -144,6 +144,13 @@ export type ClientQuoteInfo = {
   daysLeftOverride: number | null;
   contractStyle: string;
   partyType: string;
+  /** Customer trade-in vehicle (for Chris / contracts — not the leased unit). */
+  tradeVin?: string;
+  tradeYear?: number | null;
+  tradeMake?: string;
+  tradeModel?: string;
+  tradeTrim?: string;
+  tradeKm?: number | null;
 };
 
 export function round2(n: number): number {
@@ -536,6 +543,25 @@ function escapeHtml(s: string): string {
     .join(amp + "quot;");
 }
 
+function tradeVehicleLine(client: ClientQuoteInfo): string {
+  const label = [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim]
+    .filter(Boolean)
+    .join(" ");
+  if (!label && !client.tradeVin && client.tradeKm == null) return "";
+  const bits = [
+    label || null,
+    client.tradeVin ? `VIN ${client.tradeVin}` : null,
+    client.tradeKm != null ? `${client.tradeKm.toLocaleString("en-CA")} km` : null,
+  ].filter(Boolean);
+  return `<tr><td>Trade vehicle</td><td class="num">${escapeHtml(bits.join(" · "))}</td></tr>`;
+}
+
+function tradeVehicleLabel(client: ClientQuoteInfo): string {
+  return [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim]
+    .filter(Boolean)
+    .join(" ");
+}
+
 /** Retail quote HTML: logo top-left; always 3 option frames (blank → Option N — N/A). */
 export function buildRetailQuoteHtml(
   client: ClientQuoteInfo,
@@ -566,6 +592,7 @@ export function buildRetailQuoteHtml(
           <tr class="emph"><td>Price</td><td class="num">${formatMoney(o.cost + o.extra + o.profit)}</td></tr>
           <tr><td>Trade-In</td><td class="num">${formatMoney(o.tradeIn)}</td></tr>
           <tr><td>Trade-In Lien</td><td class="num">${formatMoney(o.tradeInLien || 0)}</td></tr>
+          ${tradeVehicleLine(client)}
           <tr class="emph"><td>Cash down</td><td class="num">${formatMoney(o.deposit)} <span class="pct">(${o.depositPct.toFixed(1)}%)</span></td></tr>
           <tr><td>Security deposit</td><td class="num">${formatMoney(o.securityDeposit || 0)}</td></tr>
           <tr><td>Term</td><td class="num">${o.termMonths} mo</td></tr>
@@ -778,6 +805,9 @@ export function renderContractTemplate(
     cash_down: formatMoney(option.deposit),
     security_deposit: formatMoney(option.securityDeposit || 0),
     trade_in: formatMoney(option.tradeIn),
+    trade_vehicle: tradeVehicleLabel(client) || "—",
+    trade_vin: client.tradeVin || "—",
+    trade_km: client.tradeKm != null ? String(client.tradeKm) : "—",
     financed: formatMoney(option.financed),
     residual: formatMoney(option.residual),
     rate: `${option.ratePct.toFixed(2)}%`,
@@ -813,6 +843,7 @@ export function defaultContractBody(style: ContractStyleKey): string {
 <p><strong>Locataire :</strong> {{client_name}} — {{address}}</p>
 <p><strong>Caution :</strong> {{guarantor}}</p>
 <p><strong>Véhicule :</strong> {{vehicle}} · VIN {{vin}} · Couleur {{color}} · {{km}} km</p>
+<p><strong>Échange :</strong> {{trade_vehicle}} · VIN {{trade_vin}} · {{trade_km}} km</p>
 <ol>
 <li><strong>Location.</strong> Terme de {{term}} mois, du {{start_date}} au {{end_date}}.</li>
 <li><strong>Montant servant à déterminer le loyer.</strong> Prix {{price}} ; mise de fonds (cash down) {{cash_down}} ; échange {{trade_in}} ; net {{financed}}.</li>
@@ -863,6 +894,7 @@ commencing on <strong>{{start_date}}</strong> and ending on <strong>{{end_date}}
   <tr><td>Cash down (down payment)</td><td class="num">{{cash_down}}</td></tr>
   <tr><td>Security deposit (refundable, not taxed)</td><td class="num">{{security_deposit}}</td></tr>
   <tr><td>Trade-in allowance</td><td class="num">{{trade_in}}</td></tr>
+  <tr><td>Trade vehicle</td><td class="num">{{trade_vehicle}} · VIN {{trade_vin}} · {{trade_km}} km</td></tr>
   <tr><td><strong>Amount used in determining rent (financed)</strong></td><td class="num"><strong>{{financed}}</strong></td></tr>
   <tr><td>Residual / purchase option (ex tax)</td><td class="num">{{residual}}</td></tr>
   <tr><td>Contractual interest rate</td><td class="num">{{rate}} per annum</td></tr>

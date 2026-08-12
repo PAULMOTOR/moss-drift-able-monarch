@@ -84,6 +84,7 @@ function CapturePage() {
     source: "phone",
     notes: "",
     vehicle_interest: "",
+    destination: "",
     vehicle_year: "" as string,
     vehicle_make: "",
     vehicle_model: "",
@@ -173,7 +174,7 @@ function CapturePage() {
         setForm((f) => ({
           ...f,
           // Inventory defaults to Lucas; other types default to current user
-          assigned_to: f.lead_type === "inventory" && lucas ? lucas.id : profile.id,
+          assigned_to: (f.lead_type === "inventory" || f.lead_type === "cash" || f.lead_type === "wholesale") && lucas ? lucas.id : profile.id,
         }));
       },
     );
@@ -290,7 +291,8 @@ function CapturePage() {
           lead_type: form.lead_type,
           notes: form.notes || undefined,
           vehicle_interest: vehicleInterest || form.vehicle_interest || undefined,
-          inventory_id: form.lead_type === "inventory" ? form.inventory_id || null : null,
+          inventory_id: ["inventory", "cash", "wholesale"].includes(form.lead_type) ? form.inventory_id || null : null,
+          destination: form.destination?.trim() || null,
 
           assigned_to: form.assigned_to || null,
           first_name: form.first_name || undefined,
@@ -391,8 +393,8 @@ Message: Interested in a viewing this weekend.`}
       ) : null}
 
       <form onSubmit={submit} className="mx-auto max-w-xl space-y-4">
-        {/* Lead type — Inventory vs Lease */}
-        <div className="grid grid-cols-2 gap-2">
+        {/* Lead type */}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {LEAD_TYPES.map((t) => (
             <button
               key={t.id}
@@ -548,7 +550,7 @@ Message: Interested in a viewing this weekend.`}
               </Select>
             </div>
 
-            {form.lead_type === "inventory" ? (
+            {["inventory", "cash", "wholesale"].includes(form.lead_type) ? (
               <div className="grid gap-1.5">
                 <Label>Inventory unit (live stock)</Label>
                 <div className="relative">
@@ -719,7 +721,7 @@ Message: Interested in a viewing this weekend.`}
               </div>
             )}
 
-            {form.lead_type === "inventory" ? (
+            {["inventory", "cash", "wholesale"].includes(form.lead_type) ? (
               <div className="grid gap-1.5">
                 <Label htmlFor="interest">Vehicle interest notes</Label>
                 <Input
@@ -728,6 +730,19 @@ Message: Interested in a viewing this weekend.`}
                   placeholder="Optional free-text (e.g. prefers Rosso, under 200k)"
                   value={form.vehicle_interest}
                   onChange={(e) => setForm((f) => ({ ...f, vehicle_interest: e.target.value }))}
+                />
+              </div>
+            ) : null}
+
+            {["cash", "wholesale", "inventory"].includes(form.lead_type) ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="destination">Where the car went / sold to</Label>
+                <Input
+                  id="destination"
+                  className="h-11"
+                  placeholder="e.g. ABC Motors — Toronto · buyer kept it · shipped to Calgary"
+                  value={form.destination || ""}
+                  onChange={(e) => setForm((f) => ({ ...f, destination: e.target.value }))}
                 />
               </div>
             ) : null}

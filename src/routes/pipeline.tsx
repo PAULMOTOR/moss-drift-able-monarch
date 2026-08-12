@@ -29,6 +29,7 @@ import {
   type PipelineId,
   type Profile,
   type StageId,
+  leadTypeLabel,
 } from "@/lib/crm/types";
 import { cn, formatCurrency } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, Loader2, Search, X, Zap } from "lucide-react";
@@ -567,7 +568,7 @@ function Column({
                 {lead.vehicle_interest || lead.inventory_label || "—"}
               </p>
               <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                <span className="capitalize">{lead.lead_type}</span>
+                <span className="capitalize">{leadTypeLabel(lead.lead_type)}</span>
                 <span>
                   {lead.estimated_value
                     ? formatCurrency(lead.estimated_value)

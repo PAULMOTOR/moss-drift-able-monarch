@@ -44,6 +44,7 @@ import {
   CALENDAR_EVENT_TYPES,
   LEAD_TABS,
   LEAD_TYPES,
+  leadTypeLabel,
   REVIEW_STATUSES,
   SOURCES,
   STAGES,
@@ -434,16 +435,16 @@ function LeadDetail() {
                 "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
                 lead.lead_type === "lease"
                   ? "border-accent-foreground/30 bg-accent text-accent-foreground"
-                  : lead.lead_type === "general"
-                    ? "border-border bg-muted text-foreground"
-                    : "border-primary/40 bg-primary/15 text-primary",
+                  : lead.lead_type === "wholesale"
+                    ? "border-amber-700/40 bg-amber-500/15 text-amber-900 dark:text-amber-200"
+                    : lead.lead_type === "cash"
+                      ? "border-sky-700/40 bg-sky-500/15 text-sky-900 dark:text-sky-200"
+                      : lead.lead_type === "general"
+                        ? "border-border bg-muted text-foreground"
+                        : "border-primary/40 bg-primary/15 text-primary",
               )}
             >
-              {lead.lead_type === "lease"
-                ? "Lease"
-                : lead.lead_type === "general"
-                  ? "General"
-                  : "Inventory"}
+              {leadTypeLabel(lead.lead_type)}
             </span>
             <StageBadge stage={lead.stage} />
           </div>
@@ -1174,7 +1175,7 @@ function LeadDetail() {
                 </Select>
               </Field>
 
-              {lead.lead_type === "inventory" ? (
+              {["inventory", "cash", "wholesale"].includes(lead.lead_type) ? (
                 <Field label="Inventory unit">
                   <Select
                     value={lead.inventory_id || "none"}
@@ -1214,6 +1215,20 @@ function LeadDetail() {
                   onBlur={(e) => {
                     if (e.target.value !== (lead.vehicle_interest || "")) {
                       void patch({ vehicle_interest: e.target.value || null });
+                    }
+                  }}
+                  disabled={busy}
+                />
+              </Field>
+
+              <Field label="Where the car went / sold to">
+                <Input
+                  defaultValue={lead.destination || ""}
+                  key={lead.destination || "dest"}
+                  placeholder="Buyer, dealer, city…"
+                  onBlur={(e) => {
+                    if (e.target.value !== (lead.destination || "")) {
+                      void patch({ destination: e.target.value || null });
                     }
                   }}
                   disabled={busy}

@@ -1,5 +1,5 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search, Zap } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
@@ -19,24 +19,64 @@ import {
   LEAD_TYPES,
   STAGES,
   defaultLeadTab,
+  leadTypeLabel,
   sourceLabel,
 } from "@/lib/crm/types";
 import { leadsQueryKey } from "@/lib/query-client";
 import { cn, formatCurrency, formatRelative } from "@/lib/utils";
 
+type LeadsSearch = {
+  q?: string;
+  stage?: string;
+  assigned?: string;
+  type?: string;
+  offset?: number;
+};
+
+const FILTERS_KEY = "pml.leads.filters";
+
+function readStoredFilters(): LeadsSearch {
+  if (typeof sessionStorage === "undefined") return {};
+  try {
+    const raw = sessionStorage.getItem(FILTERS_KEY);
+    return raw ? (JSON.parse(raw) as LeadsSearch) : {};
+  } catch {
+    return {};
+  }
+}
+
 export const Route = createFileRoute("/leads/")({
+  validateSearch: (s: Record<string, unknown>): LeadsSearch => {
+    const offsetRaw = s.offset;
+    const offset =
+      typeof offsetRaw === "number"
+        ? offsetRaw
+        : typeof offsetRaw === "string" && /^\d+$/.test(offsetRaw)
+          ? Number(offsetRaw)
+          : undefined;
+    return {
+      q: typeof s.q === "string" ? s.q : undefined,
+      stage: typeof s.stage === "string" ? s.stage : undefined,
+      assigned: typeof s.assigned === "string" ? s.assigned : undefined,
+      type: typeof s.type === "string" ? s.type : undefined,
+      offset,
+    };
+  },
   component: LeadsPage,
 });
 
 const PAGE_SIZE = 50;
 
 function LeadsPage() {
-  const [q, setQ] = useState("");
-  const [qApplied, setQApplied] = useState("");
-  const [stage, setStage] = useState("all");
-  const [assigned, setAssigned] = useState("all");
-  const [leadType, setLeadType] = useState("all");
-  const [offset, setOffset] = useState(0);
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: "/leads/" });
+  const stored = useMemo(() => readStoredFilters(), []);
+  const [q, setQ] = useState(search.q ?? stored.q ?? "");
+  const [qApplied, setQApplied] = useState(search.q ?? stored.q ?? "");
+  const [stage, setStage] = useState(search.stage ?? stored.stage ?? "all");
+  const [assigned, setAssigned] = useState(search.assigned ?? stored.assigned ?? "all");
+  const [leadType, setLeadType] = useState(search.type ?? stored.type ?? "all");
+  const [offset, setOffset] = useState(search.offset ?? stored.offset ?? 0);
 
   const filters = useMemo(
     () => ({
@@ -66,6 +106,39 @@ function LeadsPage() {
   const hasMore = leadsQ.data?.hasMore ?? false;
   const profiles = profilesQ.data ?? [];
 
+  function persistFilters(next: {
+    q: string;
+    stage: string;
+    assigned: string;
+    type: string;
+    offset: number;
+  }) {
+    const searchOut: LeadsSearch = {
+      q: next.q || undefined,
+      stage: next.stage !== "all" ? next.stage : undefined,
+      assigned: next.assigned !== "all" ? next.assigned : undefined,
+      type: next.type !== "all" ? next.type : undefined,
+      offset: next.offset || undefined,
+    };
+    try {
+      sessionStorage.setItem(FILTERS_KEY, JSON.stringify(searchOut));
+    } catch {
+      /* ignore */
+    }
+    void navigate({ to: "/leads", search: searchOut, replace: true });
+  }
+
+  useEffect(() => {
+    persistFilters({
+      q: qApplied,
+      stage,
+      assigned,
+      type: leadType,
+      offset,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qApplied, stage, assigned, leadType, offset]);
+
   function applySearch() {
     setOffset(0);
     setQApplied(q.trim());
@@ -75,7 +148,7 @@ function LeadsPage() {
     <>
       <PageHeader
         title="Leads"
-        description="Full customer list — inventory sales and lease quote requests."
+        description="All deals — inventory, lease, cash, wholesale, and general inquiries."
         actions={
           <Button asChild>
             <Link to="/capture">
@@ -190,10 +263,16 @@ function LeadsPage() {
                           "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
                           lead.lead_type === "lease"
                             ? "border-accent-foreground/30 bg-accent text-accent-foreground"
-                            : "border-primary/40 bg-primary/15 text-primary",
+                            : lead.lead_type === "wholesale"
+                              ? "border-amber-700/40 bg-amber-500/15 text-amber-900 dark:text-amber-200"
+                              : lead.lead_type === "cash"
+                                ? "border-sky-700/40 bg-sky-500/15 text-sky-900 dark:text-sky-200"
+                                : lead.lead_type === "general"
+                                  ? "border-border bg-muted text-foreground"
+                                  : "border-primary/40 bg-primary/15 text-primary",
                         )}
                       >
-                        {lead.lead_type === "lease" ? "Lease" : "Inventory"}
+                        {leadTypeLabel(lead.lead_type)}
                       </span>
                       <StageBadge stage={lead.stage} />
                       {lead.quote_sent ? (
