@@ -46,11 +46,15 @@ function isDealerAccountPhone(
   if (!last10) return false;
   if (body) {
     const re = new RegExp(
-      `Customer\\s*no\\.?\\s*[:#]?\\s*${last10}`,
+      `(?:Customer\\s*no\\.?|Customer\\s*number|N[o°º.]?\\s*(?:de\\s+)?client)\\s*[:#]?\\s*${last10}`,
       "i",
     );
     if (re.test(body)) return true;
-    if (body.includes(digits) && /Customer\s*no/i.test(body) && /^1000\d{6}$/.test(last10)) {
+    if (
+      body.includes(digits) &&
+      /Customer\s*no|N[o°º.]?\s*(?:de\s+)?client/i.test(body) &&
+      /^1000\d{6}$/.test(last10)
+    ) {
       return true;
     }
   }

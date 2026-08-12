@@ -30,7 +30,7 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
 
   const isAutoTrader =
     portalRule.startsWith("autotrader:") ||
-    /dealerleads\.trader|1-source@|autotrader\.ca/i.test(`${fromLine}\n${text}`);
+    /dealerleads\.trader|1-source@|autotrader\.ca|autohebdo/i.test(`${fromLine}\n${text}`);
   const at = isAutoTrader ? parseAutoTraderLead(text) : null;
   if (at) matched.push("autotrader-parser");
 
@@ -383,33 +383,34 @@ function extractEmail(text: string): string {
 }
 
 function extractPhone(text: string): string {
-  // AutoTrader / portal dealer account IDs look like phone numbers — strip them first
-  const scrubbed = text
-    .replace(/Customer\s*no\.?\s*[:#]?\s*\d{6,}/gi, " ")
-    .replace(/Customer\s*number\s*[:#]?\s*\d{6,}/gi, " ");
+  const scrubbed = stripDealerCustomerNumbers(text);
   const banned = collectDealerCustomerNumbers(text);
-  const matches = [
-    ...scrubbed.matchAll(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/g),
-  ];
+  const matches = [...scrubbed.matchAll(PHONE_RE)];
   for (const m of matches) {
     const raw = m[0]?.trim() || "";
     const digits = raw.replace(/\D/g, "");
     const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
     if (banned.has(last10) || banned.has(digits)) continue;
-    if (/^1000\d{6}$/.test(last10) && /customer\s*no/i.test(text)) continue;
+    if (/^1000\d{6}$/.test(last10)) continue;
     return raw;
   }
   return "";
 }
 
+/** NA phones including +1 (514) 208-2619 */
+const PHONE_RE = /(?:\+?1[\s.-]*)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]*\d{3}[\s.-]*\d{4}\b/g;
+
+const DEALER_CUSTOMER_NO_RE =
+  /(?:Customer\s*no\.?|Customer\s*number|N[o°º.]?\s*(?:de\s+)?client|N&deg;\s*client|No\s*client)\s*[:#]?\s*(\d{6,})/gi;
+
+function stripDealerCustomerNumbers(text: string): string {
+  return text.replace(DEALER_CUSTOMER_NO_RE, " ");
+}
+
 function collectDealerCustomerNumbers(text: string): Set<string> {
   const s = new Set<string>();
-  for (const m of text.matchAll(/Customer\s*no\.?\s*[:#]?\s*(\d{6,})/gi)) {
-    const d = m[1].replace(/\D/g, "");
-    s.add(d);
-    if (d.length >= 10) s.add(d.slice(-10));
-  }
-  for (const m of text.matchAll(/Customer\s*number\s*[:#]?\s*(\d{6,})/gi)) {
+  const re = new RegExp(DEALER_CUSTOMER_NO_RE.source, "gi");
+  for (const m of text.matchAll(re)) {
     const d = m[1].replace(/\D/g, "");
     s.add(d);
     if (d.length >= 10) s.add(d.slice(-10));
@@ -418,9 +419,10 @@ function collectDealerCustomerNumbers(text: string): Set<string> {
 }
 
 /**
- * AutoTrader / Trader.ca leads (1-Source@dealerleads.trader.ca).
- * Buyer is in "New inquiry from X for your Y" + "Message from customer".
- * Dealer "Customer no." is NOT the buyer phone.
+ * AutoTrader / AutoHebdo / Trader.ca leads (1-Source@dealerleads.trader.ca).
+ * EN: "New inquiry from X for your Y" + "Message from customer"
+ * FR: "Nouvelle demande de la part de X au sujet de votre Y" + "Message du client"
+ * Dealer "Customer no. / N° client" is NOT the buyer phone.
  */
 function parseAutoTraderLead(text: string): {
   name?: string;
@@ -445,64 +447,76 @@ function parseAutoTraderLead(text: string): {
       /New\s+inquiry\s*(?:\r?\n|\s)+from\s+([^\n]+?)\s+for your\s+([^\n]+)/i,
     ) ||
     text.match(
-      /from\s+([A-Za-z][A-Za-z .'-]{0,40}?)\s+for your\s+((?:19|20)\d{2}[^\n]{3,80})/i,
+      /Nouvelle\s+demande\s*(?:\r?\n|\s)+(?:de\s+la\s+part\s+de\s+|de\s+)([^\n]+?)\s+au sujet de votre\s+([^\n]+)/i,
+    ) ||
+    text.match(
+      /de\s+la\s+part\s+de\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{0,50}?)\s+au sujet de votre\s+((?:19|20)\d{2}[^\n.]{2,80})/i,
+    ) ||
+    text.match(
+      /from\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{0,40}?)\s+for your\s+((?:19|20)\d{2}[^\n]{3,80})/i,
     );
   if (inq) {
-    const n = inq[1].trim().replace(/\s+/g, " ");
+    let n = inq[1].trim().replace(/\s+/g, " ");
+    n = n.replace(/^(de\s+la\s+part\s+de|from)\s+/i, "").trim();
+    n = n.replace(/\s+(au sujet|for your).*$/i, "").trim();
     if (n && !isDealerOrSelfName(n) && !isPortalSenderName(n)) out.name = n;
-    out.vehicle = inq[2].trim().replace(/\s+/g, " ");
+    let veh = inq[2].trim().replace(/\s+/g, " ");
+    veh = veh
+      .replace(/\s+(Cher|Dear|Message|Votre v[eé]hicule|Your vehicle|Condition).*$/i, "")
+      .trim();
+    if (veh) out.vehicle = veh;
   }
 
   const stock =
     text.match(/Stock\s*number\s*[:#]?\s*([A-Z0-9-]{2,20})/i) ||
-    text.match(/Stock\s*#\s*[:#]?\s*([A-Z0-9-]{2,20})/i);
+    text.match(/Stock\s*#\s*[:#]?\s*([A-Z0-9-]{2,20})/i) ||
+    text.match(/N[o°º.]?\s*(?:de\s+)?stock\s*[:#]?\s*([A-Z0-9-]{2,20})/i) ||
+    text.match(/Num[eé]ro\s+de\s+stock\s*[:#]?\s*([A-Z0-9-]{2,20})/i);
   if (stock) out.stock = stock[1].trim().toUpperCase();
 
   const msgMatch = text.match(
-    /Message from customer\s*([\s\S]*?)(?=\n\s*Your vehicle\b|\n\s*View listing\b|\n\s*View vehicle\b|\n\s*Condition\s*:|$)/i,
+    /(?:Message from customer|Message du client)\s*([\s\S]*?)(?=\n\s*Your vehicle\b|\n\s*Votre v[eé]hicule\b|\n\s*View listing\b|\n\s*View vehicle\b|\n\s*Condition\s*:|Envoyer un courriel|Send (?:an? )?email|Voir l['’]annonce|$)/i,
   );
-  if (msgMatch?.[1]) {
-    const block = msgMatch[1].trim();
-    out.message = block.slice(0, 1200);
+  const block = (msgMatch?.[1] || "").trim();
+  if (block) out.message = block.slice(0, 1200);
+  const scan = block || text;
 
-    // Collapsed signature first: Eric7866894629eklein@sonnohomes.com
-    const collapsed = block.match(
-      /([A-Za-z][A-Za-z .'-]{1,30}?)(\d{10}|\d{3}[-.\s]?\d{3}[-.\s]?\d{4})\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i,
-    );
-    if (collapsed) {
-      if (!out.name) out.name = collapsed[1].trim();
-      out.phone = collapsed[2].trim();
-      out.email = collapsed[3].toLowerCase();
+  const collapsed = scan.match(
+    /([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{1,40}?)(\+?1?[\s().-]*\d{3}[\s().-]*\d{3}[\s().-]*\d{4})\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i,
+  );
+  if (collapsed) {
+    const maybeName = collapsed[1].trim();
+    if (!out.name && !isDealerOrSelfName(maybeName) && maybeName.split(" ").length <= 5) {
+      out.name = maybeName;
     }
+    if (!out.phone) out.phone = collapsed[2].trim();
+    if (!out.email) out.email = collapsed[3].toLowerCase();
+  }
 
-    const emails = [...block.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map(
-      (m) => m[0],
-    );
-    const goodEmail = emails.find((e) => {
-      if (/dealerleads|trader\.ca|noreply|no-reply|donotreply|paulmotor|autotrader/i.test(e)) {
-        return false;
-      }
-      const local = e.split("@")[0] || "";
-      // Reject local-parts that swallowed name+phone
-      if (/\d{7,}/.test(local)) return false;
-      return true;
-    });
-    if (goodEmail) out.email = goodEmail.toLowerCase();
-
-    if (!out.phone) {
-      const phones = [
-        ...block.matchAll(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/g),
-      ].map((m) => m[0]);
-      for (const ph of phones) {
-        const digits = ph.replace(/\D/g, "");
-        const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
-        if (banned.has(last10) || banned.has(digits)) continue;
-        if (/^1000\d{6}$/.test(last10) && banned.size > 0) continue;
-        out.phone = ph.trim();
-        break;
-      }
+  const emails = [...scan.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((m) => m[0]);
+  const goodEmail = emails.find((e) => {
+    if (/dealerleads|trader\.ca|noreply|no-reply|donotreply|paulmotor|autotrader|autohebdo/i.test(e)) {
+      return false;
     }
+    const local = e.split("@")[0] || "";
+    if (/\d{7,}/.test(local)) return false;
+    return true;
+  });
+  if (goodEmail) out.email = goodEmail.toLowerCase();
 
+  if (!out.phone) {
+    for (const m of scan.matchAll(PHONE_RE)) {
+      const ph = m[0].trim();
+      const digits = ph.replace(/\D/g, "");
+      const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+      if (banned.has(last10) || banned.has(digits)) continue;
+      if (/^1000\d{6}$/.test(last10)) continue;
+      out.phone = ph;
+      break;
+    }
+  }
+
+  if (block) {
     const lines = block
       .split(/\n/)
       .map((l) => l.trim())
@@ -520,17 +534,22 @@ function parseAutoTraderLead(text: string): {
         }
       }
       if (!out.phone) {
-        const ph = line.match(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/);
+        PHONE_RE.lastIndex = 0;
+        const ph = line.match(PHONE_RE);
         if (ph) {
           const digits = ph[0].replace(/\D/g, "");
           const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
-          if (!banned.has(last10) && !banned.has(digits)) out.phone = ph[0].trim();
+          if (!banned.has(last10) && !banned.has(digits) && !/^1000\d{6}$/.test(last10)) {
+            out.phone = ph[0].trim();
+          }
         }
       }
       if (
         !out.name &&
-        /^[A-Za-z][A-Za-z .'-]{1,40}$/.test(line) &&
-        !/message|available|interesting|text me|car ?fax|trade|partner|inquiry/i.test(line)
+        /^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{1,40}$/.test(line) &&
+        !/message|available|interesting|text me|car ?fax|trade|partner|inquiry|bonjour|int[eé]resse|rappel|vendeur|client/i.test(
+          line,
+        )
       ) {
         out.name = line;
       }
@@ -543,7 +562,7 @@ function parseAutoTraderLead(text: string): {
   }
   if (!out.email) {
     const em = extractEmail(text);
-    if (em && !/dealerleads|trader\.ca/i.test(em)) {
+    if (em && !/dealerleads|trader\.ca|autohebdo/i.test(em)) {
       const local = em.split("@")[0] || "";
       if (!/\d{7,}/.test(local)) out.email = em;
     }
