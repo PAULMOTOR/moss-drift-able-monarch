@@ -22,6 +22,8 @@ import {
   type Profile,
 } from "./types";
 
+import { publicAppUrl } from "./public-url";
+
 function uid() {
   return crypto.randomUUID();
 }
@@ -31,12 +33,7 @@ function token() {
 }
 
 function appBaseUrl() {
-  return (
-    process.env.APP_URL?.replace(/\/$/, "") ||
-    process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-    process.env.VITE_APP_URL?.replace(/\/$/, "") ||
-    "https://moss-drift-able-monarch.vercel.app"
-  );
+  return publicAppUrl();
 }
 
 function toCreditPayload(raw: unknown): CreditPayload {

@@ -1,17 +1,13 @@
 import type { Sql } from "@/lib/db";
 import { sendCrmEmail } from "./mail";
+import { publicAppUrl } from "./public-url";
 
 function uid() {
   return crypto.randomUUID();
 }
 
 export function appBaseUrl() {
-  return (
-    process.env.APP_URL?.replace(/\/$/, "") ||
-    process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-    process.env.VITE_APP_URL?.replace(/\/$/, "") ||
-    "https://moss-drift-able-monarch.vercel.app"
-  );
+  return publicAppUrl();
 }
 
 function escapeHtml(s: string) {

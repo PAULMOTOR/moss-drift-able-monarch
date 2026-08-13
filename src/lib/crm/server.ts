@@ -11,6 +11,7 @@ import { isPartnerKind, mapPartner, type Partner, type PartnerKind } from "./par
 import { attachUnmatchedLeaseApp, listUnmatchedLeaseApps } from "./lease-app-import";
 import { applyAcceptedOption } from "./quote-accept";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
+import { publicAppUrl } from "./public-url";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
   buildFirstInvoiceHtml,
@@ -925,10 +926,7 @@ export const captureLead = createServerFn({ method: "POST" })
       `;
       const a = assignee[0];
       if (a?.email) {
-        const appUrl =
-          process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-          process.env.APP_URL?.replace(/\/$/, "") ||
-          "https://moss-drift-able-monarch.vercel.app";
+        const appUrl = publicAppUrl();
         await sendCrmEmail(sql, {
           to: a.email,
           subject: `[CRM] New lead assigned to you — ${name}`,
@@ -1200,10 +1198,7 @@ export const updateLead = createServerFn({ method: "POST" })
         `;
         // Don't email yourself
         if (a.id !== me.id) {
-          const appUrl =
-            process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-            process.env.APP_URL?.replace(/\/$/, "") ||
-            "https://moss-drift-able-monarch.vercel.app";
+          const appUrl = publicAppUrl();
           await sendCrmEmail(sql, {
             to: a.email,
             subject: `[CRM] Lead assigned to you — ${leadName}`,
