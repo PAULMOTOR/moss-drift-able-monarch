@@ -16,8 +16,8 @@
  * appears on 1st invoice + lease contract only.
  *
  * Pro-rata (1st invoice / due on delivery):
- *   proRata = totalPayment * (daysLeftInMonth / daysInMonth)
- *   days left computed from lease start date (or delivery date).
+ *   proRata = payment * (daysLeftInMonth / daysInMonth)   // 0 days → $0
+ *   proRataTax = full provincial/HST on proRata (never the reduced NAV monthly code)
  */
 
 import { PALMETTO_DATA_URI } from "./palmetto-data-uri";
@@ -27,13 +27,13 @@ import { PALMETTO_DATA_URI } from "./palmetto-data-uri";
  * BC uses TRV-based ICE vehicle PST (see bcIcePstFromTrv) + 5% GST — not this table.
  */
 export const PROVINCE_TAX: Record<string, number> = {
-  QC: 0.14975,
-  ON: 0.13,
+  QC: 0.14975, // GST 5 + QST 9.975
+  ON: 0.13, // HST
   BC: 0.12, // fallback only; real BC quotes use TRV chart
-  AB: 0.05,
-  MB: 0.13,
-  SK: 0.11,
-  NS: 0.15,
+  AB: 0.05, // GST
+  MB: 0.12, // GST 5 + RST 7
+  SK: 0.11, // GST 5 + PST 6
+  NS: 0.15, // HST
   NB: 0.15,
   NL: 0.15,
   PE: 0.15,
@@ -290,19 +290,25 @@ export function resolveLeaseTaxRates(
       isBc: true,
     };
   }
-  if (p === "QC") {
-    const gstRate = 0.05;
-    const pstRate = 0.09975;
+  // Explicit GST + provincial sales tax (tax credit uses these statutory rates on the tax-cap PMT)
+  const split: Record<string, { gst: number; pst: number; label?: string }> = {
+    QC: { gst: 0.05, pst: 0.09975 },
+    MB: { gst: 0.05, pst: 0.07 },
+    SK: { gst: 0.05, pst: 0.06 },
+  };
+  if (split[p]) {
+    const { gst, pst } = split[p];
     return {
-      province: "QC",
-      gstRate,
-      pstRate,
-      combinedRate: gstRate + pstRate,
+      province: p,
+      gstRate: gst,
+      pstRate: pst,
+      combinedRate: gst + pst,
       trv: round2(trv),
       trvBand: "",
       isBc: false,
     };
   }
+  // HST / GST-only provinces — one statutory rate on the tax-cap PMT
   const combined = taxRateForProvince(p);
   return {
     province: p,
@@ -481,20 +487,20 @@ export function calcLeaseOption(
   const { daysLeft: computedLeft, daysInMonth } = computeDaysLeftInMonth(
     proRataCtx?.startDate || new Date().toISOString().slice(0, 10),
   );
+  // null/undefined = auto. 0 = charge no pro-rata. >0 = that many days.
   const daysLeftMonth =
-    proRataCtx?.daysLeftOverride != null && proRataCtx.daysLeftOverride > 0
-      ? Math.round(proRataCtx.daysLeftOverride)
+    proRataCtx?.daysLeftOverride != null && Number.isFinite(proRataCtx.daysLeftOverride)
+      ? Math.max(0, Math.round(proRataCtx.daysLeftOverride))
       : computedLeft;
 
-  // Pro-rata of the *pre-tax* lease payment proportional to days left in month
+  // Pro-rata of the *pre-tax* lease payment. Tax on that rent is always the
+  // full provincial/HST rate — never the reduced NAV monthly tax code (that's
+  // for the ongoing payment posted to BC only).
   const proRata =
-    daysInMonth > 0
-      ? round2(payment * (daysLeftMonth / daysInMonth))
-      : payment;
-  const proRataTax =
-    daysInMonth > 0 && taxCreditApplied
-      ? round2(taxOnPayment * (daysLeftMonth / daysInMonth))
-      : taxSplitOnAmount(proRata, rates).total;
+    daysLeftMonth <= 0 || daysInMonth <= 0
+      ? 0
+      : round2(payment * (daysLeftMonth / daysInMonth));
+  const proRataTax = taxSplitOnAmount(proRata, rates).total;
 
   // Cash down: full GST + locked PST due at delivery (security deposit is untaxed)
   const downpaymentTax = taxSplitOnAmount(deposit, rates).total;
@@ -669,6 +675,7 @@ export function buildRetailQuoteHtml(
         <h3>Option ${num}</h3>
         <table>
           <tr class="emph"><td>Price</td><td class="num">${formatMoney(o.cost + o.extra + o.profit)}</td></tr>
+          <tr><td>Pad</td><td class="num">${formatMoney(o.profit)}</td></tr>
           <tr><td>Trade-In</td><td class="num">${formatMoney(o.tradeIn)}</td></tr>
           <tr><td>Trade-In Lien</td><td class="num">${formatMoney(o.tradeInLien || 0)}</td></tr>
           ${tradeVehicleLine(client)}
@@ -681,6 +688,9 @@ export function buildRetailQuoteHtml(
           <tr class="emph"><td>Taxes (${escapeHtml((client.province || "QC").toUpperCase())}${o.taxCreditApplied ? " tax credit" : ""}${o.taxProvince === "BC" ? ` GST ${((o.gstRate || 0) * 100).toFixed(0)}% + PST ${((o.pstRate || 0) * 100).toFixed(0)}%` : ""})</td><td class="num">${formatMoney(o.taxOnPayment)}</td></tr>
           <tr class="total"><td>Total Payment</td><td class="num">${formatMoney(o.totalPayment)}</td></tr>
           <tr><td>Pro-rata (${o.daysLeftMonth}/${o.daysInMonth} d)</td><td class="num">${formatMoney(o.proRata)}</td></tr>
+          <tr><td>Pro-rata tax (full ${escapeHtml((client.province || "QC").toUpperCase())} rate)</td><td class="num">${formatMoney(o.proRataTax)}</td></tr>
+          <tr><td>Admin / document</td><td class="num">${formatMoney(o.admin)}</td></tr>
+          <tr><td>Anti-theft / tracker</td><td class="num">${formatMoney(o.tracker)}</td></tr>
           <tr class="total"><td>Due on delivery</td><td class="num">${formatMoney(o.dueTotal)}</td></tr>
         </table>
         ${rateNote}
@@ -808,13 +818,14 @@ ${escapeHtml(client.phone || "")}</p>
     <tr><td>Cash down (down payment)</td><td class="num">${formatMoney(option.deposit)}</td></tr>
     <tr><td>Security deposit (refundable, not taxed)</td><td class="num">${formatMoney(option.securityDeposit || 0)}</td></tr>
     <tr><td>Pro-rata lease (${option.daysLeftMonth} of ${option.daysInMonth} days)</td><td class="num">${formatMoney(option.proRata)}</td></tr>
+    <tr><td>Pro-rata tax (full rate, not NAV code)</td><td class="num">${formatMoney(option.proRataTax)}</td></tr>
     <tr><td>Document / admin fees</td><td class="num">${formatMoney(option.admin)}</td></tr>
     <tr><td>Anti-theft / tracker</td><td class="num">${formatMoney(option.tracker)}</td></tr>
     <tr><td>Lien / PPSA</td><td class="num">${formatMoney(option.lienPpsa)}</td></tr>
     <tr><td>License</td><td class="num">${formatMoney(option.license)}</td></tr>
     <tr><td>Tire tax</td><td class="num">${formatMoney(option.tireTax)}</td></tr>
     <tr><td>Subtotal</td><td class="num">${formatMoney(option.dueSubtotal)}</td></tr>
-    <tr><td>GST/PST/HST (${(taxRate * 100).toFixed(3)}%)</td><td class="num">${formatMoney(option.dueTax)}</td></tr>
+    <tr><td>GST/PST/HST on cash down & fees (${(taxRate * 100).toFixed(3)}%)</td><td class="num">${formatMoney(round2(option.dueTax - option.proRataTax))}</td></tr>
     <tr class="total"><td>TOTAL DUE ON DELIVERY</td><td class="num">${formatMoney(option.dueTotal)}</td></tr>
   </tbody>
 </table>

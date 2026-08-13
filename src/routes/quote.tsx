@@ -1090,7 +1090,7 @@ function QuotePage() {
               }
             />
             <p className="text-[11px] text-muted-foreground -mt-1">
-              Pro-rata uses today's date automatically. Override only if delivery is a different day.
+              Leave blank to auto-calc from today. Type <strong>0</strong> to charge no pro-rata.
             </p>
             <Field label="Salesman" value={client.salesman} onChange={(v) => setClient((c) => ({ ...c, salesman: v }))} />
             <div className="grid gap-1.5">
@@ -1130,7 +1130,8 @@ function QuotePage() {
             <MoneyField label="License" value={client.license} onChange={(v) => setClient((c) => ({ ...c, license: v }))} />
             <MoneyField label="Tire tax" value={client.tireTax} onChange={(v) => setClient((c) => ({ ...c, tireTax: v }))} />
             <p className="text-xs text-muted-foreground">
-              Pro-rata = payment × (days left ÷ days in month). Tax:{" "}
+              Pro-rata = payment × (days left ÷ days in month). Type 0 days for $0. Tax on pro-rata
+              is the <strong>full</strong> provincial / HST rate (not the NAV monthly code). Tax:{" "}
               <strong>
                 {client.province?.toUpperCase() === "BC"
                   ? (() => {
@@ -1183,7 +1184,7 @@ function QuotePage() {
             </CardHeader>
             <CardContent className="space-y-2">
               <MoneyField label="Cost / price" value={options[i].cost} onChange={(v) => patchOption(i, { cost: v })} />
-              <MoneyField label="Profit" value={options[i].profit} onChange={(v) => patchOption(i, { profit: v })} />
+              <MoneyField label="Pad (dealer / cap-cost pad)" value={options[i].profit} onChange={(v) => patchOption(i, { profit: v })} />
               <MoneyField label="Trade-in" value={options[i].tradeIn} onChange={(v) => patchOption(i, { tradeIn: v })} />
               <MoneyField
                 label="Trade-in lien amount"
@@ -1234,11 +1235,8 @@ function QuotePage() {
               <MoneyField label="Handling $ (default 0)" value={options[i].handling} onChange={(v) => patchOption(i, { handling: v })} />
 
               <div className="mt-3 space-y-1 rounded-sm border border-border bg-muted/40 p-3 text-xs">
-                <Row
-                  label="Price"
-                  value={formatMoney(o.cost + o.extra + o.profit)}
-                  bold
-                />
+                <Row label="Price" value={formatMoney(o.cost + o.extra + o.profit)} bold />
+                {o.profit > 0 ? <Row label="Pad" value={formatMoney(o.profit)} /> : null}
                 <Row
                   label="Trade equity (allowance − payout we fund)"
                   value={formatMoney((options[i].tradeIn || 0) - (o.payoutFunded || 0))}
@@ -1284,23 +1282,51 @@ function QuotePage() {
                       />
                     ) : null}
                   </>
+                ) : o.pstRate > 0 ? (
+                  <>
+                    <Row
+                      label={`GST ${(o.gstRate * 100).toFixed(2)}%${o.taxCreditApplied ? " on tax-cap pmt" : ""}`}
+                      value={formatMoney(o.gstOnPayment)}
+                    />
+                    <Row
+                      label={`PST ${(o.pstRate * 100).toFixed(2)}%${o.taxCreditApplied ? " on tax-cap pmt" : ""}`}
+                      value={formatMoney(o.pstOnPayment)}
+                    />
+                    <Row label="Taxes total" value={formatMoney(o.taxOnPayment)} bold />
+                    {o.taxCreditApplied ? (
+                      <Row
+                        label="NAV tax codes (monthly / BC)"
+                        value={`GST ${(o.effectiveGstRate * 100).toFixed(4)}% · PST ${(o.effectivePstRate * 100).toFixed(4)}%`}
+                      />
+                    ) : null}
+                  </>
                 ) : (
                   <>
                     <Row
-                      label={o.taxCreditApplied ? "Tax (on tax-cap payment)" : "Taxes"}
+                      label={
+                        o.taxCreditApplied
+                          ? `HST/GST ${(o.gstRate * 100).toFixed(2)}% on tax-cap pmt`
+                          : `HST/GST ${(o.gstRate * 100).toFixed(2)}%`
+                      }
                       value={formatMoney(o.taxOnPayment)}
                       bold
                     />
                     {o.taxCreditApplied ? (
                       <Row
-                        label="NAV tax code"
+                        label="NAV tax code (monthly / BC)"
                         value={`${(o.effectiveGstRate * 100).toFixed(4)}%`}
                       />
                     ) : null}
                   </>
                 )}
                 <Row label="Total payment" value={formatMoney(o.totalPayment)} bold />
+                <Row label="Admin / document" value={formatMoney(o.admin)} />
+                <Row label="Anti-theft / tracker" value={formatMoney(o.tracker)} />
                 <Row label={`Pro-rata (${o.daysLeftMonth}/${o.daysInMonth}d)`} value={formatMoney(o.proRata)} />
+                <Row
+                  label={`Pro-rata tax (full ${o.taxProvince || "prov."} rate)`}
+                  value={formatMoney(o.proRataTax)}
+                />
                 <Row label="Due on delivery" value={formatMoney(o.dueTotal)} bold />
               </div>
 
