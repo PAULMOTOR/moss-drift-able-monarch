@@ -181,7 +181,7 @@ function HelpPage() {
               <strong>Share quote</strong> — opens a PDF of the options and sets the lead to <strong>Quote Sent</strong>. Allow pop-ups if the PDF tab is blocked.
             </li>
             <li>
-              <strong>Quote Accepted (Option n)</strong> — locks that option, builds contract + 1st invoice, stores the accepted PDF on the lead.
+              <strong>Staff accept</strong> locks an option in-house. <strong>Email lessee to accept</strong> sends a token link: they confirm that exact option (payment, term, cash down). We store time + IP. GSM <strong>Approve</strong> always emails the rep + Chris; referring dealer is on by default; lessee is off unless you check it. Add a one-line “what’s next.”
             </li>
             <li>
               <strong>Back to lead</strong> always saves a draft first so you don’t lose work.

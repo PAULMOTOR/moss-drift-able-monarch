@@ -9,6 +9,7 @@ import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
 import { isPartnerKind, mapPartner, type Partner, type PartnerKind } from "./partners";
 import { attachUnmatchedLeaseApp, listUnmatchedLeaseApps } from "./lease-app-import";
+import { applyAcceptedOption } from "./quote-accept";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
@@ -771,7 +772,7 @@ export const listPartners = createServerFn({ method: "GET" })
 
 export const createPartner = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((data: { name: string; kind?: string; city?: string; province?: string }) => data)
+  .validator((data: { name: string; kind?: string; city?: string; province?: string; email?: string }) => data)
   .handler(async ({ data }): Promise<Partner> => {
     const sql = await boot();
     const name = data.name.trim();
@@ -792,8 +793,8 @@ export const createPartner = createServerFn({ method: "POST" })
     }
     const id = crypto.randomUUID();
     await sql`
-      insert into partners (id, name, kind, city, province)
-      values (${id}, ${name}, ${kind}, ${data.city?.trim() || null}, ${data.province?.trim() || null})
+      insert into partners (id, name, kind, city, province, email)
+      values (${id}, ${name}, ${kind}, ${data.city?.trim() || null}, ${data.province?.trim() || null}, ${data.email?.trim().toLowerCase() || null})
     `;
     const rows = await sql<Record<string, unknown>>`
       select id, name, kind, city, province, email, phone, notes, active,
@@ -2415,123 +2416,14 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const me = await requireProfile(context.userId);
     const sql = await boot();
-    const rows = await sql<{
-      id: string;
-      lead_id: string | null;
-      payload: string;
-      retail_html: string | null;
-    }>`
-      select id, lead_id, payload::text as payload, retail_html
-      from lease_quotes where id = ${data.quoteId} limit 1
-    `;
-    const row = rows[0];
-    if (!row) throw new Error("Quote not found");
-    let payload: {
-      client: ClientQuoteInfo;
-      options: LeaseOptionResult[];
-      taxRate: number;
-    };
-    try {
-      payload = JSON.parse(row.payload) as typeof payload;
-    } catch {
-      throw new Error("Corrupt quote payload");
-    }
-    const opt = payload.options[data.optionNumber - 1];
-    if (!opt) throw new Error("Invalid option number");
-    const taxRate = payload.taxRate || taxRateForProvince(payload.client.province || "QC");
-    const style = (data.contractStyle || payload.client.contractStyle || "qc_individual_en") as ContractStyleKey;
-    await ensureContractTemplates(sql);
-    const tplRows = await sql<{ body_html: string }>`
-      select body_html from contract_templates where style_key = ${style} limit 1
-    `;
-    const body =
-      tplRows[0]?.body_html || defaultContractBody(style);
-    const contractInner = renderContractTemplate(body, payload.client, opt, taxRate);
-    const contractHtml = wrapPrintable(`Lease Contract — ${payload.client.clientName}`, contractInner);
-    const invoiceHtml = buildFirstInvoiceHtml(payload.client, opt, taxRate);
-    // Single-option retail snapshot for contract packet
-    const retailOne = buildRetailQuoteHtml(
-      payload.client,
-      payload.options.map((o, i) =>
-        i === data.optionNumber - 1
-          ? o
-          : { ...o, cost: 0, payment: 0, deposit: 0, securityDeposit: 0, residual: 0 },
-      ),
-      taxRate,
-    );
-    const pdfName = (await driveApi()).buildQuotePdfFileName({
-      quoteDate: payload.client.quoteDate,
-      clientName: payload.client.clientName,
-      option: data.optionNumber,
-      stock: payload.client.stock,
-      year: payload.client.year,
-      make: payload.client.make,
-      model: payload.client.model,
-    });
-    const pdfData = await makeQuotePdfData(payload.client, payload.options, taxRate, {
-      acceptedOption: data.optionNumber,
-    });
-
-    await sql`
-      update lease_quotes set
-        accepted_option = ${data.optionNumber},
-        selected_option = ${data.optionNumber},
-        status = 'accepted',
-        contract_html = ${contractHtml},
-        invoice_html = ${invoiceHtml},
-        retail_html = ${retailOne},
-        pdf_name = ${pdfName},
-        pdf_data = ${pdfData},
-        updated_at = now()
-      where id = ${data.quoteId}
-    `;
-
-    if (row.lead_id) {
-      await sql`
-        update leads set
-          accepted_quote_id = ${data.quoteId},
-          quote_pdf_name = ${pdfName},
-          quote_pdf_data = ${pdfData},
-          guarantor = ${payload.client.guarantor || null},
-          estimated_value = ${opt.cost + opt.extra + opt.profit},
-          stage = case
-            when stage in ('new','contacted','paused','quote_sent') then 'lease_accepted'
-            else stage
-          end,
-          stage_entered_at = case
-            when stage in ('new','contacted','paused','quote_sent') then now()
-            else stage_entered_at
-          end,
-          updated_at = now()
-        where id = ${row.lead_id}
-      `;
-      await sql`
-        insert into lead_quote_files (
-          id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
-        ) values (
-          ${id()}, ${row.lead_id}, ${data.quoteId}, ${data.optionNumber},
-          ${pdfName}, ${pdfData}, 'application/pdf', 'accepted_option', ${me.id}
-        )
-      `;
-      await sql`
-        insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
-        values (
-          ${id()}, ${row.lead_id}, 'quote',
-          ${`Accepted Option ${data.optionNumber} · total payment ${opt.totalPayment} · contract + 1st invoice generated`},
-          ${me.id}, ${me.name}
-        )
-      `;
-    }
-    return {
-      ok: true as const,
+    return applyAcceptedOption(sql, {
       quoteId: data.quoteId,
       optionNumber: data.optionNumber,
-      contractHtml,
-      invoiceHtml,
-      retailHtml: retailOne,
-      pdfName,
-      pdfData,
-    };
+      contractStyle: data.contractStyle,
+      actorName: me.name,
+      actorId: me.id,
+      byKind: "staff",
+    });
   });
 
 export const listLeadQuoteFiles = createServerFn({ method: "GET" })

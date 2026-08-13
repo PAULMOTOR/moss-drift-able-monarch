@@ -214,9 +214,14 @@ export const getCreditPackage = createServerFn({ method: "GET" })
     const me = await requireProfile(context.userId);
     const sql = await getSql();
     const leadRows = await sql.query<Record<string, unknown>>(
-      `select id, name, email, phone, first_name, last_name, party_type, assigned_to,
-              credit_status, credit_app_id, vehicle_interest, stage
-       from leads where id = $1 limit 1`,
+      `select l.id, l.name, l.email, l.phone, l.first_name, l.last_name, l.party_type, l.assigned_to,
+              l.credit_status, l.credit_app_id, l.vehicle_interest, l.stage,
+              l.partner_id, pr.name as partner_name, pr.kind as partner_kind, pr.email as partner_email,
+              ap.email as assigned_email, ap.name as assigned_name
+       from leads l
+       left join partners pr on pr.id = l.partner_id
+       left join profiles ap on ap.id = l.assigned_to
+       where l.id = $1 limit 1`,
       [data.leadId],
     );
     if (!leadRows[0]) throw new Error("Lead not found");
@@ -261,6 +266,12 @@ export const getCreditPackage = createServerFn({ method: "GET" })
         credit_status: (lead.credit_status as string) || "none",
         vehicle_interest: (lead.vehicle_interest as string) || null,
         stage: String(lead.stage),
+        partner_id: (lead.partner_id as string) || null,
+        partner_name: (lead.partner_name as string) || null,
+        partner_kind: (lead.partner_kind as string) || null,
+        partner_email: (lead.partner_email as string) || null,
+        assigned_email: (lead.assigned_email as string) || null,
+        assigned_name: (lead.assigned_name as string) || null,
       },
       application,
       documents: docs,
@@ -666,6 +677,10 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       approve: boolean;
       /** On decline: who gets the reason email */
       notify?: "sales" | "credit" | "both";
+      /** On approve */
+      notifyPartner?: boolean;
+      notifyLessee?: boolean;
+      nextStep?: string;
     }) => data,
   )
   .handler(async ({ context, data }) => {
@@ -704,11 +719,17 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       await ensureOpsTrackingForLead(sql, data.leadId);
     }
 
-    const lead = await sql<{ name: string; assigned_to: string | null }>`
-      select name, assigned_to from leads where id = ${data.leadId} limit 1
+    const lead = await sql<{
+      name: string;
+      assigned_to: string | null;
+      email: string | null;
+      partner_id: string | null;
+    }>`
+      select name, assigned_to, email, partner_id from leads where id = ${data.leadId} limit 1
     `;
     const clientName = lead[0]?.name || "Deal";
     const link = `${appBaseUrl()}/leads/${data.leadId}?tab=${data.approve ? "compliance" : "credit"}`;
+    const nextStep = data.nextStep?.trim() || "";
 
     if (!data.approve) {
       const notify = data.notify || "both";
@@ -755,11 +776,79 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       }
     }
 
+    if (data.approve) {
+      const sentTo: string[] = [];
+      type R = { email: string; name: string; role: string };
+      const recips: R[] = [];
+      if (lead[0]?.assigned_to) {
+        const reps = await sql<{ email: string; name: string }>`
+          select email, name from profiles
+          where id = ${lead[0].assigned_to} and active = true limit 1
+        `;
+        if (reps[0]?.email) recips.push({ ...reps[0], role: "Sales rep" });
+      }
+      const cms = await sql<{ email: string; name: string }>`
+        select email, name from profiles
+        where active = true and role = 'credit_manager'
+      `;
+      for (const c of cms) {
+        if (c.email && !recips.some((r) => r.email === c.email)) {
+          recips.push({ ...c, role: "Credit manager" });
+        }
+      }
+      if (data.notifyPartner !== false && lead[0]?.partner_id) {
+        const pr = await sql<{ name: string; email: string | null; kind: string }>`
+          select name, email, kind from partners where id = ${lead[0].partner_id} limit 1
+        `;
+        if (pr[0]?.email) {
+          recips.push({
+            email: pr[0].email,
+            name: pr[0].name,
+            role: pr[0].kind === "broker" ? "Referring broker" : "Referring dealer",
+          });
+        }
+      }
+      if (data.notifyLessee && lead[0]?.email) {
+        recips.push({ email: lead[0].email, name: clientName, role: "Lessee" });
+      }
+      const nextBlock = nextStep
+        ? `What's next: ${nextStep}`
+        : "Next steps will come from the Paul Motor team.";
+      for (const r of recips) {
+        const isLessee = r.role === "Lessee";
+        await sendCrmEmail(sql, {
+          to: r.email,
+          subject: isLessee
+            ? `Your Paul Motor lease was approved — ${clientName}`
+            : `Lease approved — ${clientName}`,
+          kind: "deal_approved",
+          leadId: data.leadId,
+          text: isLessee
+            ? `Hi ${r.name.split(" ")[0]},\n\nGood news — your lease has been approved by Paul Motor Leasing.\n\n${nextBlock}\n\nIf you have questions about the vehicle, speak with your dealer or broker. Questions about the lease or payments come to us.\n\n— ${me.name}\nPaul Motor Leasing`
+            : `${me.name} approved ${clientName}.\n\n${nextBlock}\n\nYour role: ${r.role}\nOpen: ${link}`,
+          html: isLessee
+            ? `<p>Hi ${r.name.split(" ")[0].replace(/</g, "")},</p><p>Good news — your lease has been <strong>approved</strong> by Paul Motor Leasing.</p><p>${nextBlock.replace(/</g, "")}</p><p style="font-size:13px;color:#555">Car questions: your dealer or broker. Lease / payment questions: us.</p><p>— ${me.name.replace(/</g, "")}<br/>Paul Motor Leasing</p>`
+            : `<p><strong>${me.name.replace(/</g, "")}</strong> approved <strong>${clientName.replace(/</g, "")}</strong>.</p><p>${nextBlock.replace(/</g, "")}</p><p style="font-size:13px;color:#555">You: ${r.role}</p><p><a href="${link}">Open deal in CRM</a></p>`,
+        });
+        sentTo.push(`${r.role} <${r.email}>`);
+      }
+      if (sentTo.length) {
+        await sql`
+          insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+          values (
+            ${uid()}, ${data.leadId}, 'credit',
+            ${`Approval notices sent: ${sentTo.join(", ")}`},
+            ${me.id}, ${me.name}
+          )
+        `;
+      }
+    }
+
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'credit',
-        ${`Deal ${status} by ${me.name}${notes ? `: ${notes}` : ""}${data.approve ? " · moved to Compliance" : data.notify ? ` · notified ${data.notify}` : ""}`},
+        ${`Deal ${status} by ${me.name}${notes ? `: ${notes}` : ""}${data.approve ? " · moved to Compliance" + (nextStep ? ` · next: ${nextStep}` : "") : data.notify ? ` · notified ${data.notify}` : ""}`},
         ${me.id}, ${me.name}
       )
     `;

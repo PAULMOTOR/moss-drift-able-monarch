@@ -36,6 +36,7 @@ import {
   deleteLeaseQuote,
   getMyProfile,
 } from "@/lib/crm/server";
+import { sendQuoteAcceptLink } from "@/lib/crm/quote-accept";
 import { CreditUnderwritingPanel } from "@/components/credit-underwriting-panel";
 import { listLeadCalendarEvents, upsertCalendarEvent } from "@/lib/crm/calendar";
 import { listTasks, setTaskStatus, upsertTask } from "@/lib/crm/tasks";
@@ -191,6 +192,7 @@ function LeadDetail() {
     title: string | null;
     status: string;
     accepted_option: number | null;
+    selected_option?: number;
     created_at: string;
     pdf_name: string | null;
   }>>([]);
@@ -930,6 +932,36 @@ function LeadDetail() {
                           Reopen
                         </Link>
                       </Button>
+                      {q.status !== "accepted" ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!lead.email) {
+                              toast.error("Add the client email first");
+                              return;
+                            }
+                            setBusy(true);
+                            try {
+                              const res = await sendQuoteAcceptLink({
+                                data: {
+                                  quoteId: q.id,
+                                  optionNumber: q.selected_option || 1,
+                                  email: lead.email,
+                                },
+                              });
+                              toast.success(`Accept link sent to ${res.email}`);
+                            } catch (e) {
+                              toast.error(e instanceof Error ? e.message : "Send failed");
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        >
+                          Email accept link
+                        </Button>
+                      ) : null}
                       <Button
                         size="sm"
                         variant="outline"

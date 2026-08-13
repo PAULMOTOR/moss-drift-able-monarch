@@ -29,6 +29,7 @@ export function PartnerField({
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
   const [newKind, setNewKind] = useState<PartnerKind>("dealer");
+  const [newEmail, setNewEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const h = size === "lg" ? "h-12" : "h-11";
 
@@ -49,11 +50,12 @@ export function PartnerField({
     }
     setBusy(true);
     try {
-      const p = await createPartner({ data: { name, kind: newKind } });
+      const p = await createPartner({ data: { name, kind: newKind, email: newEmail.trim() || undefined } });
       await reload();
       onChange(p.id, p);
       setAdding(false);
       setNewName("");
+      setNewEmail("");
       toast.success(`${p.name} added to the partner book`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not add partner");
@@ -97,6 +99,14 @@ export function PartnerField({
             placeholder="e.g. Ferrari of Alberta"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
+            disabled={busy}
+          />
+          <Input
+            className={h}
+            type="email"
+            placeholder="Partner email (for approval notices)"
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
             disabled={busy}
           />
           <Select value={newKind} onValueChange={(v) => setNewKind(v as PartnerKind)}>

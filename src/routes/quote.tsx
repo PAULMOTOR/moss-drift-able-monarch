@@ -41,6 +41,7 @@ import type { InventoryItem, Lead } from "@/lib/crm/types";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { getMyProfile } from "@/lib/crm/server";
 import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
+import { sendQuoteAcceptLink } from "@/lib/crm/quote-accept";
 import { Check, Calculator, FolderOpen, Mail, Printer, Save, Search, Trash2 } from "lucide-react";
 
 
@@ -82,6 +83,7 @@ function QuotePage() {
   const navigate = useNavigate();
   const save = useServerFn(saveLeaseQuote);
   const acceptFn = useServerFn(acceptLeaseQuoteOption);
+  const sendAcceptFn = useServerFn(sendQuoteAcceptLink);
   const getQuoteFn = useServerFn(getLeaseQuote);
   const deleteQuoteFn = useServerFn(deleteLeaseQuote);
   const decodeVinFn = useServerFn(decodeVin);
@@ -703,6 +705,30 @@ function QuotePage() {
     }
   }
 
+  async function onSendAcceptLink(optionNumber: number) {
+    if (!quoteId) {
+      toast.error("Save the quote first");
+      return;
+    }
+    const to = (client.email || "").trim();
+    if (!to || !to.includes("@")) {
+      toast.error("Add the client email on the quote, then try again");
+      return;
+    }
+    setBusy(true);
+    try {
+      await silentSave(false);
+      const res = await sendQuoteAcceptLink({
+        data: { quoteId, optionNumber, email: to },
+      });
+      toast.success(`Accept link sent to ${res.email}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not send accept link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onEmailInvoice() {
     if (!quoteId) {
       toast.error("Save and accept an option first so the first invoice exists");
@@ -1285,7 +1311,17 @@ function QuotePage() {
                 onClick={() => void onAccept(i + 1)}
               >
                 <Check className="size-4" />
-                Quote Accepted (Option {i + 1})
+                Staff accept Option {i + 1}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-1 w-full"
+                disabled={busy || !quoteId || !(o.cost > 0 || o.payment > 0)}
+                onClick={() => void onSendAcceptLink(i + 1)}
+              >
+                <Mail className="size-4" />
+                Email lessee to accept Option {i + 1}
               </Button>
             </CardContent>
           </Card>
@@ -1296,7 +1332,7 @@ function QuotePage() {
       <p className="text-center text-xs text-muted-foreground">
         Share quote opens a customer PDF and sets the lead to Quote Sent.
         Update draft / Back to lead save without changing stage.
-        Accept builds contract + invoice. Email 1st invoice sends the pro forma to the client email. Push to Drive is on the lead page.
+        Staff accept locks the option in-house. Email lessee to accept sends a token link that records the exact option, time, and IP. Email 1st invoice sends the pro forma to the client email. Push to Drive is on the lead page.
       </p>
       {leadId ? (
         <div className="mt-6 flex justify-center">
