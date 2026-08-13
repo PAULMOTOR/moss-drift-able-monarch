@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { listLeads, listProfiles, updateLead, getMyProfile } from "@/lib/crm/server";
+import { listLeads, listPartners, listProfiles, updateLead, getMyProfile } from "@/lib/crm/server";
 import { leadsQueryKey } from "@/lib/query-client";
 import { Input } from "@/components/ui/input";
 import {
@@ -56,6 +56,7 @@ function PipelinePage() {
   ) as PipelineId;
   const [board, setBoard] = useState<PipelineId>(initialBoard);
   const [assigned, setAssigned] = useState("all");
+  const [partner, setPartner] = useState("all");
   const [dealQ, setDealQ] = useState("");
   const [dealQDebounced, setDealQDebounced] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -67,8 +68,8 @@ function PipelinePage() {
   const update = useServerFn(updateLead);
 
   const leadsFilters = useMemo(
-    () => ({ assigned, limit: 200, offset: 0 }),
-    [assigned],
+    () => ({ assigned, partner, limit: 200, offset: 0 }),
+    [assigned, partner],
   );
 
   useEffect(() => {
@@ -112,11 +113,17 @@ function PipelinePage() {
   const isAdmin = me?.role === "admin" || me?.role === "gsm";
 
   const profilesQ = useQuery({
-    queryKey: ["profiles"],
+    queryKey: ["profiles-pl"],
     queryFn: () => listProfiles({ data: {} }),
     staleTime: 120_000,
   });
   const profiles = profilesQ.data ?? [];
+  const partnersQ = useQuery({
+    queryKey: ["partners"],
+    queryFn: () => listPartners({ data: { activeOnly: true } }),
+    staleTime: 120_000,
+  });
+  const partners = partnersQ.data ?? [];
 
   const leadsQ = useQuery({
     queryKey: leadsQueryKey(leadsFilters),
@@ -269,6 +276,19 @@ function PipelinePage() {
         description={boardMeta.description}
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Select value={partner} onValueChange={setPartner}>
+              <SelectTrigger className="h-9 w-[200px]">
+                <SelectValue placeholder="Dealer / broker" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All dealers / brokers</SelectItem>
+                {partners.map((pr) => (
+                  <SelectItem key={pr.id} value={pr.id}>
+                    {pr.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             {isAdmin ? (
               <Select
                 value={assigned}
@@ -567,6 +587,7 @@ function Column({
               </Link>
               <p className="truncate text-xs text-muted-foreground">
                 {lead.vehicle_interest || lead.inventory_label || "—"}
+                {lead.partner_name ? ` · via ${lead.partner_name}` : ""}
               </p>
               <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                 <span className="capitalize">{leadTypeLabel(lead.lead_type)}</span>

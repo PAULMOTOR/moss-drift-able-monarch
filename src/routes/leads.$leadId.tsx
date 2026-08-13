@@ -5,6 +5,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, CalendarPlus, FileUp, Mail, Phone, Trash2, X } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { StageBadge } from "@/components/stage-badge";
+import { PartnerField } from "@/components/partner-field";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -161,6 +162,7 @@ function LeadDetail() {
   const [editLast, setEditLast] = useState("");
   const [editParty, setEditParty] = useState<"individual" | "business">("individual");
   const [editEntity, setEditEntity] = useState("");
+  const [editPartner, setEditPartner] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -228,6 +230,7 @@ function LeadDetail() {
     );
     setEditParty(detail.lead.party_type === "business" ? "business" : "individual");
     setEditEntity(detail.lead.legal_entity_name || "");
+    setEditPartner(detail.lead.partner_id || "");
     setEditPhone(detail.lead.phone || "");
     setEditEmail(detail.lead.email || "");
     setActivities(detail.activities);
@@ -281,6 +284,7 @@ function LeadDetail() {
       setEditLast(updated.last_name || updated.name.split(" ").slice(1).join(" ") || "");
       setEditParty(updated.party_type === "business" ? "business" : "individual");
       setEditEntity(updated.legal_entity_name || "");
+      setEditPartner(updated.partner_id || "");
       setEditPhone(updated.phone || "");
       setEditEmail(updated.email || "");
       await load();
@@ -317,6 +321,7 @@ function LeadDetail() {
       last_name: last || null,
       party_type: editParty,
       legal_entity_name: editParty === "business" ? editEntity.trim() : null,
+      partner_id: editPartner || null,
       phone: phone || null,
       email: email || null,
     });
@@ -383,7 +388,7 @@ function LeadDetail() {
 
       <PageHeader
         title={lead.name}
-        description={[lead.party_type === "business" ? lead.legal_entity_name : null, lead.phone, lead.email].filter(Boolean).join(" · ") || "No contact yet"}
+        description={[lead.party_type === "business" ? lead.legal_entity_name : null, lead.partner_name ? `via ${lead.partner_name}` : null, lead.phone, lead.email].filter(Boolean).join(" · ") || "No contact yet"}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button asChild size="sm" variant="outline">
@@ -1057,6 +1062,11 @@ function LeadDetail() {
                   </SelectContent>
                 </Select>
               </Field>
+              <PartnerField
+                value={editPartner}
+                onChange={(id) => setEditPartner(id)}
+                disabled={busy}
+              />
               {editParty === "business" ? (
                 <Field label="Business name">
                   <Input

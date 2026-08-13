@@ -163,6 +163,9 @@ function HelpPage() {
               <strong>Option 1</strong> is your working column. Options 2–3 start empty — use <strong>Copy from left</strong>, then tweak term/rate/residual.
             </li>
             <li>
+              <strong>Origin (dealer / broker):</strong> pick Ferrari of Alberta, Marianetti, Lease Sniper, or add a partner on New Lead. Search finds them. Client emails stay partner-safe.
+            </li>
+            <li>
               <strong>Trade-in tax credit (individuals):</strong> tax is calculated on (price − cash down − trade), but the payment is calculated on (price − cash down − trade + payout). Businesses get no tax credit. <strong>Financed</strong> payouts already include tax; <strong>leased</strong> buyouts are pre-tax so we fund buyout + tax.
             </li>
             <li>

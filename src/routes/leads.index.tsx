@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { listLeads, listProfiles } from "@/lib/crm/server";
+import { listLeads, listPartners, listProfiles } from "@/lib/crm/server";
 import {
   LEAD_TYPES,
   STAGES,
@@ -31,6 +31,7 @@ type LeadsSearch = {
   stage?: string;
   assigned?: string;
   type?: string;
+  partner?: string;
   offset?: number;
 };
 
@@ -60,6 +61,7 @@ export const Route = createFileRoute("/leads/")({
       stage: typeof s.stage === "string" ? s.stage : undefined,
       assigned: typeof s.assigned === "string" ? s.assigned : undefined,
       type: typeof s.type === "string" ? s.type : undefined,
+      partner: typeof s.partner === "string" ? s.partner : undefined,
       offset,
     };
   },
@@ -77,6 +79,7 @@ function LeadsPage() {
   const [stage, setStage] = useState(search.stage ?? stored.stage ?? "all");
   const [assigned, setAssigned] = useState(search.assigned ?? stored.assigned ?? "all");
   const [leadType, setLeadType] = useState(search.type ?? stored.type ?? "all");
+  const [partner, setPartner] = useState(search.partner ?? stored.partner ?? "all");
   const [offset, setOffset] = useState(search.offset ?? stored.offset ?? 0);
 
   const filters = useMemo(
@@ -85,10 +88,11 @@ function LeadsPage() {
       stage,
       assigned,
       lead_type: leadType,
+      partner,
       limit: PAGE_SIZE,
       offset,
     }),
-    [qApplied, stage, assigned, leadType, offset],
+    [qApplied, stage, assigned, leadType, partner, offset],
   );
 
   const leadsQ = useQuery({
@@ -106,12 +110,19 @@ function LeadsPage() {
   const total = leadsQ.data?.total ?? 0;
   const hasMore = leadsQ.data?.hasMore ?? false;
   const profiles = profilesQ.data ?? [];
+  const partnersQ = useQuery({
+    queryKey: ["partners"],
+    queryFn: () => listPartners({ data: { activeOnly: true } }),
+    staleTime: 120_000,
+  });
+  const partners = partnersQ.data ?? [];
 
   function persistFilters(next: {
     q: string;
     stage: string;
     assigned: string;
     type: string;
+    partner: string;
     offset: number;
   }) {
     const searchOut: LeadsSearch = {
@@ -119,6 +130,7 @@ function LeadsPage() {
       stage: next.stage !== "all" ? next.stage : undefined,
       assigned: next.assigned !== "all" ? next.assigned : undefined,
       type: next.type !== "all" ? next.type : undefined,
+      partner: next.partner !== "all" ? next.partner : undefined,
       offset: next.offset || undefined,
     };
     try {
@@ -135,10 +147,11 @@ function LeadsPage() {
       stage,
       assigned,
       type: leadType,
+      partner,
       offset,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qApplied, stage, assigned, leadType, offset]);
+  }, [qApplied, stage, assigned, leadType, partner, offset]);
 
   function applySearch() {
     setOffset(0);
@@ -167,7 +180,7 @@ function LeadsPage() {
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 className="h-11 pl-9"
-                placeholder="Search name, business, phone, email, vehicle…"
+                placeholder="Search name, dealer, business, phone, vehicle…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 onKeyDown={(e) => {
@@ -190,6 +203,25 @@ function LeadsPage() {
                 {LEAD_TYPES.map((t) => (
                   <SelectItem key={t.id} value={t.id}>
                     {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={partner}
+              onValueChange={(v) => {
+                setPartner(v);
+                setOffset(0);
+              }}
+            >
+              <SelectTrigger className="h-11 w-full lg:w-48">
+                <SelectValue placeholder="Partner" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All dealers / brokers</SelectItem>
+                {partners.map((pr) => (
+                  <SelectItem key={pr.id} value={pr.id}>
+                    {pr.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -285,6 +317,7 @@ function LeadsPage() {
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {lead.phone || lead.email || "—"} · {sourceLabel(lead.source)}
+                      {lead.partner_name ? ` · via ${lead.partner_name}` : ""}
                       {lead.assigned_name ? ` · ${lead.assigned_name}` : ""}
                     </p>
                     <p className="mt-0.5 line-clamp-1 text-sm text-foreground/80">

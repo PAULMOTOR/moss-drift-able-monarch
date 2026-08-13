@@ -325,6 +325,9 @@ export type Lead = {
   google_review_link: string | null;
   estimated_value: number | null;
   destination?: string | null;
+  partner_id?: string | null;
+  partner_name?: string | null;
+  partner_kind?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

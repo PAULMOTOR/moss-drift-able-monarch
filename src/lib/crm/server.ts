@@ -7,6 +7,7 @@ import { permissionsForRole } from "./permissions";
 import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
+import { isPartnerKind, mapPartner, type Partner, type PartnerKind } from "./partners";
 import { attachUnmatchedLeaseApp, listUnmatchedLeaseApps } from "./lease-app-import";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
@@ -219,6 +220,9 @@ function mapLead(r: Record<string, unknown>): Lead {
     assigned_name: (r.assigned_name as string) ?? null,
     inventory_label: (r.inventory_label as string) ?? null,
     destination: (r.destination as string) ?? null,
+    partner_id: (r.partner_id as string) ?? null,
+    partner_name: (r.partner_name as string) ?? null,
+    partner_kind: (r.partner_kind as string) ?? null,
   };
 }
 
@@ -236,6 +240,9 @@ const leadSelect = `
   l.google_review_link,
   l.estimated_value::float8 as estimated_value,
   l.destination,
+  l.partner_id,
+  (select name from partners where id = l.partner_id) as partner_name,
+  (select kind from partners where id = l.partner_id) as partner_kind,
   l.created_by,
   l.created_at::text as created_at,
   l.updated_at::text as updated_at,
@@ -261,6 +268,9 @@ const leadListSelect = `
   l.google_review_link,
   l.estimated_value::float8 as estimated_value,
   l.destination,
+  l.partner_id,
+  (select name from partners where id = l.partner_id) as partner_name,
+  (select kind from partners where id = l.partner_id) as partner_kind,
   l.created_by,
   l.created_at::text as created_at,
   l.updated_at::text as updated_at,
@@ -509,6 +519,7 @@ export const listLeads = createServerFn({ method: "GET" })
             q?: string;
             assigned?: string;
             lead_type?: string;
+            partner?: string;
             /** page size (default 50, max 200) */
             limit?: number;
             offset?: number;
@@ -521,6 +532,7 @@ export const listLeads = createServerFn({ method: "GET" })
     const sql = await boot();
     const stage = data.stage && data.stage !== "all" ? data.stage : null;
     const leadType = data.lead_type && data.lead_type !== "all" ? data.lead_type : null;
+    const partnerId = data.partner && data.partner !== "all" ? data.partner : null;
     const q = data.q?.trim() ? `%${data.q.trim().toLowerCase()}%` : null;
     const admin = isElevatedStaff(me);
     const perms = await permissionsForRole(me.role);
@@ -560,6 +572,7 @@ export const listLeads = createServerFn({ method: "GET" })
        from leads l
        left join profiles p on p.id = l.assigned_to
        left join inventory i on i.id = l.inventory_id
+       left join partners pr on pr.id = l.partner_id
        where ($1::text is null or l.stage = $1)
          and (
            $5::boolean = true
@@ -587,7 +600,9 @@ export const listLeads = createServerFn({ method: "GET" })
            or lower(coalesce(i.stock_number, '')) like $4
            or lower(coalesce(i.vin, '')) like $4
            or lower(coalesce(i.make, '') || ' ' || coalesce(i.model, '')) like $4
+           or lower(coalesce(pr.name, '')) like $4
          )
+         and ($9::text is null or l.partner_id = $9)
          and (
            $8::text[] is null
            or l.stage = any($8::text[])
@@ -601,6 +616,7 @@ export const listLeads = createServerFn({ method: "GET" })
       me.id,
       unassignedOnly,
       stageAllow,
+      partnerId,
     ];
 
     const countRows = await sql.query<{ n: number }>(
@@ -613,7 +629,7 @@ export const listLeads = createServerFn({ method: "GET" })
       `select ${leadListSelect}
        ${whereSql}
        order by l.updated_at desc
-       limit $9 offset $10`,
+       limit $10 offset $11`,
       [...params, limit, offset],
     );
     const leads = rows.map(mapLead);
@@ -646,6 +662,7 @@ export const getLead = createServerFn({ method: "GET" })
          from leads l
          left join profiles p on p.id = l.assigned_to
          left join inventory i on i.id = l.inventory_id
+         left join partners pr on pr.id = l.partner_id
          where l.id = $1 limit 1`,
         [leadId],
       );
@@ -729,7 +746,62 @@ export type CaptureLeadInput = {
   estimated_value?: number | null;
   destination?: string | null;
   legal_entity_name?: string | null;
+  partner_id?: string | null;
 };
+
+
+export const listPartners = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .validator((data: { activeOnly?: boolean } | undefined) => data ?? {})
+  .handler(async ({ data }): Promise<Partner[]> => {
+    const sql = await boot();
+    const rows = data.activeOnly === false
+      ? await sql<Record<string, unknown>>`
+          select id, name, kind, city, province, email, phone, notes, active,
+                 created_at::text as created_at, updated_at::text as updated_at
+          from partners order by kind, lower(name)
+        `
+      : await sql<Record<string, unknown>>`
+          select id, name, kind, city, province, email, phone, notes, active,
+                 created_at::text as created_at, updated_at::text as updated_at
+          from partners where active = true order by kind, lower(name)
+        `;
+    return rows.map(mapPartner);
+  });
+
+export const createPartner = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { name: string; kind?: string; city?: string; province?: string }) => data)
+  .handler(async ({ data }): Promise<Partner> => {
+    const sql = await boot();
+    const name = data.name.trim();
+    if (name.length < 2) throw new Error("Partner name is required");
+    const kind: PartnerKind = isPartnerKind(data.kind || "") ? data.kind as PartnerKind : "dealer";
+    const existing = await sql<Record<string, unknown>>`
+      select id, name, kind, city, province, email, phone, notes, active,
+             created_at::text as created_at, updated_at::text as updated_at
+      from partners where lower(btrim(name)) = ${name.toLowerCase()} limit 1
+    `;
+    if (existing[0]) {
+      if (existing[0].active === false) {
+        await sql`update partners set active = true, kind = ${kind}, updated_at = now() where id = ${String(existing[0].id)}`;
+        existing[0].active = true;
+        existing[0].kind = kind;
+      }
+      return mapPartner(existing[0]);
+    }
+    const id = crypto.randomUUID();
+    await sql`
+      insert into partners (id, name, kind, city, province)
+      values (${id}, ${name}, ${kind}, ${data.city?.trim() || null}, ${data.province?.trim() || null})
+    `;
+    const rows = await sql<Record<string, unknown>>`
+      select id, name, kind, city, province, email, phone, notes, active,
+             created_at::text as created_at, updated_at::text as updated_at
+      from partners where id = ${id}
+    `;
+    return mapPartner(rows[0]!);
+  });
 
 export const captureLead = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -790,7 +862,7 @@ export const captureLead = createServerFn({ method: "POST" })
         id, name, first_name, last_name, party_type, legal_entity_name, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
         assigned_to, stage, stage_entered_at, quote_sent, quote_sent_at,
         quote_link, quote_notes, quote_pdf_name, quote_pdf_data, source_email_raw,
-        estimated_value, destination, created_by
+        estimated_value, destination, partner_id, created_by
       ) values (
         ${leadId}, ${name}, ${firstName}, ${lastName}, ${partyType}, ${partyType === "business" ? data.legal_entity_name?.trim() || null : null}, ${data.phone?.trim() || null},
         ${data.email?.trim().toLowerCase() || null},
@@ -806,6 +878,7 @@ export const captureLead = createServerFn({ method: "POST" })
         ${data.source_email_raw?.trim() || null},
         ${estimated},
         ${data.destination?.trim() || null},
+        ${data.partner_id || null},
         ${me.id}
       )
     `;
@@ -1013,6 +1086,11 @@ export const updateLead = createServerFn({ method: "POST" })
           data.destination !== undefined
             ? data.destination?.trim() || null
             : (prev.destination as string | null)
+        },
+        partner_id = ${
+          data.partner_id !== undefined
+            ? data.partner_id || null
+            : (prev.partner_id as string | null)
         },
         assigned_to = ${nextAssigned},
         stage = ${stage},

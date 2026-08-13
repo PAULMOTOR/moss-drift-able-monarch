@@ -35,6 +35,7 @@ import {
   parseEmailLead,
 } from "@/lib/crm/server";
 import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
+import { PartnerField } from "@/components/partner-field";
 import {
   LEAD_TYPES,
   SOURCES,
@@ -83,6 +84,7 @@ function CapturePage() {
     phone: "",
     email: "",
     source: "phone",
+    partner_id: "",
     notes: "",
     vehicle_interest: "",
     destination: "",
@@ -300,6 +302,7 @@ function CapturePage() {
           last_name: form.last_name || undefined,
           party_type: form.party_type || "individual",
           legal_entity_name: form.party_type === "business" ? form.legal_entity_name.trim() || null : null,
+          partner_id: form.partner_id || null,
           quote_sent: form.quote_sent,
           quote_sent_at:
             form.quote_sent && form.quote_sent_at
@@ -552,6 +555,12 @@ Message: Interested in a viewing this weekend.`}
                 />
               </div>
             </div>
+
+            <PartnerField
+              value={form.partner_id}
+              onChange={(id) => setForm((f) => ({ ...f, partner_id: id }))}
+              size="lg"
+            />
 
             <div className="grid gap-1.5">
               <Label>Source</Label>

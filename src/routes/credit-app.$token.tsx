@@ -27,6 +27,8 @@ function PublicCreditAppPage() {
     email: string | null;
     phone: string | null;
     vehicle_interest: string | null;
+    partner_name?: string | null;
+    partner_kind?: string | null;
   } | null>(null);
   const [payload, setPayload] = useState<Record<string, string>>({});
   const [partyType, setPartyType] = useState<"individual" | "business">("individual");
@@ -408,6 +410,19 @@ function PublicCreditAppPage() {
               Your application and IDs have been received by Paul Motor Leasing. A sales
               representative will follow up shortly. You may close this window.
             </p>
+            {lead?.partner_name ? (
+              <p className="mt-3 text-sm text-muted-foreground">
+                We know you're working with <strong className="text-foreground">{lead.partner_name}</strong>.
+                They remain your partner on the car — questions about the vehicle go to them.
+                Questions about your lease or payments come to us. We're glad they introduced you
+                to the Paul Motor family.
+              </p>
+            ) : (
+              <p className="mt-3 text-sm text-muted-foreground">
+                We look forward to welcoming you to the Paul Motor family if you're not already a member.
+                We'll take good care of the lease — and we're here for the rest of your car needs.
+              </p>
+            )}
           </CardBox>
         ) : null}
       </main>

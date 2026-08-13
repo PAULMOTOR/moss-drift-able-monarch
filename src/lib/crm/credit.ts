@@ -6,6 +6,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
+import { fetchPartnerForLead, referralClientCopy } from "./partners";
 import {
   CUSTOMER_CHECKLIST,
   LESSEE_DOC_TYPES,
@@ -309,6 +310,8 @@ export const requestCreditApp = createServerFn({ method: "POST" })
     `;
     const link = `${appBaseUrl()}/credit-app/${pub}`;
     const first = (lead.first_name as string) || String(lead.name).split(" ")[0] || "there";
+    const partner = await fetchPartnerForLead(sql, data.leadId);
+    const referral = referralClientCopy(partner);
     const mailResult = await sendCrmEmail(sql, {
       to: email,
       subject: "Paul Motor Leasing — Credit application & ID upload",
@@ -319,7 +322,7 @@ export const requestCreditApp = createServerFn({ method: "POST" })
       replyTo: replyToForActor(me.email, me.name),
       text: `Hi ${first},
 
-Paul Motor Leasing has invited you to complete a short credit application and upload two pieces of identification for your vehicle lease.
+${referral.text ? referral.text + "\n\n" : ""}Paul Motor Leasing has invited you to complete a short credit application and upload two pieces of identification for your vehicle lease.
 
 Open this secure link (no password required):
 ${link}
@@ -335,6 +338,7 @@ Your documents are only visible to authorized Paul Motor staff.
 Paul Motor Leasing`,
       html: `<div style="font-family:system-ui,sans-serif;max-width:560px;line-height:1.5">
 <p>Hi ${first},</p>
+${referral.html}
 <p><strong>Paul Motor Leasing</strong> has invited you to complete a short credit application and upload two pieces of identification for your vehicle lease.</p>
 <p><a href="${link}" style="display:inline-block;background:#008272;color:#fff;padding:12px 20px;border-radius:4px;text-decoration:none;font-weight:600">Start credit application</a></p>
 <p style="font-size:13px;color:#555">Or copy this link:<br/>${link}</p>
@@ -813,6 +817,8 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
     const link = `${appBaseUrl()}/credit-docs/${docTok}?kinds=${kindsParam}`;
     const listText = labels.map((l) => `• ${l}`).join("\n");
     const listHtml = labels.map((l) => `<li>${l}</li>`).join("");
+    const partner = await fetchPartnerForLead(sql, data.leadId);
+    const referral = referralClientCopy(partner);
 
     const mailResult = await sendCrmEmail(sql, {
       to: email,
@@ -822,8 +828,8 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
       profileId: me.id,
       fromName: clientFacingFromName(me.name),
       replyTo: replyToForActor(me.email, me.name),
-      text: `Hi,\n\nPlease upload the following for your lease application:\n${listText}\n\n${link}\n\nYou can reopen this link anytime to add more files until complete.\n\n— ${me.name}\nPaul Motor Leasing`,
-      html: `<p>Please upload the following for your lease application:</p>
+      text: `Hi,\n\n${referral.text ? referral.text + "\n\n" : ""}Please upload the following for your lease application:\n${listText}\n\n${link}\n\nYou can reopen this link anytime to add more files until complete.\n\n— ${me.name}\nPaul Motor Leasing`,
+      html: `${referral.html}<p>Please upload the following for your lease application:</p>
 <ul>${listHtml}</ul>
 <p><a href="${link}" style="background:#008272;color:#fff;padding:10px 16px;text-decoration:none;border-radius:4px">Upload documents</a></p>
 <p style="font-size:13px;color:#555">You can reopen this link anytime to add more files until the package is complete.</p>
@@ -854,9 +860,11 @@ export const getPublicCreditApp = createServerFn({ method: "GET" })
     const sql = await getSql();
     const rows = await sql.query<Record<string, unknown>>(
       `select a.*, l.name as lead_name, l.email as lead_email, l.phone as lead_phone,
-              l.first_name, l.last_name, l.vehicle_interest, l.party_type as lead_party_type
+              l.first_name, l.last_name, l.vehicle_interest, l.party_type as lead_party_type,
+              pr.name as partner_name, pr.kind as partner_kind
        from credit_applications a
        join leads l on l.id = a.lead_id
+       left join partners pr on pr.id = l.partner_id
        where a.public_token = $1 limit 1`,
       [data.token],
     );
@@ -880,6 +888,8 @@ export const getPublicCreditApp = createServerFn({ method: "GET" })
         email: (rows[0].lead_email as string) || app.app_email,
         phone: (rows[0].lead_phone as string) || null,
         vehicle_interest: (rows[0].vehicle_interest as string) || null,
+        partner_name: (rows[0].partner_name as string) || null,
+        partner_kind: (rows[0].partner_kind as string) || null,
       },
       uploadedKinds: docs.map((d) => d.kind),
     };
