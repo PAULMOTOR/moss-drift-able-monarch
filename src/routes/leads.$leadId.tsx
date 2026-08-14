@@ -69,6 +69,14 @@ import {
   formatRelative,
   toLocalInputValue,
 } from "@/lib/utils";
+import { compactEmailBody } from "@/lib/crm/email-text";
+
+function displayActivityBody(kind: string, body: string): string {
+  if (kind === "email" || /&nbsp;|email template/i.test(body || "")) {
+    return compactEmailBody(body, 6000);
+  }
+  return body || "";
+}
 
 
 /** Open HTML or PDF data URLs in a new tab (Blob URLs — browsers block huge data: PDFs as about:blank). */
@@ -668,7 +676,7 @@ function LeadDetail() {
                       </span>
                       <span>{formatRelative(a.created_at)}</span>
                     </div>
-                    <p className="whitespace-pre-wrap text-sm">{a.body}</p>
+                    <p className="whitespace-pre-wrap text-sm">{displayActivityBody(a.kind, a.body)}</p>
                   </div>
                 ))}
               </div>

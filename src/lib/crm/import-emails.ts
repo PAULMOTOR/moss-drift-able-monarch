@@ -15,6 +15,7 @@ import {
   type GmailMessage,
 } from "./gmail";
 import type { LeadType } from "./types";
+import { compactEmailBody } from "./email-text";
 import {
   applyWebsiteLeaseAppToLead,
   findWebsiteLeaseDeal,
@@ -468,7 +469,7 @@ async function processMessage(
   const notesParts = [
     `Auto-imported from ${portal} · ${classified.rule}`,
     `Subject: ${msg.subject}`,
-    parsed.notes ? parsed.notes : msg.snippet.slice(0, 400),
+    parsed.notes ? compactEmailBody(parsed.notes, 800) : compactEmailBody(msg.snippet, 400),
   ].filter(Boolean);
   const notes = notesParts.join("\n");
   const mergeBlock = `\n\n---\n${notes}`;
@@ -569,8 +570,8 @@ async function processMessage(
       where id = ${dup.id}
     `;
     const activityBody = websiteLease
-      ? `Website lease application attached to existing lead (not a new lead).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${(msg.bodyText || msg.snippet).slice(0, 1200)}`
-      : `Duplicate email merged (same person + vehicle).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${(msg.bodyText || msg.snippet).slice(0, 1200)}`;
+      ? `Website lease application attached to existing lead (not a new lead).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${compactEmailBody(msg.bodyText || msg.snippet, 1200)}`
+      : `Duplicate email merged (same person + vehicle).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${compactEmailBody(msg.bodyText || msg.snippet, 1200)}`;
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by_name)
       values (

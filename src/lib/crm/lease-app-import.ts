@@ -6,6 +6,7 @@ import type { Sql } from "@/lib/db";
 import { sendCrmEmail } from "./mail";
 import { appBaseUrl, getTorontoClock } from "./reminders";
 import { normalizeEmail, normalizePhone } from "./classify-email";
+import { compactEmailBody } from "./email-text";
 
 export const LEASE_APP_UNMATCHED = "lease-app-no-existing-lead";
 export const LEASE_APP_AMBIGUOUS = "lease-app-ambiguous";
@@ -260,7 +261,7 @@ export async function applyWebsiteLeaseAppToLead(
     `From: ${msg.from}`,
     `Subject: ${msg.subject}`,
     ident.company ? `Company: ${ident.company}` : "",
-    msg.body.slice(0, 1500),
+    compactEmailBody(msg.body, 1500),
   ]
     .filter(Boolean)
     .join("\n");

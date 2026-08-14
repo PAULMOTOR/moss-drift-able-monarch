@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { compactEmailBody, isSpacerEmailBody } from "./email-text";
 
 export type GmailMessage = {
   id: string;
@@ -89,14 +90,16 @@ function extractTextFromPayload(payload: {
       if (nested) plain += nested + "\n";
     }
   }
-  if (plain.trim()) return plain.trim();
-  if (html.trim()) return htmlToText(html);
-  return "";
+  const compactPlain = compactEmailBody(plain);
+  const compactHtml = html.trim() ? compactEmailBody(htmlToText(html)) : "";
+  if (plain.trim() && !isSpacerEmailBody(plain)) return compactPlain || plain.trim();
+  if (compactHtml) return compactHtml;
+  return compactPlain;
 }
 
 function htmlToText(html: string): string {
   const amp = String.fromCharCode(38);
-  return html
+  const stripped = html
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n")
@@ -120,10 +123,8 @@ function htmlToText(html: string): string {
     .split(amp + "#39;")
     .join("'")
     .split(amp + "quot;")
-    .join('"')
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .join('"');
+  return compactEmailBody(stripped);
 }
 
 /**
