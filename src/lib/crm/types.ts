@@ -210,6 +210,7 @@ export const SOURCES = [
   { id: "walk_in", label: "Walk-in" },
   { id: "email", label: "Email" },
   { id: "broker", label: "Broker" },
+  { id: "marketplace", label: "Marketplace" },
   { id: "other", label: "Other" },
   { id: "web", label: "Web" },
 ] as const;

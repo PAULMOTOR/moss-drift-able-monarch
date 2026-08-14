@@ -131,7 +131,7 @@ create table if not exists leads (
   phone text,
   email text,
   source text not null default 'phone'
-    check (source in ('phone', 'walk_in', 'email', 'broker', 'other', 'web')),
+    check (source in ('phone', 'walk_in', 'email', 'broker', 'marketplace', 'other', 'web')),
   notes text,
   vehicle_interest text,
   inventory_id text references inventory (id) on delete set null,
