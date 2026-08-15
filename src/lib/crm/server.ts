@@ -290,17 +290,17 @@ export const updateOwnAvatar = createServerFn({ method: "POST" })
     const me = await requireProfile(context.userId);
     const sql = await boot();
     const url = data.avatar_url?.trim() || null;
-    if (url && url.length > 2_500_000) {
+    if (url && url.length > 400_000) {
       throw new Error("Image too large — use a smaller photo");
+    }
+    if (url && !url.startsWith("data:image/")) {
+      throw new Error("Photo must be an image");
     }
     await sql`
       update profiles set avatar_url = ${url}, updated_at = now() where id = ${me.id}
     `;
-    if (me.user_id) {
-      await sql`
-        update "user" set image = ${url}, "updatedAt" = now() where id = ${me.user_id}
-      `;
-    }
+    // Never copy the data-URL onto Better Auth's user.image — it gets
+    // stuffed into the session cookie and Vercel 494s (headers too large).
     const rows = await sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
              avatar_url, created_at::text as created_at, updated_at::text as updated_at
