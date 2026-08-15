@@ -476,10 +476,10 @@ function QuotePage() {
 
   function vehicleTotalForOption(i: number) {
     const o = options[i];
-    return Math.max(0, (o.cost || 0) + (o.profit || 0));
+    return Math.max(0, (o.cost || 0) + (o.extra || 0));
   }
 
-  /** Dollar amount drives % (and vice versa) against cost+extra+profit. */
+  /** Dollar amount drives % against sale price (pad is not in the sticker). */
   function setDepositDollar(i: number, dollars: number) {
     const vt = vehicleTotalForOption(i);
     patchOption(i, { deposit: dollars });
@@ -1235,8 +1235,8 @@ function QuotePage() {
               <MoneyField label="Handling $ (default 0)" value={options[i].handling} onChange={(v) => patchOption(i, { handling: v })} />
 
               <div className="mt-3 space-y-1 rounded-sm border border-border bg-muted/40 p-3 text-xs">
-                <Row label="Price" value={formatMoney(o.cost + o.extra + o.profit)} bold />
-                {o.profit > 0 ? <Row label="Pad" value={formatMoney(o.profit)} /> : null}
+                <Row label="Price" value={formatMoney(o.salePrice)} bold />
+                {o.profit > 0 ? <Row label="Pad (in cap only — hidden on client quote)" value={formatMoney(o.profit)} /> : null}
                 <Row
                   label="Trade equity (allowance − payout we fund)"
                   value={formatMoney((options[i].tradeIn || 0) - (o.payoutFunded || 0))}

@@ -226,7 +226,7 @@ export async function buildRetailQuotePdf(
         ? `GST 5%+PST ${(((o.pstRate ?? 0) * 100) || 0).toFixed(0)}%`
         : `Taxes (${province})`;
     const lines: [string, string, boolean?][] = [
-      ["Price", money(o.cost + o.extra + o.profit), true],
+      ["Price", money(o.salePrice), true],
       ["Trade-In", money(o.tradeIn)],
       ["Trade Lien", money(o.tradeInLien || 0)],
       ["Cash down", `${money(o.deposit)} (${o.depositPct.toFixed(1)}%)`, true],

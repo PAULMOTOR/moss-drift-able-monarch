@@ -195,7 +195,7 @@ export async function applyAcceptedOption(
         quote_pdf_name = ${pdfName},
         quote_pdf_data = ${pdfData},
         guarantor = ${payload.client.guarantor || null},
-        estimated_value = ${opt.cost + opt.extra + opt.profit},
+        estimated_value = ${opt.salePrice},
         stage = case
           when stage in ('new','contacted','paused','quote_sent') then 'lease_accepted'
           else stage

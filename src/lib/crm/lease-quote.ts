@@ -2,8 +2,9 @@
  * Paul Motor lease quote engine — mirrors the company Google Sheet (QUOTE tab).
  *
  * Core payment:
- *   financed (payment cap) = cost + extra + profit - tradeIn + payout - cashDown
- *   tax cap (individual + trade) = cost + extra + profit - tradeIn - cashDown
+ *   financed (payment cap) = cost + extra + pad - tradeIn + payout - cashDown
+ *   tax cap (individual + trade) = cost + extra - tradeIn - cashDown
+ *     (pad is cap-cost only — never in sale price or tax cap)
  *     → monthly tax = statutory tax on PMT(tax cap), applied onto PMT(payment cap)
  *   Business / no trade: no tax credit (tax the real payment).
  *   Financed trade payout includes tax (use as-is). Lease buyout is pre-tax
@@ -68,6 +69,8 @@ export type LeaseOptionInput = {
 };
 
 export type LeaseOptionResult = LeaseOptionInput & {
+  /** Sticker / sale price (cost + extra). Pad is NOT included. */
+  salePrice: number;
   financed: number;
   depositPct: number;
   residualPct: number;
@@ -419,7 +422,9 @@ export function calcLeaseOption(
   const residual = Math.max(0, input.residual || 0);
   const handling = Math.max(0, input.handling || 0);
 
-  const vehicleTotal = cost + extra + profit;
+  const salePrice = round2(cost + extra);
+  // Pad rides only in the amount financed — never in the client-facing price.
+  const vehicleTotal = salePrice + profit;
 
   // --- Tax (BC: lock PST from TRV = gross cap cost; GST 5% always) ---
   const trv = grossCapitalizedCost({ cost, extra, profit });
@@ -452,11 +457,11 @@ export function calcLeaseOption(
     partyType,
     rates.combinedRate,
   );
-  // Payment cap: price − trade + payout − cash down (security deposit excluded)
+  // Payment cap: sale + pad − trade + payout − cash down
   const paymentCapCost = round2(vehicleTotal - tradeIn + payoutFunded - deposit);
   const financed = round2(Math.max(0, paymentCapCost));
-  // Tax cap (NAV col. A): price − trade − cash down. Lien never enters the tax base.
-  const taxCapCost = round2(vehicleTotal - tradeIn - deposit);
+  // Tax cap: sale price − trade − cash down. Pad is not part of the tax base.
+  const taxCapCost = round2(salePrice - tradeIn - deposit);
   const taxCreditApplied = !isBusiness && tradeIn > 0;
 
   const monthlyRate = ratePct / 100 / 12;
@@ -472,8 +477,8 @@ export function calcLeaseOption(
   const effectiveGstRate = payment !== 0 ? payTax.gst / payment : 0;
   const effectivePstRate = payment !== 0 ? payTax.pst / payment : 0;
 
-  const depositPct = vehicleTotal > 0 ? round2((deposit / vehicleTotal) * 100) : 0;
-  const residualPct = vehicleTotal > 0 ? round2((residual / vehicleTotal) * 100) : 0;
+  const depositPct = salePrice > 0 ? round2((deposit / salePrice) * 100) : 0;
+  const residualPct = salePrice > 0 ? round2((residual / salePrice) * 100) : 0;
   const depreciation = round2((financed - residual) / termMonths);
   const interest = round2(payment - depreciation - handling);
   const yieldPct = yieldPctFromPayment(termMonths, payment, financed, residual);
@@ -534,6 +539,7 @@ export function calcLeaseOption(
     cost,
     extra,
     profit,
+    salePrice,
     tradeIn,
     tradeInLien,
     deposit,
@@ -674,8 +680,7 @@ export function buildRetailQuoteHtml(
       <div class="opt">
         <h3>Option ${num}</h3>
         <table>
-          <tr class="emph"><td>Price</td><td class="num">${formatMoney(o.cost + o.extra + o.profit)}</td></tr>
-          <tr><td>Pad</td><td class="num">${formatMoney(o.profit)}</td></tr>
+          <tr class="emph"><td>Price</td><td class="num">${formatMoney(o.salePrice)}</td></tr>
           <tr><td>Trade-In</td><td class="num">${formatMoney(o.tradeIn)}</td></tr>
           <tr><td>Trade-In Lien</td><td class="num">${formatMoney(o.tradeInLien || 0)}</td></tr>
           ${tradeVehicleLine(client)}
@@ -889,7 +894,7 @@ export function renderContractTemplate(
     color: client.color,
     km: client.km != null ? String(client.km) : "",
     stock: client.stock || "",
-    price: formatMoney(option.cost + option.extra + option.profit),
+    price: formatMoney(option.salePrice),
 
     deposit: formatMoney(option.deposit),
     cash_down: formatMoney(option.deposit),

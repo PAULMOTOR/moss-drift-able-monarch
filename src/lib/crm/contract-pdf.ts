@@ -68,7 +68,7 @@ export async function buildLeaseContractPdf(
     e.setMonth(e.getMonth() + option.termMonths);
     return e.toISOString().slice(0, 10);
   })();
-  const price = option.cost + option.extra + option.profit;
+  const price = option.salePrice;
 
   const rows: Array<[string, string]> = [
     ["Lessee", client.clientName || "—"],
