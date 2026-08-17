@@ -10,6 +10,7 @@ import {
   Mail,
   Phone,
   Search,
+  Store,
   UserRound,
   X,
 } from "lucide-react";
@@ -174,10 +175,14 @@ function CapturePage() {
         const lucas = p.find(
           (x) => x.email?.toLowerCase() === "lucasl@paulmotorcompany.com" || /^lucas/i.test(x.name),
         );
+        const alex = p.find(
+          (x) =>
+            x.email?.toLowerCase() === "alexh@paulmotorcompany.com" ||
+            /alex hudon/i.test(x.name),
+        );
         setForm((f) => ({
           ...f,
-          // Inventory defaults to Lucas; other types default to current user
-          assigned_to: (f.lead_type === "inventory" || f.lead_type === "cash" || f.lead_type === "wholesale") && lucas ? lucas.id : profile.id,
+          assigned_to: defaultOwner(f.source, f.lead_type, lucas?.id, alex?.id, profile.id),
         }));
       },
     );
@@ -327,15 +332,46 @@ function CapturePage() {
     }
   }
 
+  function defaultOwner(
+    source: string,
+    leadType: string,
+    lucasId?: string,
+    alexId?: string,
+    meId?: string,
+  ) {
+    if (source === "marketplace") return alexId || meId || "";
+    if (leadType === "inventory" || leadType === "cash" || leadType === "wholesale") {
+      return lucasId || meId || "";
+    }
+    if (leadType === "general" || leadType === "consignment") return "";
+    return meId || "";
+  }
+
+  function ownerIds() {
+    const lucas = profiles.find(
+      (x) => x.email?.toLowerCase() === "lucasl@paulmotorcompany.com" || /^lucas/i.test(x.name),
+    );
+    const alex = profiles.find(
+      (x) =>
+        x.email?.toLowerCase() === "alexh@paulmotorcompany.com" || /alex hudon/i.test(x.name),
+    );
+    return { lucasId: lucas?.id, alexId: alex?.id, meId: me?.id };
+  }
+
   function quickSource(source: string) {
-    setForm((f) => ({ ...f, source }));
+    const { lucasId, alexId, meId } = ownerIds();
+    setForm((f) => ({
+      ...f,
+      source,
+      assigned_to: defaultOwner(source, f.lead_type, lucasId, alexId, meId),
+    }));
   }
 
   return (
     <>
       <PageHeader
         title="New Lead"
-        description="Phone, walk-in, or paste an email — under 15 seconds on the floor."
+        description="Phone, walk-in, Marketplace, or paste an email — under 15 seconds on the floor."
         actions={
           <Button
             type="button"
@@ -406,14 +442,22 @@ Message: Interested in a viewing this weekend.`}
             <button
               key={t.id}
               type="button"
-              onClick={() =>
+              onClick={() => {
+                const { lucasId, alexId, meId } = ownerIds();
                 setForm((f) => ({
                   ...f,
                   lead_type: t.id,
                   source: t.id === "lease" && f.source === "phone" ? "broker" : f.source,
                   inventory_id: t.id === "lease" ? "" : f.inventory_id,
-                }))
-              }
+                  assigned_to: defaultOwner(
+                    t.id === "lease" && f.source === "phone" ? "broker" : f.source,
+                    t.id,
+                    lucasId,
+                    alexId,
+                    meId,
+                  ),
+                }));
+              }}
               className={cn(
                 "rounded-xl border px-3 py-3 text-left transition-colors",
                 form.lead_type === t.id
@@ -429,7 +473,7 @@ Message: Interested in a viewing this weekend.`}
           ))}
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <Button
             type="button"
             size="lg"
@@ -449,6 +493,16 @@ Message: Interested in a viewing this weekend.`}
           >
             <Footprints className="size-4" />
             Walk-in
+          </Button>
+          <Button
+            type="button"
+            size="lg"
+            variant={form.source === "marketplace" ? "default" : "outline"}
+            className="h-14 px-2"
+            onClick={() => quickSource("marketplace")}
+          >
+            <Store className="size-4" />
+            Marketplace
           </Button>
         </div>
 
@@ -566,7 +620,17 @@ Message: Interested in a viewing this weekend.`}
 
             <div className="grid gap-1.5">
               <Label>Source</Label>
-              <Select value={form.source} onValueChange={(v) => setForm((f) => ({ ...f, source: v }))}>
+              <Select
+                value={form.source}
+                onValueChange={(v) => {
+                  const { lucasId, alexId, meId } = ownerIds();
+                  setForm((f) => ({
+                    ...f,
+                    source: v,
+                    assigned_to: defaultOwner(v, f.lead_type, lucasId, alexId, meId),
+                  }));
+                }}
+              >
                 <SelectTrigger className="h-12">
                   <SelectValue />
                 </SelectTrigger>

@@ -167,7 +167,23 @@ export async function resolveLucasProfileId(
   return rows[0]?.id ?? null;
 }
 
-/** Non-admins may only open unassigned leads or leads assigned to them. */
+/** Default owner for Facebook Marketplace leads: Alex Hudon. */
+export async function resolveAlexProfileId(
+  sql: Awaited<ReturnType<typeof boot>>,
+): Promise<string | null> {
+  const rows = await sql<{ id: string }>`
+    select id from profiles
+    where active = true
+      and (
+        lower(email) = 'alexh@paulmotorcompany.com'
+        or lower(name) like 'alex hudon%'
+        or lower(name) like 'alex%'
+      )
+    order by case when lower(email) = 'alexh@paulmotorcompany.com' then 0 else 1 end
+    limit 1
+  `;
+  return rows[0]?.id ?? null;
+}
 function canAccessLead(me: Profile, assignedTo: string | null | undefined): boolean {
   if (isElevatedStaff(me)) return true;
   if (assignedTo == null || assignedTo === "") return true;
@@ -851,8 +867,12 @@ export const captureLead = createServerFn({ method: "POST" })
     const quoteSent = Boolean(data.quote_sent) || Boolean(data.quote_pdf_data);
     const stage = quoteSent ? "quote_sent" : "new";
     const lucasId = await resolveLucasProfileId(sql);
+    const alexId = await resolveAlexProfileId(sql);
+    const source = String(data.source || "").toLowerCase();
     let assigned = data.assigned_to || null;
-    if (!assigned) {
+    if (source === "marketplace") {
+      assigned = alexId || assigned || me.id;
+    } else if (!assigned) {
       // Inventory → Lucas; general / consignment → unassigned (GSM/Admin)
       if ((leadType === "inventory" || leadType === "cash" || leadType === "wholesale") && lucasId) assigned = lucasId;
       else if (leadType === "general" || leadType === "consignment") assigned = null;
@@ -1691,6 +1711,7 @@ export const sweepInventoryToLucas = createServerFn({ method: "POST" })
       with u as (
         update leads set assigned_to = ${lucasId}, updated_at = now()
         where lead_type = 'inventory'
+          and coalesce(source, '') is distinct from 'marketplace'
           and (assigned_to is distinct from ${lucasId})
         returning id
       )
@@ -1710,7 +1731,9 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
       if (lucasId) {
         await sql`
           update leads set assigned_to = ${lucasId}, updated_at = now()
-          where lead_type = 'inventory' and (assigned_to is distinct from ${lucasId})
+          where lead_type = 'inventory'
+            and coalesce(source, '') is distinct from 'marketplace'
+            and (assigned_to is distinct from ${lucasId})
         `;
       }
     } catch {
