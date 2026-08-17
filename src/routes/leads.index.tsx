@@ -300,9 +300,11 @@ function LeadsPage() {
                               ? "border-amber-700/40 bg-amber-500/15 text-amber-900 dark:text-amber-200"
                               : lead.lead_type === "cash"
                                 ? "border-sky-700/40 bg-sky-500/15 text-sky-900 dark:text-sky-200"
-                                : lead.lead_type === "general"
-                                  ? "border-border bg-muted text-foreground"
-                                  : "border-primary/40 bg-primary/15 text-primary",
+                                : lead.lead_type === "consignment"
+                                  ? "border-teal-700/40 bg-teal-500/15 text-teal-900 dark:text-teal-200"
+                                  : lead.lead_type === "general"
+                                    ? "border-border bg-muted text-foreground"
+                                    : "border-primary/40 bg-primary/15 text-primary",
                         )}
                       >
                         {leadTypeLabel(lead.lead_type)}

@@ -190,6 +190,12 @@ export const LEAD_TYPES = [
     description: "General contact / web inquiry (TAdvantage Contact Us, etc.)",
   },
   {
+    id: "consignment",
+    label: "Consignment",
+    short: "Consign",
+    description: "Vehicle consignment from paulmotorleasing.com (FR/EN consignment form)",
+  },
+  {
     id: "cash",
     label: "Cash / retail",
     short: "Cash",

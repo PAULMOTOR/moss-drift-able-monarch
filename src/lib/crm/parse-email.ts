@@ -1,5 +1,5 @@
 import type { LeadType, ParsedEmailLead, SourceId } from "./types";
-import { classifyInboundEmail } from "./classify-email";
+import { classifyInboundEmail, isConsignmentInquiry } from "./classify-email";
 
 /**
  * Fast floor helper: paste a whole inventory or lease-inquiry email and
@@ -147,7 +147,7 @@ export function parseLeadEmail(raw: string): ParsedEmailLead {
   const source: SourceId =
     lead_type === "lease" || /broker|dealer request|outside dealer/i.test(lower)
       ? "broker"
-      : lead_type === "general"
+      : lead_type === "general" || lead_type === "consignment"
         ? "web"
         : /walk[- ]?in/i.test(lower)
           ? "walk_in"
@@ -327,6 +327,9 @@ function isPortalSenderName(value: string): boolean {
 }
 
 function detectLeadType(lower: string, flat: string): LeadType {
+  if (isConsignmentInquiry("", lower) || isConsignmentInquiry("", flat)) {
+    return "consignment";
+  }
   if (/general contact|contact général|contact us|general interest/i.test(lower)) {
     return "general";
   }

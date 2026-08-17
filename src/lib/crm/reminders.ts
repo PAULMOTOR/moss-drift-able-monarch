@@ -318,7 +318,7 @@ export async function runGeneralInquiryBatches(
   }
 
   const generals = (await fetchUncontactedLeads(sql)).filter(
-    (l) => l.lead_type === "general",
+    (l) => l.lead_type === "general" || l.lead_type === "consignment",
   );
   if (generals.length === 0) {
     return { sent: 0, skipped: 0, reason: "none" as const, clock, leads: 0 };
@@ -339,7 +339,7 @@ export async function runGeneralInquiryBatches(
   const text = [
     `GSM / Admins,`,
     ``,
-    `These General Contact / website inquiries are still in New Lead (${slotLabel} check-in).`,
+    `These General Contact / website / consignment inquiries are still in New Lead (${slotLabel} check-in).`,
     `They are not routed to sales reps (Lucas) — please own or reassign them:`,
     ``,
     lines.join("\n\n"),
@@ -359,7 +359,8 @@ export async function runGeneralInquiryBatches(
         `${escapeHtml(l.name)}</a></strong>` +
         `<span style="color:#666"> (${escapeHtml(age)})</span><br/>` +
         `<span style="font-size:13px;color:#444">${escapeHtml(contact)}` +
-        `${l.vehicle_interest ? ` — ${escapeHtml(l.vehicle_interest)}` : ""}<br/>` +
+        `${l.vehicle_interest ? ` — ${escapeHtml(l.vehicle_interest)}` : ""}` +
+        `${l.lead_type === "consignment" ? " — Consignment" : ""}<br/>` +
         `Owner: ${escapeHtml(l.rep_name || "Unassigned")}</span></li>`
       );
     })

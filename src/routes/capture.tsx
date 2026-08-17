@@ -245,7 +245,9 @@ function CapturePage() {
           ? "Lease inquiry fields filled — confirm and save"
           : parsed.lead_type === "general"
             ? "General interest fields filled — confirm and save"
-            : "Inventory lead fields filled — confirm and save",
+            : parsed.lead_type === "consignment"
+              ? "Consignment inquiry filled — confirm and save"
+              : "Inventory lead fields filled — confirm and save",
       );
       setEmailOpen(false);
     } catch (e) {
@@ -921,7 +923,9 @@ Message: Interested in a viewing this weekend.`}
                       ? "lease"
                       : form.lead_type === "general"
                         ? "general"
-                        : "inventory"
+                        : form.lead_type === "consignment"
+                          ? "consignment"
+                          : "inventory"
                   }{" "}
                   lead
                 </>

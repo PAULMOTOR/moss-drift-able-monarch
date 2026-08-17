@@ -853,9 +853,9 @@ export const captureLead = createServerFn({ method: "POST" })
     const lucasId = await resolveLucasProfileId(sql);
     let assigned = data.assigned_to || null;
     if (!assigned) {
-      // Inventory → Lucas; general → unassigned (GSM/Admin digests); others → creator
+      // Inventory → Lucas; general / consignment → unassigned (GSM/Admin)
       if ((leadType === "inventory" || leadType === "cash" || leadType === "wholesale") && lucasId) assigned = lucasId;
-      else if (leadType === "general") assigned = null;
+      else if (leadType === "general" || leadType === "consignment") assigned = null;
       else assigned = me.id;
     }
 

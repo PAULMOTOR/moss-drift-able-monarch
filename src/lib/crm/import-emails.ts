@@ -218,6 +218,10 @@ async function findDuplicateLead(
       return { id: c.id, name: c.name };
     }
 
+    if (opts.lead_type === "consignment" && c.lead_type === "consignment") {
+      return { id: c.id, name: c.name };
+    }
+
     if (
       opts.lead_type === "lease" &&
       (c.lead_type === "lease" || c.lead_type === "inventory")

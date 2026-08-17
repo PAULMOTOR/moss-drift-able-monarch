@@ -14,6 +14,15 @@ export type ClassifiedInbound = {
   rule: string;
 };
 
+/** Website consignment form (FR/EN), including http://www.paulmotorleasing.com/fr/vehicle-consignment/ */
+export function isConsignmentInquiry(subject: string, body = ""): boolean {
+  const blob = `${subject}\n${body}`.toLowerCase();
+  return (
+    /vehicle-consignment|\/consignment[\s/?#]|consignation/i.test(blob) ||
+    /paulmotorleasing\.com\/(?:[a-z]{2}\/)?vehicle-consignment/i.test(blob)
+  );
+}
+
 /**
  * Classify inbound mail by From + Subject (Paul Motor production rules).
  *
@@ -24,6 +33,7 @@ export type ClassifiedInbound = {
  *
  * CarGurus (dealer-leads@messages.cargurus.com) → inventory
  * AutoTrader (1-Source@dealerleads.trader.ca) → inventory
+ * Website vehicle-consignment URL → consignment (never general)
  */
 export function classifyInboundEmail(opts: {
   from: string;
@@ -34,6 +44,16 @@ export function classifyInboundEmail(opts: {
   const subject = (opts.subject || "").trim();
   const subjectL = subject.toLowerCase();
   const bodyL = (opts.body || "").toLowerCase();
+
+  // Website consignment form — before Contact Us / TAdvantage general
+  if (isConsignmentInquiry(subject, opts.body || "")) {
+    return {
+      lead_type: "consignment",
+      source: "web",
+      portal: "other",
+      rule: "website:consignment",
+    };
+  }
 
   // --- TAdvantage ---
   if (
