@@ -301,11 +301,14 @@ function LeadsPage() {
             <Button variant="secondary" className="h-11" onClick={applySearch}>
               Apply
             </Button>
-            {filtersActive ? (
-              <Button variant="outline" className="h-11" onClick={clearFilters}>
-                Clear
-              </Button>
-            ) : null}
+            <Button
+              variant="outline"
+              className="h-11"
+              onClick={clearFilters}
+              disabled={!filtersActive}
+            >
+              Clear all
+            </Button>
           </div>
 
           <p className="text-xs text-muted-foreground">
