@@ -34,6 +34,7 @@ import {
   driveHealth,
 } from "@/lib/crm/server";
 import { getRolePermissionMatrix, setRolePermission } from "@/lib/crm/permissions";
+import { getBocPrime, setBocPrime } from "@/lib/crm/underwrite";
 import { PERMISSION_KEYS, ROLE_LABELS, ROLES, STAGES, type AdminMetrics, type PermissionKey, type Profile, type Role } from "@/lib/crm/types";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn, formatCurrency } from "@/lib/utils";
@@ -109,6 +110,8 @@ function AdminPage() {
   const [attachQ, setAttachQ] = useState("");
   const [attachHits, setAttachHits] = useState<Array<{ id: string; name: string }>>([]);
   const [attaching, setAttaching] = useState(false);
+  const [prime, setPrime] = useState("4.95");
+  const [primeBusy, setPrimeBusy] = useState(false);
 
   async function load() {
     const profile = await getMyProfile();
@@ -122,6 +125,12 @@ function AdminPage() {
     setMetrics(m);
     setUsers(u);
     if (emailSt) setImportStatus(emailSt);
+    try {
+      const p = await getBocPrime();
+      setPrime(String(p.prime));
+    } catch {
+      /* ignore */
+    }
     try {
       const matrix = await getRolePermissionMatrix();
       setPermMatrix(matrix.matrix);
@@ -435,6 +444,46 @@ function AdminPage() {
               ))}
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader className="pb-2">
+          <CardTitle className="font-display text-xl">Bank of Canada prime</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <p className="text-sm text-muted-foreground">
+            Used on AI underwrite. Non-citizen, score under 690, or a car older than 8 years must
+            yield at least prime + 3%.
+          </p>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="w-32">
+              <Label>Prime %</Label>
+              <Input
+                className="mt-1"
+                value={prime}
+                onChange={(e) => setPrime(e.target.value)}
+                inputMode="decimal"
+              />
+            </div>
+            <Button
+              disabled={primeBusy}
+              onClick={async () => {
+                setPrimeBusy(true);
+                try {
+                  const res = await setBocPrime({ data: { prime: Number(prime) } });
+                  setPrime(String(res.prime));
+                  toast.success(`Prime set to ${res.prime}%`);
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Could not save prime");
+                } finally {
+                  setPrimeBusy(false);
+                }
+              }}
+            >
+              Save prime
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

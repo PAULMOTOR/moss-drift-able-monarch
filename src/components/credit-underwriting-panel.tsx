@@ -13,6 +13,12 @@ import {
   uploadChecklistDocument,
 } from "@/lib/crm/credit";
 import {
+  listUnderwriteReports,
+  runAiUnderwrite,
+  type UnderwriteReport,
+} from "@/lib/crm/underwrite";
+import type { CitizenshipStatus } from "@/lib/crm/underwrite-policy";
+import {
   generateApprovedLeaseContract,
   getLeadContractPacket,
   sendContractDocuSign,
@@ -74,6 +80,14 @@ export function CreditUnderwritingPanel({
   const [showRequestDocs, setShowRequestDocs] = useState(false);
   const [docKinds, setDocKinds] = useState<string[]>([]);
   const [docEmail, setDocEmail] = useState("");
+  const [uwReports, setUwReports] = useState<UnderwriteReport[]>([]);
+  const [showUw, setShowUw] = useState(false);
+  const [uwBusy, setUwBusy] = useState(false);
+  const [uwScore, setUwScore] = useState("");
+  const [uwCitizen, setUwCitizen] = useState<CitizenshipStatus>("unknown");
+  const [uwMarket, setUwMarket] = useState("");
+  const [uwClaim, setUwClaim] = useState("");
+  const [uwNotes, setUwNotes] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -81,6 +95,12 @@ export function CreditUnderwritingPanel({
       setData(pkg);
       setAppEmail(pkg.lead.email || pkg.application.app_email || "");
       setDocEmail(pkg.lead.email || pkg.application.app_email || "");
+      if (["admin", "gsm", "credit_manager"].includes(me.role)) {
+        const reps = await listUnderwriteReports({ data: { leadId } }).catch(
+          (): UnderwriteReport[] => [],
+        );
+        setUwReports(reps);
+      }
       if (
         (pkg.lead.credit_status || "").toLowerCase() === "approved" ||
         (pkg.application.status || "").toLowerCase() === "approved"
@@ -181,6 +201,25 @@ export function CreditUnderwritingPanel({
               Request GSM Approval
             </Button>
           ) : null}
+          {canApprove ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || uwBusy}
+              onClick={() => {
+                const last = uwReports[0];
+                const inp = last?.inputs;
+                setUwScore(inp?.creditScore != null ? String(inp.creditScore) : "");
+                setUwCitizen(inp?.citizenship || "unknown");
+                setUwMarket(inp?.marketValue != null ? String(inp.marketValue) : "");
+                setUwClaim(inp?.carfaxClaim != null ? String(inp.carfaxClaim) : "");
+                setUwNotes("");
+                setShowUw(true);
+              }}
+            >
+              Run AI underwrite
+            </Button>
+          ) : null}
           {canApprove && app.status === "pending_gsm" ? (
             <>
               <Button
@@ -254,6 +293,10 @@ export function CreditUnderwritingPanel({
             existing file only.
           </p>
         </div>
+      ) : null}
+
+      {uwReports[0] ? (
+        <UnderwriteCard report={uwReports[0]} />
       ) : null}
 
       {app.approval_notes &&
@@ -1038,6 +1081,107 @@ export function CreditUnderwritingPanel({
         </DialogContent>
       </Dialog>
 
+      <Dialog open={showUw} onOpenChange={setShowUw}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Run AI underwrite</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Second look for GSM / Admin. Does not approve the deal. Fill any blanks the file is
+            missing — score, status, market, Carfax claim.
+          </p>
+          <div className="grid gap-3">
+            <div>
+              <Label>Equifax score</Label>
+              <Input
+                className="mt-1"
+                inputMode="numeric"
+                value={uwScore}
+                onChange={(e) => setUwScore(e.target.value)}
+                placeholder="e.g. 712"
+              />
+            </div>
+            <div>
+              <Label>Status in Canada</Label>
+              <select
+                className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={uwCitizen}
+                onChange={(e) => setUwCitizen(e.target.value as CitizenshipStatus)}
+              >
+                <option value="unknown">Unknown / not set</option>
+                <option value="canadian_citizen">Canadian citizen</option>
+                <option value="permanent_resident">Permanent resident</option>
+                <option value="work_permit">Work permit</option>
+                <option value="student">Student / study permit</option>
+                <option value="other">Other / none of the above</option>
+              </select>
+            </div>
+            <div>
+              <Label>Canadian market value ($)</Label>
+              <Input
+                className="mt-1"
+                inputMode="decimal"
+                value={uwMarket}
+                onChange={(e) => setUwMarket(e.target.value)}
+                placeholder="Retail / CBB if you have it"
+              />
+            </div>
+            <div>
+              <Label>Carfax claim amount ($)</Label>
+              <Input
+                className="mt-1"
+                inputMode="decimal"
+                value={uwClaim}
+                onChange={(e) => setUwClaim(e.target.value)}
+                placeholder="0 if clean"
+              />
+            </div>
+            <div>
+              <Label>Notes for the reviewer</Label>
+              <Textarea
+                className="mt-1"
+                rows={3}
+                value={uwNotes}
+                onChange={(e) => setUwNotes(e.target.value)}
+                placeholder="Anything Chris or the rep flagged…"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowUw(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={uwBusy}
+              onClick={async () => {
+                setUwBusy(true);
+                try {
+                  const report = await runAiUnderwrite({
+                    data: {
+                      leadId,
+                      creditScore: uwScore.trim() ? Number(uwScore) : null,
+                      citizenship: uwCitizen,
+                      marketValue: uwMarket.trim() ? Number(uwMarket.replace(/,/g, "")) : null,
+                      carfaxClaim: uwClaim.trim() ? Number(uwClaim.replace(/,/g, "")) : null,
+                      reviewerNotes: uwNotes.trim() || undefined,
+                    },
+                  });
+                  setUwReports((prev) => [report, ...prev]);
+                  setShowUw(false);
+                  toast.success("Underwrite ready — read the card, then approve or send back");
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Underwrite failed");
+                } finally {
+                  setUwBusy(false);
+                }
+              }}
+            >
+              {uwBusy ? "Reading the file…" : "Run underwrite"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!viewDoc} onOpenChange={(o) => !o && setViewDoc(null)}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
@@ -1052,6 +1196,71 @@ export function CreditUnderwritingPanel({
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function recLabel(r: UnderwriteReport["recommendation"]) {
+  if (r === "approve") return "Recommend approve";
+  if (r === "approve_with_conditions") return "Approve with conditions";
+  if (r === "decline") return "Recommend decline";
+  return "Send back";
+}
+
+function UnderwriteCard({ report }: { report: UnderwriteReport }) {
+  const tone =
+    report.recommendation === "approve"
+      ? "border-emerald-300 bg-emerald-50 text-emerald-950"
+      : report.recommendation === "decline"
+        ? "border-red-200 bg-red-50 text-red-950"
+        : report.recommendation === "approve_with_conditions"
+          ? "border-amber-300 bg-amber-50 text-amber-950"
+          : "border-border bg-muted/40";
+  return (
+    <div className={`space-y-2 rounded-sm border p-3 text-sm ${tone}`}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="font-semibold">{recLabel(report.recommendation)}</p>
+          <p className="text-[11px] opacity-80">
+            {report.ran_by_name || "GSM"} · {new Date(report.created_at).toLocaleString("en-CA")}
+            {report.model ? ` · ${report.model}` : ""}
+          </p>
+        </div>
+        <Badge variant="secondary">{report.recommendation.replace(/_/g, " ")}</Badge>
+      </div>
+      {report.policy?.flags?.length ? (
+        <ul className="space-y-1 text-xs">
+          {report.policy.flags.map((f) => (
+            <li key={f.id}>
+              <span className="font-medium">
+                {f.severity === "fail" ? "Fail" : f.severity === "warn" ? "Watch" : "OK"} — {f.label}.
+              </span>{" "}
+              {f.detail}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="whitespace-pre-wrap text-sm leading-relaxed">{report.summary}</p>
+      {report.red_flags.length ? (
+        <div>
+          <p className="text-xs font-semibold">Red flags</p>
+          <ul className="list-disc pl-4 text-xs">
+            {report.red_flags.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {report.conditions.length ? (
+        <div>
+          <p className="text-xs font-semibold">If you approve, still need</p>
+          <ul className="list-disc pl-4 text-xs">
+            {report.conditions.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }
