@@ -189,6 +189,18 @@ export const LEAD_TYPES = [
     short: "General",
     description: "General contact / web inquiry (TAdvantage Contact Us, etc.)",
   },
+  {
+    id: "cash",
+    label: "Cash / retail",
+    short: "Cash",
+    description: "Cash buyer or customer financing elsewhere — still a deal we track",
+  },
+  {
+    id: "wholesale",
+    label: "Wholesale",
+    short: "Wholesale",
+    description: "Dealer-to-dealer / wholesale sale — who bought it and where it went",
+  },
 ] as const;
 
 export type LeadType = (typeof LEAD_TYPES)[number]["id"];
@@ -198,6 +210,7 @@ export const SOURCES = [
   { id: "walk_in", label: "Walk-in" },
   { id: "email", label: "Email" },
   { id: "broker", label: "Broker" },
+  { id: "marketplace", label: "Marketplace" },
   { id: "other", label: "Other" },
   { id: "web", label: "Web" },
 ] as const;
@@ -312,6 +325,10 @@ export type Lead = {
   google_review_at: string | null;
   google_review_link: string | null;
   estimated_value: number | null;
+  destination?: string | null;
+  partner_id?: string | null;
+  partner_name?: string | null;
+  partner_kind?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -416,6 +433,7 @@ export type ParsedEmailLead = {
   vehicle_interest: string;
   stock_number: string;
   notes: string;
+  company?: string;
   source: SourceId;
   confidence: "high" | "medium" | "low";
   matched_fields: string[];
@@ -443,6 +461,17 @@ export function reviewLabel(id: string) {
 
 export function leadTypeLabel(id: string) {
   return LEAD_TYPES.find((t) => t.id === id)?.label ?? id;
+}
+
+/** Person name, plus company when this is a business file. */
+export function leadDisplayName(lead: {
+  name: string;
+  legal_entity_name?: string | null;
+  party_type?: string | null;
+}) {
+  const biz = (lead.legal_entity_name || "").trim();
+  if (lead.party_type === "business" && biz) return `${lead.name} · ${biz}`;
+  return lead.name;
 }
 
 export function vehicleLabel(item: Pick<InventoryItem, "year" | "make" | "model" | "trim">) {

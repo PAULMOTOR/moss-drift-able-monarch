@@ -7,7 +7,11 @@ import { permissionsForRole } from "./permissions";
 import { parseLeadEmail } from "./parse-email";
 import { PAUL_MOTOR_INVENTORY_SOURCE } from "./real-inventory";
 import { getEmailImportStatus, runEmailImport } from "./import-emails";
+import { isPartnerKind, mapPartner, type Partner, type PartnerKind } from "./partners";
+import { attachUnmatchedLeaseApp, listUnmatchedLeaseApps } from "./lease-app-import";
+import { applyAcceptedOption } from "./quote-accept";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
+import { publicAppUrl } from "./public-url";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
   buildFirstInvoiceHtml,
@@ -217,6 +221,10 @@ function mapLead(r: Record<string, unknown>): Lead {
     updated_at: String(r.updated_at),
     assigned_name: (r.assigned_name as string) ?? null,
     inventory_label: (r.inventory_label as string) ?? null,
+    destination: (r.destination as string) ?? null,
+    partner_id: (r.partner_id as string) ?? null,
+    partner_name: (r.partner_name as string) ?? null,
+    partner_kind: (r.partner_kind as string) ?? null,
   };
 }
 
@@ -233,6 +241,10 @@ const leadSelect = `
   l.google_review_at::text as google_review_at,
   l.google_review_link,
   l.estimated_value::float8 as estimated_value,
+  l.destination,
+  l.partner_id,
+  (select name from partners where id = l.partner_id) as partner_name,
+  (select kind from partners where id = l.partner_id) as partner_kind,
   l.created_by,
   l.created_at::text as created_at,
   l.updated_at::text as updated_at,
@@ -257,6 +269,10 @@ const leadListSelect = `
   l.google_review_at::text as google_review_at,
   l.google_review_link,
   l.estimated_value::float8 as estimated_value,
+  l.destination,
+  l.partner_id,
+  (select name from partners where id = l.partner_id) as partner_name,
+  (select kind from partners where id = l.partner_id) as partner_kind,
   l.created_by,
   l.created_at::text as created_at,
   l.updated_at::text as updated_at,
@@ -274,17 +290,17 @@ export const updateOwnAvatar = createServerFn({ method: "POST" })
     const me = await requireProfile(context.userId);
     const sql = await boot();
     const url = data.avatar_url?.trim() || null;
-    if (url && url.length > 2_500_000) {
+    if (url && url.length > 400_000) {
       throw new Error("Image too large — use a smaller photo");
+    }
+    if (url && !url.startsWith("data:image/")) {
+      throw new Error("Photo must be an image");
     }
     await sql`
       update profiles set avatar_url = ${url}, updated_at = now() where id = ${me.id}
     `;
-    if (me.user_id) {
-      await sql`
-        update "user" set image = ${url}, "updatedAt" = now() where id = ${me.user_id}
-      `;
-    }
+    // Never copy the data-URL onto Better Auth's user.image — it gets
+    // stuffed into the session cookie and Vercel 494s (headers too large).
     const rows = await sql<Profile>`
       select id, user_id, email, name, role, active, phone, title,
              avatar_url, created_at::text as created_at, updated_at::text as updated_at
@@ -505,6 +521,7 @@ export const listLeads = createServerFn({ method: "GET" })
             q?: string;
             assigned?: string;
             lead_type?: string;
+            partner?: string;
             /** page size (default 50, max 200) */
             limit?: number;
             offset?: number;
@@ -517,6 +534,7 @@ export const listLeads = createServerFn({ method: "GET" })
     const sql = await boot();
     const stage = data.stage && data.stage !== "all" ? data.stage : null;
     const leadType = data.lead_type && data.lead_type !== "all" ? data.lead_type : null;
+    const partnerId = data.partner && data.partner !== "all" ? data.partner : null;
     const q = data.q?.trim() ? `%${data.q.trim().toLowerCase()}%` : null;
     const admin = isElevatedStaff(me);
     const perms = await permissionsForRole(me.role);
@@ -556,6 +574,7 @@ export const listLeads = createServerFn({ method: "GET" })
        from leads l
        left join profiles p on p.id = l.assigned_to
        left join inventory i on i.id = l.inventory_id
+       left join partners pr on pr.id = l.partner_id
        where ($1::text is null or l.stage = $1)
          and (
            $5::boolean = true
@@ -573,10 +592,19 @@ export const listLeads = createServerFn({ method: "GET" })
          and (
            $4::text is null
            or lower(l.name) like $4
+           or lower(coalesce(l.first_name, '')) like $4
+           or lower(coalesce(l.last_name, '')) like $4
+           or lower(coalesce(l.legal_entity_name, '')) like $4
            or lower(coalesce(l.email, '')) like $4
            or lower(coalesce(l.phone, '')) like $4
            or lower(coalesce(l.vehicle_interest, '')) like $4
+           or lower(coalesce(l.notes, '')) like $4
+           or lower(coalesce(i.stock_number, '')) like $4
+           or lower(coalesce(i.vin, '')) like $4
+           or lower(coalesce(i.make, '') || ' ' || coalesce(i.model, '')) like $4
+           or lower(coalesce(pr.name, '')) like $4
          )
+         and ($9::text is null or l.partner_id = $9)
          and (
            $8::text[] is null
            or l.stage = any($8::text[])
@@ -590,6 +618,7 @@ export const listLeads = createServerFn({ method: "GET" })
       me.id,
       unassignedOnly,
       stageAllow,
+      partnerId,
     ];
 
     const countRows = await sql.query<{ n: number }>(
@@ -602,7 +631,7 @@ export const listLeads = createServerFn({ method: "GET" })
       `select ${leadListSelect}
        ${whereSql}
        order by l.updated_at desc
-       limit $9 offset $10`,
+       limit $10 offset $11`,
       [...params, limit, offset],
     );
     const leads = rows.map(mapLead);
@@ -635,6 +664,7 @@ export const getLead = createServerFn({ method: "GET" })
          from leads l
          left join profiles p on p.id = l.assigned_to
          left join inventory i on i.id = l.inventory_id
+         left join partners pr on pr.id = l.partner_id
          where l.id = $1 limit 1`,
         [leadId],
       );
@@ -716,7 +746,64 @@ export type CaptureLeadInput = {
   quote_pdf_data?: string | null;
   source_email_raw?: string | null;
   estimated_value?: number | null;
+  destination?: string | null;
+  legal_entity_name?: string | null;
+  partner_id?: string | null;
 };
+
+
+export const listPartners = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .validator((data: { activeOnly?: boolean } | undefined) => data ?? {})
+  .handler(async ({ data }): Promise<Partner[]> => {
+    const sql = await boot();
+    const rows = data.activeOnly === false
+      ? await sql<Record<string, unknown>>`
+          select id, name, kind, city, province, email, phone, notes, active,
+                 created_at::text as created_at, updated_at::text as updated_at
+          from partners order by kind, lower(name)
+        `
+      : await sql<Record<string, unknown>>`
+          select id, name, kind, city, province, email, phone, notes, active,
+                 created_at::text as created_at, updated_at::text as updated_at
+          from partners where active = true order by kind, lower(name)
+        `;
+    return rows.map(mapPartner);
+  });
+
+export const createPartner = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { name: string; kind?: string; city?: string; province?: string; email?: string }) => data)
+  .handler(async ({ data }): Promise<Partner> => {
+    const sql = await boot();
+    const name = data.name.trim();
+    if (name.length < 2) throw new Error("Partner name is required");
+    const kind: PartnerKind = isPartnerKind(data.kind || "") ? data.kind as PartnerKind : "dealer";
+    const existing = await sql<Record<string, unknown>>`
+      select id, name, kind, city, province, email, phone, notes, active,
+             created_at::text as created_at, updated_at::text as updated_at
+      from partners where lower(btrim(name)) = ${name.toLowerCase()} limit 1
+    `;
+    if (existing[0]) {
+      if (existing[0].active === false) {
+        await sql`update partners set active = true, kind = ${kind}, updated_at = now() where id = ${String(existing[0].id)}`;
+        existing[0].active = true;
+        existing[0].kind = kind;
+      }
+      return mapPartner(existing[0]);
+    }
+    const id = crypto.randomUUID();
+    await sql`
+      insert into partners (id, name, kind, city, province, email)
+      values (${id}, ${name}, ${kind}, ${data.city?.trim() || null}, ${data.province?.trim() || null}, ${data.email?.trim().toLowerCase() || null})
+    `;
+    const rows = await sql<Record<string, unknown>>`
+      select id, name, kind, city, province, email, phone, notes, active,
+             created_at::text as created_at, updated_at::text as updated_at
+      from partners where id = ${id}
+    `;
+    return mapPartner(rows[0]!);
+  });
 
 export const captureLead = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -767,19 +854,19 @@ export const captureLead = createServerFn({ method: "POST" })
     let assigned = data.assigned_to || null;
     if (!assigned) {
       // Inventory → Lucas; general → unassigned (GSM/Admin digests); others → creator
-      if (leadType === "inventory" && lucasId) assigned = lucasId;
+      if ((leadType === "inventory" || leadType === "cash" || leadType === "wholesale") && lucasId) assigned = lucasId;
       else if (leadType === "general") assigned = null;
       else assigned = me.id;
     }
 
     await sql`
       insert into leads (
-        id, name, first_name, last_name, party_type, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
+        id, name, first_name, last_name, party_type, legal_entity_name, phone, email, source, lead_type, notes, vehicle_interest, inventory_id,
         assigned_to, stage, stage_entered_at, quote_sent, quote_sent_at,
         quote_link, quote_notes, quote_pdf_name, quote_pdf_data, source_email_raw,
-        estimated_value, created_by
+        estimated_value, destination, partner_id, created_by
       ) values (
-        ${leadId}, ${name}, ${firstName}, ${lastName}, ${partyType}, ${data.phone?.trim() || null},
+        ${leadId}, ${name}, ${firstName}, ${lastName}, ${partyType}, ${partyType === "business" ? data.legal_entity_name?.trim() || null : null}, ${data.phone?.trim() || null},
         ${data.email?.trim().toLowerCase() || null},
         ${data.source || "phone"}, ${leadType}, ${data.notes?.trim() || null},
         ${vehicleInterest}, ${data.inventory_id || null},
@@ -792,6 +879,8 @@ export const captureLead = createServerFn({ method: "POST" })
         ${data.quote_pdf_data || null},
         ${data.source_email_raw?.trim() || null},
         ${estimated},
+        ${data.destination?.trim() || null},
+        ${data.partner_id || null},
         ${me.id}
       )
     `;
@@ -837,10 +926,7 @@ export const captureLead = createServerFn({ method: "POST" })
       `;
       const a = assignee[0];
       if (a?.email) {
-        const appUrl =
-          process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-          process.env.APP_URL?.replace(/\/$/, "") ||
-          "https://moss-drift-able-monarch.vercel.app";
+        const appUrl = publicAppUrl();
         await sendCrmEmail(sql, {
           to: a.email,
           subject: `[CRM] New lead assigned to you — ${name}`,
@@ -973,6 +1059,13 @@ export const updateLead = createServerFn({ method: "POST" })
         first_name = ${nextFirst},
         last_name = ${nextLast},
         party_type = ${nextParty},
+        legal_entity_name = ${
+          data.legal_entity_name !== undefined
+            ? (nextParty === "business" ? data.legal_entity_name?.trim() || null : null)
+            : nextParty === "business"
+              ? (prev.legal_entity_name as string | null)
+              : null
+        },
         phone = ${data.phone !== undefined ? data.phone?.trim() || null : (prev.phone as string | null)},
         email = ${data.email !== undefined ? data.email?.trim().toLowerCase() || null : (prev.email as string | null)},
         source = ${data.source ?? String(prev.source)},
@@ -987,6 +1080,16 @@ export const updateLead = createServerFn({ method: "POST" })
           data.inventory_id !== undefined
             ? data.inventory_id || null
             : (prev.inventory_id as string | null)
+        },
+        destination = ${
+          data.destination !== undefined
+            ? data.destination?.trim() || null
+            : (prev.destination as string | null)
+        },
+        partner_id = ${
+          data.partner_id !== undefined
+            ? data.partner_id || null
+            : (prev.partner_id as string | null)
         },
         assigned_to = ${nextAssigned},
         stage = ${stage},
@@ -1095,10 +1198,7 @@ export const updateLead = createServerFn({ method: "POST" })
         `;
         // Don't email yourself
         if (a.id !== me.id) {
-          const appUrl =
-            process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-            process.env.APP_URL?.replace(/\/$/, "") ||
-            "https://moss-drift-able-monarch.vercel.app";
+          const appUrl = publicAppUrl();
           await sendCrmEmail(sql, {
             to: a.email,
             subject: `[CRM] Lead assigned to you — ${leadName}`,
@@ -1681,6 +1781,26 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
       })),
       funnel,
     };
+  });
+
+
+export const listUnmatchedLeaseAppsFn = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const me = await requireProfile(context.userId);
+    if (!isElevatedStaff(me)) throw new Error("Not allowed");
+    const sql = await boot();
+    return listUnmatchedLeaseApps(sql);
+  });
+
+export const attachUnmatchedLeaseAppFn = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { importId: string; leadId: string }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    if (!isElevatedStaff(me)) throw new Error("Not allowed");
+    const sql = await boot();
+    return attachUnmatchedLeaseApp(sql, data);
   });
 
 export const adminRunEmailImport = createServerFn({ method: "POST" })
@@ -2291,123 +2411,14 @@ export const acceptLeaseQuoteOption = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const me = await requireProfile(context.userId);
     const sql = await boot();
-    const rows = await sql<{
-      id: string;
-      lead_id: string | null;
-      payload: string;
-      retail_html: string | null;
-    }>`
-      select id, lead_id, payload::text as payload, retail_html
-      from lease_quotes where id = ${data.quoteId} limit 1
-    `;
-    const row = rows[0];
-    if (!row) throw new Error("Quote not found");
-    let payload: {
-      client: ClientQuoteInfo;
-      options: LeaseOptionResult[];
-      taxRate: number;
-    };
-    try {
-      payload = JSON.parse(row.payload) as typeof payload;
-    } catch {
-      throw new Error("Corrupt quote payload");
-    }
-    const opt = payload.options[data.optionNumber - 1];
-    if (!opt) throw new Error("Invalid option number");
-    const taxRate = payload.taxRate || taxRateForProvince(payload.client.province || "QC");
-    const style = (data.contractStyle || payload.client.contractStyle || "qc_individual_en") as ContractStyleKey;
-    await ensureContractTemplates(sql);
-    const tplRows = await sql<{ body_html: string }>`
-      select body_html from contract_templates where style_key = ${style} limit 1
-    `;
-    const body =
-      tplRows[0]?.body_html || defaultContractBody(style);
-    const contractInner = renderContractTemplate(body, payload.client, opt, taxRate);
-    const contractHtml = wrapPrintable(`Lease Contract — ${payload.client.clientName}`, contractInner);
-    const invoiceHtml = buildFirstInvoiceHtml(payload.client, opt, taxRate);
-    // Single-option retail snapshot for contract packet
-    const retailOne = buildRetailQuoteHtml(
-      payload.client,
-      payload.options.map((o, i) =>
-        i === data.optionNumber - 1
-          ? o
-          : { ...o, cost: 0, payment: 0, deposit: 0, securityDeposit: 0, residual: 0 },
-      ),
-      taxRate,
-    );
-    const pdfName = (await driveApi()).buildQuotePdfFileName({
-      quoteDate: payload.client.quoteDate,
-      clientName: payload.client.clientName,
-      option: data.optionNumber,
-      stock: payload.client.stock,
-      year: payload.client.year,
-      make: payload.client.make,
-      model: payload.client.model,
-    });
-    const pdfData = await makeQuotePdfData(payload.client, payload.options, taxRate, {
-      acceptedOption: data.optionNumber,
-    });
-
-    await sql`
-      update lease_quotes set
-        accepted_option = ${data.optionNumber},
-        selected_option = ${data.optionNumber},
-        status = 'accepted',
-        contract_html = ${contractHtml},
-        invoice_html = ${invoiceHtml},
-        retail_html = ${retailOne},
-        pdf_name = ${pdfName},
-        pdf_data = ${pdfData},
-        updated_at = now()
-      where id = ${data.quoteId}
-    `;
-
-    if (row.lead_id) {
-      await sql`
-        update leads set
-          accepted_quote_id = ${data.quoteId},
-          quote_pdf_name = ${pdfName},
-          quote_pdf_data = ${pdfData},
-          guarantor = ${payload.client.guarantor || null},
-          estimated_value = ${opt.cost + opt.extra + opt.profit},
-          stage = case
-            when stage in ('new','contacted','paused','quote_sent') then 'lease_accepted'
-            else stage
-          end,
-          stage_entered_at = case
-            when stage in ('new','contacted','paused','quote_sent') then now()
-            else stage_entered_at
-          end,
-          updated_at = now()
-        where id = ${row.lead_id}
-      `;
-      await sql`
-        insert into lead_quote_files (
-          id, lead_id, quote_id, option_number, file_name, file_data, mime_type, source, created_by
-        ) values (
-          ${id()}, ${row.lead_id}, ${data.quoteId}, ${data.optionNumber},
-          ${pdfName}, ${pdfData}, 'application/pdf', 'accepted_option', ${me.id}
-        )
-      `;
-      await sql`
-        insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
-        values (
-          ${id()}, ${row.lead_id}, 'quote',
-          ${`Accepted Option ${data.optionNumber} · total payment ${opt.totalPayment} · contract + 1st invoice generated`},
-          ${me.id}, ${me.name}
-        )
-      `;
-    }
-    return {
-      ok: true as const,
+    return applyAcceptedOption(sql, {
       quoteId: data.quoteId,
       optionNumber: data.optionNumber,
-      contractHtml,
-      invoiceHtml,
-      retailHtml: retailOne,
-      pdfName,
-      pdfData,
-    };
+      contractStyle: data.contractStyle,
+      actorName: me.name,
+      actorId: me.id,
+      byKind: "staff",
+    });
   });
 
 export const listLeadQuoteFiles = createServerFn({ method: "GET" })

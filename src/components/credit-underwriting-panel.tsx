@@ -67,6 +67,10 @@ export function CreditUnderwritingPanel({
   const [showDecline, setShowDecline] = useState(false);
   const [declineReason, setDeclineReason] = useState("");
   const [declineNotify, setDeclineNotify] = useState<"sales" | "credit" | "both">("both");
+  const [showApprove, setShowApprove] = useState(false);
+  const [approveNext, setApproveNext] = useState("");
+  const [notifyPartner, setNotifyPartner] = useState(true);
+  const [notifyLessee, setNotifyLessee] = useState(false);
   const [showRequestDocs, setShowRequestDocs] = useState(false);
   const [docKinds, setDocKinds] = useState<string[]>([]);
   const [docEmail, setDocEmail] = useState("");
@@ -182,17 +186,11 @@ export function CreditUnderwritingPanel({
               <Button
                 size="sm"
                 disabled={busy}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await approveDealGsm({ data: { leadId, approve: true } });
-                    toast.success("Deal approved");
-                    await load();
-                  } catch (e) {
-                    toast.error(e instanceof Error ? e.message : "Failed");
-                  } finally {
-                    setBusy(false);
-                  }
+                onClick={() => {
+                  setApproveNext("");
+                  setNotifyPartner(true);
+                  setNotifyLessee(false);
+                  setShowApprove(true);
                 }}
               >
                 Approve deal
@@ -752,6 +750,92 @@ export function CreditUnderwritingPanel({
               }}
             >
               Send
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showApprove} onOpenChange={setShowApprove}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Approve this lease</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Sales and Credit are always notified. Referring dealer is on by default. Lessee is off
+            unless you are ready for them to hear it.
+          </p>
+          <div>
+            <Label>What's next (included in the emails)</Label>
+            <Input
+              className="mt-1"
+              value={approveNext}
+              onChange={(e) => setApproveNext(e.target.value)}
+              placeholder="e.g. Kelly will book delivery once insurance is in"
+            />
+          </div>
+          <div className="space-y-2 text-sm">
+            <label className="flex items-center gap-2 text-muted-foreground">
+              <Checkbox checked disabled />
+              Sales rep{data?.lead.assigned_name ? ` — ${data.lead.assigned_name}` : ""} (always)
+            </label>
+            <label className="flex items-center gap-2 text-muted-foreground">
+              <Checkbox checked disabled />
+              Credit manager / Chris (always)
+            </label>
+            {data?.lead.partner_name ? (
+              <label className="flex items-center gap-2">
+                <Checkbox
+                  checked={notifyPartner}
+                  disabled={!data.lead.partner_email}
+                  onCheckedChange={(c) => setNotifyPartner(c === true)}
+                />
+                {data.lead.partner_name}
+                {data.lead.partner_email
+                  ? ` (${data.lead.partner_email})`
+                  : " — no email on file, add it on the partner"}
+              </label>
+            ) : (
+              <p className="text-xs text-muted-foreground">No referring dealer on this file.</p>
+            )}
+            <label className="flex items-center gap-2">
+              <Checkbox
+                checked={notifyLessee}
+                disabled={!data?.lead.email}
+                onCheckedChange={(c) => setNotifyLessee(c === true)}
+              />
+              Lessee
+              {data?.lead.email ? ` (${data.lead.email})` : " — no email, off"}
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowApprove(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await approveDealGsm({
+                    data: {
+                      leadId,
+                      approve: true,
+                      notifyPartner,
+                      notifyLessee,
+                      nextStep: approveNext.trim() || undefined,
+                    },
+                  });
+                  toast.success("Deal approved — notices sent");
+                  setShowApprove(false);
+                  await load();
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Approve & notify
             </Button>
           </DialogFooter>
         </DialogContent>

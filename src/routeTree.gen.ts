@@ -29,6 +29,7 @@ import { Route as CreditAppTokenRouteImport } from './routes/credit-app.$token'
 import { Route as CreditDocsTokenRouteImport } from './routes/credit-docs.$token'
 import { Route as LeadsIndexRouteImport } from './routes/leads.index'
 import { Route as LeadsLeadIdRouteImport } from './routes/leads.$leadId'
+import { Route as QuoteAcceptTokenRouteImport } from './routes/quote-accept.$token'
 import { Route as ServiceEstimateTokenRouteImport } from './routes/service-estimate.$token'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCronImportEmailsRouteImport } from './routes/api/cron/import-emails'
@@ -136,6 +137,11 @@ const LeadsLeadIdRoute = LeadsLeadIdRouteImport.update({
   path: '/$leadId',
   getParentRoute: () => LeadsRoute,
 } as any)
+const QuoteAcceptTokenRoute = QuoteAcceptTokenRouteImport.update({
+  id: '/quote-accept/$token',
+  path: '/quote-accept/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ServiceEstimateTokenRoute = ServiceEstimateTokenRouteImport.update({
   id: '/service-estimate/$token',
   path: '/service-estimate/$token',
@@ -187,6 +193,7 @@ export interface FileRoutesByFullPath {
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
+  '/quote-accept/$token': typeof QuoteAcceptTokenRoute
   '/service-estimate/$token': typeof ServiceEstimateTokenRoute
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -214,6 +221,7 @@ export interface FileRoutesByTo {
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
+  '/quote-accept/$token': typeof QuoteAcceptTokenRoute
   '/service-estimate/$token': typeof ServiceEstimateTokenRoute
   '/leads': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -243,6 +251,7 @@ export interface FileRoutesById {
   '/credit-app/$token': typeof CreditAppTokenRoute
   '/credit-docs/$token': typeof CreditDocsTokenRoute
   '/leads/$leadId': typeof LeadsLeadIdRoute
+  '/quote-accept/$token': typeof QuoteAcceptTokenRoute
   '/service-estimate/$token': typeof ServiceEstimateTokenRoute
   '/leads/': typeof LeadsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -273,6 +282,7 @@ export interface FileRouteTypes {
     | '/credit-app/$token'
     | '/credit-docs/$token'
     | '/leads/$leadId'
+    | '/quote-accept/$token'
     | '/service-estimate/$token'
     | '/leads/'
     | '/api/auth/$'
@@ -300,6 +310,7 @@ export interface FileRouteTypes {
     | '/credit-app/$token'
     | '/credit-docs/$token'
     | '/leads/$leadId'
+    | '/quote-accept/$token'
     | '/service-estimate/$token'
     | '/leads'
     | '/api/auth/$'
@@ -328,6 +339,7 @@ export interface FileRouteTypes {
     | '/credit-app/$token'
     | '/credit-docs/$token'
     | '/leads/$leadId'
+    | '/quote-accept/$token'
     | '/service-estimate/$token'
     | '/leads/'
     | '/api/auth/$'
@@ -356,6 +368,7 @@ export interface RootRouteChildren {
   ApiHealthRoute: typeof ApiHealthRoute
   CreditAppTokenRoute: typeof CreditAppTokenRoute
   CreditDocsTokenRoute: typeof CreditDocsTokenRoute
+  QuoteAcceptTokenRoute: typeof QuoteAcceptTokenRoute
   ServiceEstimateTokenRoute: typeof ServiceEstimateTokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCronImportEmailsRoute: typeof ApiCronImportEmailsRoute
@@ -506,6 +519,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LeadsLeadIdRouteImport
       parentRoute: typeof LeadsRoute
     }
+    '/quote-accept/$token': {
+      id: '/quote-accept/$token'
+      path: '/quote-accept/$token'
+      fullPath: '/quote-accept/$token'
+      preLoaderRoute: typeof QuoteAcceptTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/service-estimate/$token': {
       id: '/service-estimate/$token'
       path: '/service-estimate/$token'
@@ -582,6 +602,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHealthRoute: ApiHealthRoute,
   CreditAppTokenRoute: CreditAppTokenRoute,
   CreditDocsTokenRoute: CreditDocsTokenRoute,
+  QuoteAcceptTokenRoute: QuoteAcceptTokenRoute,
   ServiceEstimateTokenRoute: ServiceEstimateTokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCronImportEmailsRoute: ApiCronImportEmailsRoute,

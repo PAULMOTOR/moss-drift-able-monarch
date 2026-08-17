@@ -68,7 +68,7 @@ export async function buildLeaseContractPdf(
     e.setMonth(e.getMonth() + option.termMonths);
     return e.toISOString().slice(0, 10);
   })();
-  const price = option.cost + option.extra + option.profit;
+  const price = option.salePrice;
 
   const rows: Array<[string, string]> = [
     ["Lessee", client.clientName || "—"],
@@ -83,6 +83,16 @@ export async function buildLeaseContractPdf(
     ["Cash down (down payment)", formatMoney(option.deposit)],
     ["Security deposit (refundable)", formatMoney(option.securityDeposit || 0)],
     ["Trade-in", formatMoney(option.tradeIn)],
+    [
+      "Trade vehicle",
+      [
+        [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim].filter(Boolean).join(" ") || null,
+        client.tradeVin ? `VIN ${client.tradeVin}` : null,
+        client.tradeKm != null ? `${client.tradeKm.toLocaleString("en-CA")} km` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") || "—",
+    ],
     ["Amount used in determining rent", formatMoney(option.financed)],
     ["Interest rate", `${option.ratePct.toFixed(2)}% per annum`],
     ["Basic monthly rent", formatMoney(option.payment)],

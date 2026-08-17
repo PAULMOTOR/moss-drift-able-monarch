@@ -159,9 +159,11 @@ export function normalizeEmail(email: string | null | undefined): string | null 
   if (!email) return null;
   const e = email.trim().toLowerCase();
   if (!e.includes("@")) return null;
-  if (/noreply|no-reply|donotreply|dealer-leads|1-source|messages\.cargurus|tadvantage/i.test(e)) {
+  if (/noreply|no-reply|donotreply|dealer-leads|1-source|messages\.cargurus|tadvantage|dealerleads\.trader|autotrader\.ca/i.test(e)) {
     return null;
   }
+  // Garbled portal tracking addresses sometimes look real
+  if (/^\d{3}-\d{4}[a-z0-9]+@/i.test(e)) return null;
   return e;
 }
 

@@ -6,6 +6,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
+import { fetchPartnerForLead, referralClientCopy } from "./partners";
 import {
   CUSTOMER_CHECKLIST,
   LESSEE_DOC_TYPES,
@@ -21,6 +22,8 @@ import {
   type Profile,
 } from "./types";
 
+import { publicAppUrl } from "./public-url";
+
 function uid() {
   return crypto.randomUUID();
 }
@@ -30,12 +33,7 @@ function token() {
 }
 
 function appBaseUrl() {
-  return (
-    process.env.APP_URL?.replace(/\/$/, "") ||
-    process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-    process.env.VITE_APP_URL?.replace(/\/$/, "") ||
-    "https://moss-drift-able-monarch.vercel.app"
-  );
+  return publicAppUrl();
 }
 
 function toCreditPayload(raw: unknown): CreditPayload {
@@ -213,9 +211,14 @@ export const getCreditPackage = createServerFn({ method: "GET" })
     const me = await requireProfile(context.userId);
     const sql = await getSql();
     const leadRows = await sql.query<Record<string, unknown>>(
-      `select id, name, email, phone, first_name, last_name, party_type, assigned_to,
-              credit_status, credit_app_id, vehicle_interest, stage
-       from leads where id = $1 limit 1`,
+      `select l.id, l.name, l.email, l.phone, l.first_name, l.last_name, l.party_type, l.assigned_to,
+              l.credit_status, l.credit_app_id, l.vehicle_interest, l.stage,
+              l.partner_id, pr.name as partner_name, pr.kind as partner_kind, pr.email as partner_email,
+              ap.email as assigned_email, ap.name as assigned_name
+       from leads l
+       left join partners pr on pr.id = l.partner_id
+       left join profiles ap on ap.id = l.assigned_to
+       where l.id = $1 limit 1`,
       [data.leadId],
     );
     if (!leadRows[0]) throw new Error("Lead not found");
@@ -260,6 +263,12 @@ export const getCreditPackage = createServerFn({ method: "GET" })
         credit_status: (lead.credit_status as string) || "none",
         vehicle_interest: (lead.vehicle_interest as string) || null,
         stage: String(lead.stage),
+        partner_id: (lead.partner_id as string) || null,
+        partner_name: (lead.partner_name as string) || null,
+        partner_kind: (lead.partner_kind as string) || null,
+        partner_email: (lead.partner_email as string) || null,
+        assigned_email: (lead.assigned_email as string) || null,
+        assigned_name: (lead.assigned_name as string) || null,
       },
       application,
       documents: docs,
@@ -309,6 +318,8 @@ export const requestCreditApp = createServerFn({ method: "POST" })
     `;
     const link = `${appBaseUrl()}/credit-app/${pub}`;
     const first = (lead.first_name as string) || String(lead.name).split(" ")[0] || "there";
+    const partner = await fetchPartnerForLead(sql, data.leadId);
+    const referral = referralClientCopy(partner);
     const mailResult = await sendCrmEmail(sql, {
       to: email,
       subject: "Paul Motor Leasing — Credit application & ID upload",
@@ -319,7 +330,7 @@ export const requestCreditApp = createServerFn({ method: "POST" })
       replyTo: replyToForActor(me.email, me.name),
       text: `Hi ${first},
 
-Paul Motor Leasing has invited you to complete a short credit application and upload two pieces of identification for your vehicle lease.
+${referral.text ? referral.text + "\n\n" : ""}Paul Motor Leasing has invited you to complete a short credit application and upload two pieces of identification for your vehicle lease.
 
 Open this secure link (no password required):
 ${link}
@@ -335,6 +346,7 @@ Your documents are only visible to authorized Paul Motor staff.
 Paul Motor Leasing`,
       html: `<div style="font-family:system-ui,sans-serif;max-width:560px;line-height:1.5">
 <p>Hi ${first},</p>
+${referral.html}
 <p><strong>Paul Motor Leasing</strong> has invited you to complete a short credit application and upload two pieces of identification for your vehicle lease.</p>
 <p><a href="${link}" style="display:inline-block;background:#008272;color:#fff;padding:12px 20px;border-radius:4px;text-decoration:none;font-weight:600">Start credit application</a></p>
 <p style="font-size:13px;color:#555">Or copy this link:<br/>${link}</p>
@@ -662,6 +674,10 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       approve: boolean;
       /** On decline: who gets the reason email */
       notify?: "sales" | "credit" | "both";
+      /** On approve */
+      notifyPartner?: boolean;
+      notifyLessee?: boolean;
+      nextStep?: string;
     }) => data,
   )
   .handler(async ({ context, data }) => {
@@ -700,11 +716,17 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       await ensureOpsTrackingForLead(sql, data.leadId);
     }
 
-    const lead = await sql<{ name: string; assigned_to: string | null }>`
-      select name, assigned_to from leads where id = ${data.leadId} limit 1
+    const lead = await sql<{
+      name: string;
+      assigned_to: string | null;
+      email: string | null;
+      partner_id: string | null;
+    }>`
+      select name, assigned_to, email, partner_id from leads where id = ${data.leadId} limit 1
     `;
     const clientName = lead[0]?.name || "Deal";
     const link = `${appBaseUrl()}/leads/${data.leadId}?tab=${data.approve ? "compliance" : "credit"}`;
+    const nextStep = data.nextStep?.trim() || "";
 
     if (!data.approve) {
       const notify = data.notify || "both";
@@ -751,11 +773,79 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       }
     }
 
+    if (data.approve) {
+      const sentTo: string[] = [];
+      type R = { email: string; name: string; role: string };
+      const recips: R[] = [];
+      if (lead[0]?.assigned_to) {
+        const reps = await sql<{ email: string; name: string }>`
+          select email, name from profiles
+          where id = ${lead[0].assigned_to} and active = true limit 1
+        `;
+        if (reps[0]?.email) recips.push({ ...reps[0], role: "Sales rep" });
+      }
+      const cms = await sql<{ email: string; name: string }>`
+        select email, name from profiles
+        where active = true and role = 'credit_manager'
+      `;
+      for (const c of cms) {
+        if (c.email && !recips.some((r) => r.email === c.email)) {
+          recips.push({ ...c, role: "Credit manager" });
+        }
+      }
+      if (data.notifyPartner !== false && lead[0]?.partner_id) {
+        const pr = await sql<{ name: string; email: string | null; kind: string }>`
+          select name, email, kind from partners where id = ${lead[0].partner_id} limit 1
+        `;
+        if (pr[0]?.email) {
+          recips.push({
+            email: pr[0].email,
+            name: pr[0].name,
+            role: pr[0].kind === "broker" ? "Referring broker" : "Referring dealer",
+          });
+        }
+      }
+      if (data.notifyLessee && lead[0]?.email) {
+        recips.push({ email: lead[0].email, name: clientName, role: "Lessee" });
+      }
+      const nextBlock = nextStep
+        ? `What's next: ${nextStep}`
+        : "Next steps will come from the Paul Motor team.";
+      for (const r of recips) {
+        const isLessee = r.role === "Lessee";
+        await sendCrmEmail(sql, {
+          to: r.email,
+          subject: isLessee
+            ? `Your Paul Motor lease was approved — ${clientName}`
+            : `Lease approved — ${clientName}`,
+          kind: "deal_approved",
+          leadId: data.leadId,
+          text: isLessee
+            ? `Hi ${r.name.split(" ")[0]},\n\nGood news — your lease has been approved by Paul Motor Leasing.\n\n${nextBlock}\n\nIf you have questions about the vehicle, speak with your dealer or broker. Questions about the lease or payments come to us.\n\n— ${me.name}\nPaul Motor Leasing`
+            : `${me.name} approved ${clientName}.\n\n${nextBlock}\n\nYour role: ${r.role}\nOpen: ${link}`,
+          html: isLessee
+            ? `<p>Hi ${r.name.split(" ")[0].replace(/</g, "")},</p><p>Good news — your lease has been <strong>approved</strong> by Paul Motor Leasing.</p><p>${nextBlock.replace(/</g, "")}</p><p style="font-size:13px;color:#555">Car questions: your dealer or broker. Lease / payment questions: us.</p><p>— ${me.name.replace(/</g, "")}<br/>Paul Motor Leasing</p>`
+            : `<p><strong>${me.name.replace(/</g, "")}</strong> approved <strong>${clientName.replace(/</g, "")}</strong>.</p><p>${nextBlock.replace(/</g, "")}</p><p style="font-size:13px;color:#555">You: ${r.role}</p><p><a href="${link}">Open deal in CRM</a></p>`,
+        });
+        sentTo.push(`${r.role} <${r.email}>`);
+      }
+      if (sentTo.length) {
+        await sql`
+          insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+          values (
+            ${uid()}, ${data.leadId}, 'credit',
+            ${`Approval notices sent: ${sentTo.join(", ")}`},
+            ${me.id}, ${me.name}
+          )
+        `;
+      }
+    }
+
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'credit',
-        ${`Deal ${status} by ${me.name}${notes ? `: ${notes}` : ""}${data.approve ? " · moved to Compliance" : data.notify ? ` · notified ${data.notify}` : ""}`},
+        ${`Deal ${status} by ${me.name}${notes ? `: ${notes}` : ""}${data.approve ? " · moved to Compliance" + (nextStep ? ` · next: ${nextStep}` : "") : data.notify ? ` · notified ${data.notify}` : ""}`},
         ${me.id}, ${me.name}
       )
     `;
@@ -813,6 +903,8 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
     const link = `${appBaseUrl()}/credit-docs/${docTok}?kinds=${kindsParam}`;
     const listText = labels.map((l) => `• ${l}`).join("\n");
     const listHtml = labels.map((l) => `<li>${l}</li>`).join("");
+    const partner = await fetchPartnerForLead(sql, data.leadId);
+    const referral = referralClientCopy(partner);
 
     const mailResult = await sendCrmEmail(sql, {
       to: email,
@@ -822,8 +914,8 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
       profileId: me.id,
       fromName: clientFacingFromName(me.name),
       replyTo: replyToForActor(me.email, me.name),
-      text: `Hi,\n\nPlease upload the following for your lease application:\n${listText}\n\n${link}\n\nYou can reopen this link anytime to add more files until complete.\n\n— ${me.name}\nPaul Motor Leasing`,
-      html: `<p>Please upload the following for your lease application:</p>
+      text: `Hi,\n\n${referral.text ? referral.text + "\n\n" : ""}Please upload the following for your lease application:\n${listText}\n\n${link}\n\nYou can reopen this link anytime to add more files until complete.\n\n— ${me.name}\nPaul Motor Leasing`,
+      html: `${referral.html}<p>Please upload the following for your lease application:</p>
 <ul>${listHtml}</ul>
 <p><a href="${link}" style="background:#008272;color:#fff;padding:10px 16px;text-decoration:none;border-radius:4px">Upload documents</a></p>
 <p style="font-size:13px;color:#555">You can reopen this link anytime to add more files until the package is complete.</p>
@@ -854,9 +946,11 @@ export const getPublicCreditApp = createServerFn({ method: "GET" })
     const sql = await getSql();
     const rows = await sql.query<Record<string, unknown>>(
       `select a.*, l.name as lead_name, l.email as lead_email, l.phone as lead_phone,
-              l.first_name, l.last_name, l.vehicle_interest, l.party_type as lead_party_type
+              l.first_name, l.last_name, l.vehicle_interest, l.party_type as lead_party_type,
+              pr.name as partner_name, pr.kind as partner_kind
        from credit_applications a
        join leads l on l.id = a.lead_id
+       left join partners pr on pr.id = l.partner_id
        where a.public_token = $1 limit 1`,
       [data.token],
     );
@@ -880,6 +974,8 @@ export const getPublicCreditApp = createServerFn({ method: "GET" })
         email: (rows[0].lead_email as string) || app.app_email,
         phone: (rows[0].lead_phone as string) || null,
         vehicle_interest: (rows[0].vehicle_interest as string) || null,
+        partner_name: (rows[0].partner_name as string) || null,
+        partner_kind: (rows[0].partner_kind as string) || null,
       },
       uploadedKinds: docs.map((d) => d.kind),
     };

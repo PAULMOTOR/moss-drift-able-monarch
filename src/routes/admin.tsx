@@ -24,7 +24,9 @@ import {
   adminEmailImportStatus,
   adminRunEmailImport,
   adminUpdateUser,
+  attachUnmatchedLeaseAppFn,
   getAdminMetrics,
+  listLeads,
   getMyProfile,
   listProfiles,
   listContractTemplates,
@@ -102,6 +104,11 @@ function AdminPage() {
   const clearAllLeads = useServerFn(adminClearAllLeads);
   const runImport = useServerFn(adminRunEmailImport);
   const loadImportStatus = useServerFn(adminEmailImportStatus);
+  const attachApp = useServerFn(attachUnmatchedLeaseAppFn);
+  const [attachFor, setAttachFor] = useState<string | null>(null);
+  const [attachQ, setAttachQ] = useState("");
+  const [attachHits, setAttachHits] = useState<Array<{ id: string; name: string }>>([]);
+  const [attaching, setAttaching] = useState(false);
 
   async function load() {
     const profile = await getMyProfile();
@@ -268,7 +275,8 @@ function AdminPage() {
             <strong className="text-foreground">General Interest</strong>; financing forms →{" "}
             <strong className="text-foreground">Lease</strong>; CarGurus / AutoTrader →{" "}
             <strong className="text-foreground">Inventory</strong>. Same person + same car merges
-            into one open lead (90 days).
+            into one open deal. Financing forms never create a new lead — they attach
+            to the existing person (inventory or lease).
           </p>
 
           <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -346,6 +354,83 @@ function AdminPage() {
                   >
                     {r.status}
                   </Badge>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {(importStatus?.unmatched?.length ?? 0) > 0 ? (
+            <div className="space-y-2 rounded-lg border border-amber-600/40 bg-amber-500/10 p-3">
+              <p className="text-sm font-semibold">
+                Unmatched financing forms ({importStatus!.unmatched!.length})
+              </p>
+              <p className="text-xs text-muted-foreground">
+                These TAdvantage / website apps did not find an open deal. Search a name and attach.
+                They also retry automatically for 7 days.
+              </p>
+              {importStatus!.unmatched!.map((u) => (
+                <div key={u.id} className="rounded-md border border-border bg-background/70 p-2 text-xs">
+                  <p className="font-medium">{u.subject || "Financing form"}</p>
+                  <p className="text-muted-foreground">
+                    {[u.parsed_name, u.parsed_company, u.parsed_email, u.parsed_phone]
+                      .filter(Boolean)
+                      .join(" · ") || u.from_address || "—"}
+                  </p>
+                  <p className="text-muted-foreground">{u.reason}</p>
+                  {attachFor === u.id ? (
+                    <div className="mt-2 space-y-1">
+                      <Input
+                        className="h-8"
+                        placeholder="Search open deal by name, phone, email…"
+                        value={attachQ}
+                        onChange={(e) => {
+                          const q = e.target.value;
+                          setAttachQ(q);
+                          void listLeads({ data: { q, limit: 8, offset: 0 } }).then((r) =>
+                            setAttachHits(r.leads.map((l) => ({ id: l.id, name: l.name }))),
+                          );
+                        }}
+                      />
+                      {attachHits.map((h) => (
+                        <Button
+                          key={h.id}
+                          size="sm"
+                          variant="outline"
+                          className="h-8 w-full justify-start"
+                          disabled={attaching}
+                          onClick={async () => {
+                            setAttaching(true);
+                            try {
+                              const res = await attachApp({ data: { importId: u.id, leadId: h.id } });
+                              toast.success(`Attached to ${res.leadName}`);
+                              setAttachFor(null);
+                              const st = await loadImportStatus();
+                              setImportStatus(st);
+                            } catch (e) {
+                              toast.error(e instanceof Error ? e.message : "Attach failed");
+                            } finally {
+                              setAttaching(false);
+                            }
+                          }}
+                        >
+                          Attach to {h.name}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="mt-2 h-7"
+                      onClick={() => {
+                        setAttachFor(u.id);
+                        setAttachQ("");
+                        setAttachHits([]);
+                      }}
+                    >
+                      Attach to a deal
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>

@@ -9,6 +9,7 @@ import { profileHasPermission } from "./permissions";
 import type { OwnershipRecord, Profile, VehicleLien } from "./types";
 import { TITLE_BANKS, vehicleLabel } from "./types";
 import type { Sql } from "@/lib/db";
+import { publicAppUrl } from "./public-url";
 
 function uid() {
   return crypto.randomUUID();
@@ -324,9 +325,7 @@ export const upsertLien = createServerFn({ method: "POST" })
 
 /** Daily batch: missing ownerships 5+ days + missing liens 5+ days. */
 export async function runComplianceOpsReminders(sql: Sql) {
-  const base =
-    process.env.APP_URL?.replace(/\/$/, "") ||
-    "https://moss-drift-able-monarch.vercel.app";
+  const base = publicAppUrl();
 
   const missingOwn = await sql.query<Record<string, unknown>>(
     `select o.lead_id, o.vin, o.vehicle_label, o.signed_at::text as signed_at, l.name as lead_name

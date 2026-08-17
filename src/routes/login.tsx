@@ -40,7 +40,7 @@ function LoginPage() {
       .catch(() => setReady(true));
   }, []);
 
-  if (!isPending && user) return <Navigate to="/capture" />;
+  if (!isPending && user) return <Navigate to="/" />;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -53,7 +53,7 @@ function LoginPage() {
       });
       if (res.error) throw new Error(res.error.message || "Sign in failed");
       toast.success("Welcome back");
-      window.location.href = "/capture";
+      window.location.href = "/";
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Authentication failed");
     } finally {

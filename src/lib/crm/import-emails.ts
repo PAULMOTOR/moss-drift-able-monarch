@@ -15,6 +15,17 @@ import {
   type GmailMessage,
 } from "./gmail";
 import type { LeadType } from "./types";
+import { compactEmailBody } from "./email-text";
+import {
+  applyWebsiteLeaseAppToLead,
+  findWebsiteLeaseDeal,
+  isRetryableUnmatched,
+  LEASE_APP_AMBIGUOUS,
+  LEASE_APP_UNMATCHED,
+  listUnmatchedLeaseApps,
+  notifyLeaseAppAttached,
+  type LeaseAppIdentity,
+} from "./lease-app-import";
 
 
 async function resolveLucasProfileId(sql: Sql): Promise<string | null> {
@@ -34,6 +45,48 @@ async function resolveLucasProfileId(sql: Sql): Promise<string | null> {
 function uid() {
   return crypto.randomUUID();
 }
+
+/** AutoTrader "Customer no." and similar dealer account IDs must never be buyer phones. */
+function isDealerAccountPhone(
+  phone: string | null | undefined,
+  body?: string | null,
+): boolean {
+  if (!phone) return false;
+  const digits = phone.replace(/\D/g, "");
+  const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+  if (!last10) return false;
+  if (body) {
+    const re = new RegExp(
+      `(?:Customer\\s*no\\.?|Customer\\s*number|N[o°º.]?\\s*(?:de\\s+)?client)\\s*[:#]?\\s*${last10}`,
+      "i",
+    );
+    if (re.test(body)) return true;
+    if (
+      body.includes(digits) &&
+      /Customer\s*no|N[o°º.]?\s*(?:de\s+)?client/i.test(body) &&
+      /^1000\d{6}$/.test(last10)
+    ) {
+      return true;
+    }
+  }
+  // Common AutoTrader dealer customer number shape when portal is AT
+  if (/^1000\d{6}$/.test(last10) && body && /autotrader|dealerleads|trader\.ca/i.test(body)) {
+    return true;
+  }
+  return false;
+}
+
+function isJunkLeadName(name: string | null | undefined): boolean {
+  if (!name) return true;
+  const n = name.trim().toLowerCase();
+  if (!n) return true;
+  if (/^(trader|autotrader|email lead|cargurus|tadvantage|dealer|unknown|no name)$/i.test(n)) {
+    return true;
+  }
+  if (/dealerleads|1-source|no-?reply/i.test(n)) return true;
+  return false;
+}
+
 
 export type ImportResult = {
   ok: boolean;
@@ -246,9 +299,61 @@ async function matchInventory(
   return null;
 }
 
-async function alreadyImported(sql: Sql, messageId: string): Promise<boolean> {
-  const rows = await sql`select id from email_imports where gmail_message_id = ${messageId} limit 1`;
-  return Boolean(rows[0]);
+async function existingImport(sql: Sql, messageId: string) {
+  const rows = await sql<{
+    id: string;
+    status: string;
+    reason: string | null;
+    created_at: string;
+  }>`
+    select id, status, reason, created_at::text as created_at
+    from email_imports where gmail_message_id = ${messageId} limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function upsertEmailImport(
+  sql: Sql,
+  row: {
+    messageId: string;
+    threadId: string | null;
+    from: string;
+    subject: string;
+    receivedAt: string | null;
+    leadId: string | null;
+    status: string;
+    reason: string;
+    leadType: string;
+    portal: string;
+    snippet: string;
+    ident?: LeaseAppIdentity | null;
+    rawBody?: string | null;
+  },
+) {
+  await sql`
+    insert into email_imports (
+      id, gmail_message_id, gmail_thread_id, from_address, subject, received_at,
+      lead_id, status, reason, lead_type, portal, raw_snippet,
+      parsed_name, parsed_email, parsed_phone, parsed_company, raw_body
+    ) values (
+      ${uid()}, ${row.messageId}, ${row.threadId}, ${row.from},
+      ${row.subject}, ${row.receivedAt},
+      ${row.leadId}, ${row.status}, ${row.reason}, ${row.leadType}, ${row.portal},
+      ${row.snippet.slice(0, 500)},
+      ${row.ident?.name || null}, ${row.ident?.email || null},
+      ${row.ident?.phone || null}, ${row.ident?.company || null},
+      ${row.rawBody || null}
+    )
+    on conflict (gmail_message_id) do update set
+      lead_id = excluded.lead_id,
+      status = excluded.status,
+      reason = excluded.reason,
+      parsed_name = coalesce(excluded.parsed_name, email_imports.parsed_name),
+      parsed_email = coalesce(excluded.parsed_email, email_imports.parsed_email),
+      parsed_phone = coalesce(excluded.parsed_phone, email_imports.parsed_phone),
+      parsed_company = coalesce(excluded.parsed_company, email_imports.parsed_company),
+      raw_body = coalesce(excluded.raw_body, email_imports.raw_body)
+  `;
 }
 
 async function processMessage(
@@ -261,7 +366,8 @@ async function processMessage(
   lead_type?: LeadType;
   portal?: EmailPortal;
 }> {
-  if (await alreadyImported(sql, msg.id)) {
+  const prior = await existingImport(sql, msg.id);
+  if (prior && !isRetryableUnmatched(prior)) {
     return { status: "skipped", reason: "already-imported" };
   }
 
@@ -279,18 +385,32 @@ async function processMessage(
   const source = classified.source;
 
   let customerEmail = normalizeEmail(parsed.email);
-  if (customerEmail && /tadvantage|cargurus|trader\.ca|dealerleads|noreply/i.test(customerEmail)) {
+  if (
+    customerEmail &&
+    /tadvantage|cargurus|trader\.ca|dealerleads|noreply|1-source|autotrader/i.test(
+      customerEmail,
+    )
+  ) {
     customerEmail = null;
   }
-  const customerPhone = normalizePhone(parsed.phone);
+  // Reject AutoTrader dealer account IDs mistaken as phones (e.g. Customer no. 1000004136)
+  let customerPhone = normalizePhone(parsed.phone);
+  if (customerPhone && isDealerAccountPhone(customerPhone, msg.bodyText || raw)) {
+    customerPhone = null;
+  }
   const stock = stockKey(parsed.stock_number);
   let vehicle = parsed.vehicle_interest?.trim() || "";
-  const name =
-    (parsed.name?.trim() && !/paul\s*motor/i.test(parsed.name)
+  let name =
+    (parsed.name?.trim() &&
+    !/paul\s*motor/i.test(parsed.name) &&
+    !isJunkLeadName(parsed.name)
       ? parsed.name.trim()
       : "") ||
     (customerEmail ? customerEmail.split("@")[0] : "") ||
     "Email lead";
+  if (isJunkLeadName(name)) {
+    name = customerEmail ? customerEmail.split("@")[0] : "Email lead";
+  }
 
   if (!customerEmail && !customerPhone && !vehicle && !stock && name === "Email lead") {
     if (portal === "other") {
@@ -319,24 +439,120 @@ async function processMessage(
     source,
   );
 
-  const dup = await findDuplicateLead(sql, {
+  const ident: LeaseAppIdentity = {
+    name,
     email: customerEmail,
     phone: customerPhone,
+    company: parsed.company?.trim() || null,
+    vehicle: vehicle || null,
     stock,
-    vehicle: vehicleKey(vehicle),
-    lead_type: leadType,
-    personOnly: websiteLease,
-  });
+    isBusiness: /leasing-business|entreprise/i.test(classified.rule),
+  };
+
+  const websiteMatch = websiteLease
+    ? await findWebsiteLeaseDeal(sql, ident)
+    : null;
+
+  const dup = websiteLease
+    ? websiteMatch?.kind === "hit"
+      ? { id: websiteMatch.id, name: websiteMatch.name }
+      : null
+    : await findDuplicateLead(sql, {
+        email: customerEmail,
+        phone: customerPhone,
+        stock,
+        vehicle: vehicleKey(vehicle),
+        lead_type: leadType,
+        personOnly: false,
+      });
 
   const notesParts = [
     `Auto-imported from ${portal} · ${classified.rule}`,
     `Subject: ${msg.subject}`,
-    parsed.notes ? parsed.notes : msg.snippet.slice(0, 400),
+    parsed.notes ? compactEmailBody(parsed.notes, 800) : compactEmailBody(msg.snippet, 400),
   ].filter(Boolean);
   const notes = notesParts.join("\n");
   const mergeBlock = `\n\n---\n${notes}`;
 
+  const receivedAt = msg.internalDate ? new Date(msg.internalDate).toISOString() : null;
+  const fromAddr = extractFromAddress(msg.from);
+
+  if (dup && websiteLease) {
+    const applied = await applyWebsiteLeaseAppToLead(sql, dup.id, ident, {
+      from: msg.from,
+      subject: msg.subject,
+      body: msg.bodyText || msg.snippet,
+    });
+    await notifyLeaseAppAttached(sql, {
+      leadId: dup.id,
+      leadName: applied.leadName,
+      assignedTo: applied.assignedTo,
+      subject: msg.subject,
+      unpaused: applied.unpaused,
+      stageMoved: applied.stageMoved,
+    }).catch(() => undefined);
+    await upsertEmailImport(sql, {
+      messageId: msg.id,
+      threadId: msg.threadId,
+      from: fromAddr,
+      subject: msg.subject,
+      receivedAt,
+      leadId: dup.id,
+      status: "merged",
+      reason: `lease-app:${websiteMatch && websiteMatch.kind === "hit" ? websiteMatch.reason : "match"}`,
+      leadType,
+      portal,
+      snippet: msg.snippet,
+      ident,
+      rawBody: (msg.bodyText || msg.snippet).slice(0, 15000),
+    });
+    return {
+      status: "merged",
+      reason: `Financing form attached to ${applied.leadName}`,
+      lead_id: dup.id,
+      lead_type: leadType,
+      portal,
+    };
+  }
+
   if (dup) {
+    // If the existing lead still has junk AutoTrader fields, overwrite with real buyer contact
+    const existing = await sql.query<{
+      name: string;
+      phone: string | null;
+      email: string | null;
+      first_name: string | null;
+      last_name: string | null;
+    }>(
+      `select name, phone, email, first_name, last_name from leads where id = $1`,
+      [dup.id],
+    );
+    const ex = existing[0];
+    const nextPhone =
+      customerPhone &&
+      (!normalizePhone(ex?.phone) ||
+        isDealerAccountPhone(normalizePhone(ex?.phone), msg.bodyText || raw) ||
+        isJunkLeadName(ex?.name || ""))
+        ? parsed.phone || customerPhone
+        : null;
+    const nextEmail =
+      customerEmail &&
+      (!normalizeEmail(ex?.email) ||
+        /trader\.ca|dealerleads|tonyroadranger|100000/i.test(ex?.email || "") ||
+        isJunkLeadName(ex?.name || ""))
+        ? customerEmail
+        : null;
+    const nextName =
+      name &&
+      name !== "Email lead" &&
+      !isJunkLeadName(name) &&
+      isJunkLeadName(ex?.name || "")
+        ? name
+        : null;
+    const nameParts = nextName ? nextName.trim().split(/\s+/).filter(Boolean) : [];
+    const nextFirst = nameParts[0] || null;
+    const nextLast = nameParts.length > 1 ? nameParts.slice(1).join(" ") : null;
+
     await sql`
       update leads set
         notes = case
@@ -345,14 +561,17 @@ async function processMessage(
         end,
         vehicle_interest = coalesce(nullif(vehicle_interest, ''), ${vehicle || null}),
         inventory_id = coalesce(inventory_id, ${inv?.id ?? null}),
-        phone = coalesce(nullif(phone, ''), ${customerPhone ? parsed.phone || null : null}),
-        email = coalesce(nullif(email, ''), ${customerEmail}),
+        phone = coalesce(${nextPhone}, nullif(phone, ''), ${customerPhone ? parsed.phone || null : null}),
+        email = coalesce(${nextEmail}, nullif(email, ''), ${customerEmail}),
+        name = coalesce(${nextName}, name),
+        first_name = case when ${nextFirst}::text is not null then ${nextFirst} else first_name end,
+        last_name = case when ${nextLast}::text is not null then ${nextLast} else last_name end,
         updated_at = now()
       where id = ${dup.id}
     `;
     const activityBody = websiteLease
-      ? `Website lease application attached to existing lead (not a new lead).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${(msg.bodyText || msg.snippet).slice(0, 1200)}`
-      : `Duplicate email merged (same person + vehicle).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${(msg.bodyText || msg.snippet).slice(0, 1200)}`;
+      ? `Website lease application attached to existing lead (not a new lead).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${compactEmailBody(msg.bodyText || msg.snippet, 1200)}`
+      : `Duplicate email merged (same person + vehicle).\nFrom: ${msg.from}\nSubject: ${msg.subject}\n\n${compactEmailBody(msg.bodyText || msg.snippet, 1200)}`;
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by_name)
       values (
@@ -384,22 +603,29 @@ async function processMessage(
 
   // Website lease apps always belong on an existing deal — never open a new lead
   if (websiteLease) {
-    await sql`
-      insert into email_imports (
-        id, gmail_message_id, gmail_thread_id, from_address, subject, received_at,
-        lead_id, status, reason, lead_type, portal, raw_snippet
-      ) values (
-        ${uid()}, ${msg.id}, ${msg.threadId}, ${extractFromAddress(msg.from)},
-        ${msg.subject}, ${msg.internalDate ? new Date(msg.internalDate).toISOString() : null},
-        null, 'skipped', 'lease-app-no-existing-lead', ${leadType}, ${portal},
-        ${msg.snippet.slice(0, 500)}
-      )
-      on conflict (gmail_message_id) do nothing
-    `;
+    const reason =
+      websiteMatch?.kind === "ambiguous" ? LEASE_APP_AMBIGUOUS : LEASE_APP_UNMATCHED;
+    await upsertEmailImport(sql, {
+      messageId: msg.id,
+      threadId: msg.threadId,
+      from: fromAddr,
+      subject: msg.subject,
+      receivedAt,
+      leadId: null,
+      status: "skipped",
+      reason,
+      leadType,
+      portal,
+      snippet: msg.snippet,
+      ident,
+      rawBody: (msg.bodyText || msg.snippet).slice(0, 15000),
+    });
     return {
       status: "skipped",
       reason:
-        "Website lease application with no matching open lead (email/phone). Not creating a new lead — attach manually if needed.",
+        websiteMatch?.kind === "ambiguous"
+          ? websiteMatch.reason
+          : "Website financing form with no matching open deal. Queued for GSM — will retry 7 days.",
       lead_type: leadType,
       portal,
     };
@@ -426,7 +652,7 @@ async function processMessage(
       ${firstName},
       ${lastName},
       ${partyType},
-      ${parsed.phone || null},
+      ${customerPhone ? (parsed.phone || customerPhone) : null},
       ${customerEmail},
       ${source},
       ${leadType},
@@ -563,6 +789,55 @@ export async function runEmailImport(
     }
   }
 
+  // Re-try unmatched financing forms stored from earlier runs (Gmail window may have dropped them)
+  try {
+    const pending = await sql<{
+      gmail_message_id: string;
+      gmail_thread_id: string | null;
+      from_address: string | null;
+      subject: string | null;
+      raw_body: string | null;
+      raw_snippet: string | null;
+      created_at: string;
+      status: string;
+      reason: string | null;
+    }>`
+      select gmail_message_id, gmail_thread_id, from_address, subject, raw_body, raw_snippet,
+             created_at::text as created_at, status, reason
+      from email_imports
+      where status = 'skipped'
+        and reason in (${LEASE_APP_UNMATCHED}, ${LEASE_APP_AMBIGUOUS})
+        and created_at > now() - interval '7 days'
+        and coalesce(raw_body, raw_snippet, '') <> ''
+    `;
+    const seen = new Set(messages.map((m) => m.id));
+    for (const row of pending) {
+      if (seen.has(row.gmail_message_id)) continue;
+      if (!isRetryableUnmatched(row)) continue;
+      const fake = {
+        id: row.gmail_message_id,
+        threadId: row.gmail_thread_id || "",
+        from: row.from_address || "no-reply@tadvantage.ca",
+        subject: row.subject || "Financing form",
+        snippet: (row.raw_snippet || "").slice(0, 400),
+        bodyText: row.raw_body || row.raw_snippet || "",
+        date: null,
+        internalDate: 0,
+      } as GmailMessage;
+      const r = await processMessage(sql, fake);
+      if (r.status === "merged") merged += 1;
+      details.push({
+        subject: fake.subject,
+        from: fake.from,
+        status: r.status,
+        reason: r.reason ? `retry:${r.reason}` : "retry",
+        lead_id: r.lead_id,
+      });
+    }
+  } catch {
+    // retry pass is best-effort
+  }
+
   await sql`
     insert into crm_settings (key, value, updated_at)
     values ('email_import_last_run', ${new Date().toISOString()}, now())
@@ -606,11 +881,13 @@ export async function getEmailImportStatus(sql: Sql) {
   const counts = await sql<{ status: string; n: number }>`
     select status, count(*)::int as n from email_imports group by status
   `;
+  const unmatched = await listUnmatchedLeaseApps(sql);
   return {
     config,
     last_run: last[0]?.value ?? null,
     last_run_at: last[0]?.updated_at ?? null,
     recent,
+    unmatched,
     counts: Object.fromEntries(counts.map((c) => [c.status, c.n])),
   };
 }

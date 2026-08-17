@@ -35,6 +35,7 @@ import {
   parseEmailLead,
 } from "@/lib/crm/server";
 import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
+import { PartnerField } from "@/components/partner-field";
 import {
   LEAD_TYPES,
   SOURCES,
@@ -79,11 +80,14 @@ function CapturePage() {
     first_name: "",
     last_name: "",
     party_type: "individual" as "individual" | "business",
+    legal_entity_name: "",
     phone: "",
     email: "",
     source: "phone",
+    partner_id: "",
     notes: "",
     vehicle_interest: "",
+    destination: "",
     vehicle_year: "" as string,
     vehicle_make: "",
     vehicle_model: "",
@@ -173,7 +177,7 @@ function CapturePage() {
         setForm((f) => ({
           ...f,
           // Inventory defaults to Lucas; other types default to current user
-          assigned_to: f.lead_type === "inventory" && lucas ? lucas.id : profile.id,
+          assigned_to: (f.lead_type === "inventory" || f.lead_type === "cash" || f.lead_type === "wholesale") && lucas ? lucas.id : profile.id,
         }));
       },
     );
@@ -290,12 +294,15 @@ function CapturePage() {
           lead_type: form.lead_type,
           notes: form.notes || undefined,
           vehicle_interest: vehicleInterest || form.vehicle_interest || undefined,
-          inventory_id: form.lead_type === "inventory" ? form.inventory_id || null : null,
+          inventory_id: ["inventory", "cash", "wholesale"].includes(form.lead_type) ? form.inventory_id || null : null,
+          destination: form.destination?.trim() || null,
 
           assigned_to: form.assigned_to || null,
           first_name: form.first_name || undefined,
           last_name: form.last_name || undefined,
           party_type: form.party_type || "individual",
+          legal_entity_name: form.party_type === "business" ? form.legal_entity_name.trim() || null : null,
+          partner_id: form.partner_id || null,
           quote_sent: form.quote_sent,
           quote_sent_at:
             form.quote_sent && form.quote_sent_at
@@ -391,8 +398,8 @@ Message: Interested in a viewing this weekend.`}
       ) : null}
 
       <form onSubmit={submit} className="mx-auto max-w-xl space-y-4">
-        {/* Lead type — Inventory vs Lease */}
-        <div className="grid grid-cols-2 gap-2">
+        {/* Lead type */}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {LEAD_TYPES.map((t) => (
             <button
               key={t.id}
@@ -506,6 +513,23 @@ Message: Interested in a viewing this weekend.`}
               </Select>
             </div>
 
+            {form.party_type === "business" ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="legal_entity_name">Business name *</Label>
+                <Input
+                  id="legal_entity_name"
+                  className="h-12 text-base"
+                  placeholder="Legal company name"
+                  value={form.legal_entity_name}
+                  onChange={(e) => setForm((f) => ({ ...f, legal_entity_name: e.target.value }))}
+                  required
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  The file stays under the contact person and the company — search finds either.
+                </p>
+              </div>
+            ) : null}
+
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
                 <Label htmlFor="phone">Phone *</Label>
@@ -532,6 +556,12 @@ Message: Interested in a viewing this weekend.`}
               </div>
             </div>
 
+            <PartnerField
+              value={form.partner_id}
+              onChange={(id) => setForm((f) => ({ ...f, partner_id: id }))}
+              size="lg"
+            />
+
             <div className="grid gap-1.5">
               <Label>Source</Label>
               <Select value={form.source} onValueChange={(v) => setForm((f) => ({ ...f, source: v }))}>
@@ -548,7 +578,7 @@ Message: Interested in a viewing this weekend.`}
               </Select>
             </div>
 
-            {form.lead_type === "inventory" ? (
+            {["inventory", "cash", "wholesale"].includes(form.lead_type) ? (
               <div className="grid gap-1.5">
                 <Label>Inventory unit (live stock)</Label>
                 <div className="relative">
@@ -719,7 +749,7 @@ Message: Interested in a viewing this weekend.`}
               </div>
             )}
 
-            {form.lead_type === "inventory" ? (
+            {["inventory", "cash", "wholesale"].includes(form.lead_type) ? (
               <div className="grid gap-1.5">
                 <Label htmlFor="interest">Vehicle interest notes</Label>
                 <Input
@@ -728,6 +758,19 @@ Message: Interested in a viewing this weekend.`}
                   placeholder="Optional free-text (e.g. prefers Rosso, under 200k)"
                   value={form.vehicle_interest}
                   onChange={(e) => setForm((f) => ({ ...f, vehicle_interest: e.target.value }))}
+                />
+              </div>
+            ) : null}
+
+            {["cash", "wholesale", "inventory"].includes(form.lead_type) ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="destination">Where the car went / sold to</Label>
+                <Input
+                  id="destination"
+                  className="h-11"
+                  placeholder="e.g. ABC Motors — Toronto · buyer kept it · shipped to Calgary"
+                  value={form.destination || ""}
+                  onChange={(e) => setForm((f) => ({ ...f, destination: e.target.value }))}
                 />
               </div>
             ) : null}

@@ -42,6 +42,22 @@ import { cn } from "@/lib/utils";
 import { LabBanner } from "@/components/lab-banner";
 import { isDmsLab } from "@/lib/app-track";
 
+/** Square JPEG data-URL small enough for profiles — never for session cookies. */
+async function shrinkAvatar(file: File, size = 256): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not process photo");
+  const scale = Math.max(size / bitmap.width, size / bitmap.height);
+  const w = bitmap.width * scale;
+  const h = bitmap.height * scale;
+  ctx.drawImage(bitmap, (size - w) / 2, (size - h) / 2, w, h);
+  bitmap.close();
+  return canvas.toDataURL("image/jpeg", 0.82);
+}
+
 type NavItem = {
   to: string;
   label: string;
@@ -221,17 +237,12 @@ export function AppShell({
                 onChange={async (e) => {
                   const f = e.target.files?.[0];
                   if (!f) return;
-                  if (f.size > 1_200_000) {
-                    toast.error("Use a photo under ~1MB");
+                  if (f.size > 4_000_000) {
+                    toast.error("Use a photo under 4MB");
                     return;
                   }
                   try {
-                    const dataUrl = await new Promise<string>((res, rej) => {
-                      const r = new FileReader();
-                      r.onload = () => res(String(r.result));
-                      r.onerror = () => rej(new Error("read failed"));
-                      r.readAsDataURL(f);
-                    });
+                    const dataUrl = await shrinkAvatar(f);
                     const updated = await updateAvatar({ data: { avatar_url: dataUrl } });
                     setAvatarUrl(updated.avatar_url);
                     toast.success("Profile photo updated");

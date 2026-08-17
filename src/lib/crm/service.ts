@@ -8,17 +8,14 @@ import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import { profileHasPermission } from "./permissions";
 import type { Profile, ServiceInspection, ServiceWorkOrder } from "./types";
 import { vehicleLabel } from "./types";
+import { publicAppUrl } from "./public-url";
 
 function uid() {
   return crypto.randomUUID();
 }
 
 function appBaseUrl() {
-  return (
-    process.env.APP_URL?.replace(/\/$/, "") ||
-    process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-    "https://moss-drift-able-monarch.vercel.app"
-  );
+  return publicAppUrl();
 }
 
 async function requireProfile(userId: string): Promise<Profile> {

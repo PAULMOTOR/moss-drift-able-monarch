@@ -1,17 +1,13 @@
 import type { Sql } from "@/lib/db";
 import { sendCrmEmail } from "./mail";
+import { publicAppUrl } from "./public-url";
 
 function uid() {
   return crypto.randomUUID();
 }
 
-function appBaseUrl() {
-  return (
-    process.env.APP_URL?.replace(/\/$/, "") ||
-    process.env.BETTER_AUTH_URL?.replace(/\/$/, "") ||
-    process.env.VITE_APP_URL?.replace(/\/$/, "") ||
-    "https://moss-drift-able-monarch.vercel.app"
-  );
+export function appBaseUrl() {
+  return publicAppUrl();
 }
 
 function escapeHtml(s: string) {
@@ -518,7 +514,14 @@ export async function runScheduledUncontactedReminders(sql: Sql) {
   const repBatch = await runUncontactedRepBatches(sql);
   const generalBatch = await runGeneralInquiryBatches(sql);
   const escalation = await runStaleUncontactedEscalation(sql);
-  return { released, repBatch, generalBatch, escalation };
+  let unmatchedApps: unknown = null;
+  try {
+    const { runUnmatchedLeaseAppDigest } = await import("./lease-app-import");
+    unmatchedApps = await runUnmatchedLeaseAppDigest(sql);
+  } catch {
+    unmatchedApps = { sent: 0, reason: "error" };
+  }
+  return { released, repBatch, generalBatch, escalation, unmatchedApps };
 }
 
 /** @deprecated Name kept for old cron imports — now runs scheduled batch logic. */

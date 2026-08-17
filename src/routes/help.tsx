@@ -163,7 +163,10 @@ function HelpPage() {
               <strong>Option 1</strong> is your working column. Options 2–3 start empty — use <strong>Copy from left</strong>, then tweak term/rate/residual.
             </li>
             <li>
-              <strong>Trade-in lien:</strong> net equity = trade-in − lien. Negative equity increases amount financed (cap. cost).
+              <strong>Origin (dealer / broker):</strong> pick Ferrari of Alberta, Marianetti, Lease Sniper, or add a partner on New Lead. Search finds them. Client emails stay partner-safe.
+            </li>
+            <li>
+              <strong>Trade-in tax credit (individuals):</strong> tax is calculated on (price − cash down − trade), but the payment is calculated on (price − cash down − trade + payout). Businesses get no tax credit. <strong>Financed</strong> payouts already include tax; <strong>leased</strong> buyouts are pre-tax so we fund buyout + tax.
             </li>
             <li>
               <strong>Cash down % / Residual %</strong> stay in sync with the dollar fields (based on price + profit). Cash down is taxed and reduces the loan balance; <strong>Security deposit</strong> is refundable, not taxed, and does not reduce the balance.
@@ -178,7 +181,7 @@ function HelpPage() {
               <strong>Share quote</strong> — opens a PDF of the options and sets the lead to <strong>Quote Sent</strong>. Allow pop-ups if the PDF tab is blocked.
             </li>
             <li>
-              <strong>Quote Accepted (Option n)</strong> — locks that option, builds contract + 1st invoice, stores the accepted PDF on the lead.
+              <strong>Staff accept</strong> locks an option in-house. <strong>Email lessee to accept</strong> sends a token link: they confirm that exact option (payment, term, cash down). We store time + IP. GSM <strong>Approve</strong> always emails the rep + Chris; referring dealer is on by default; lessee is off unless you check it. Add a one-line “what’s next.”
             </li>
             <li>
               <strong>Back to lead</strong> always saves a draft first so you don’t lose work.

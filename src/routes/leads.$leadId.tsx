@@ -5,6 +5,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, CalendarPlus, FileUp, Mail, Phone, Trash2, X } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { StageBadge } from "@/components/stage-badge";
+import { PartnerField } from "@/components/partner-field";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -35,6 +36,7 @@ import {
   deleteLeaseQuote,
   getMyProfile,
 } from "@/lib/crm/server";
+import { sendQuoteAcceptLink } from "@/lib/crm/quote-accept";
 import { CreditUnderwritingPanel } from "@/components/credit-underwriting-panel";
 import { listLeadCalendarEvents, upsertCalendarEvent } from "@/lib/crm/calendar";
 import { listTasks, setTaskStatus, upsertTask } from "@/lib/crm/tasks";
@@ -44,6 +46,8 @@ import {
   CALENDAR_EVENT_TYPES,
   LEAD_TABS,
   LEAD_TYPES,
+  leadTypeLabel,
+  leadDisplayName,
   REVIEW_STATUSES,
   SOURCES,
   STAGES,
@@ -65,6 +69,14 @@ import {
   formatRelative,
   toLocalInputValue,
 } from "@/lib/utils";
+import { compactEmailBody } from "@/lib/crm/email-text";
+
+function displayActivityBody(kind: string, body: string): string {
+  if (kind === "email" || /&nbsp;|email template/i.test(body || "")) {
+    return compactEmailBody(body, 6000);
+  }
+  return body || "";
+}
 
 
 /** Open HTML or PDF data URLs in a new tab (Blob URLs — browsers block huge data: PDFs as about:blank). */
@@ -158,6 +170,8 @@ function LeadDetail() {
   const [editFirst, setEditFirst] = useState("");
   const [editLast, setEditLast] = useState("");
   const [editParty, setEditParty] = useState<"individual" | "business">("individual");
+  const [editEntity, setEditEntity] = useState("");
+  const [editPartner, setEditPartner] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -186,6 +200,7 @@ function LeadDetail() {
     title: string | null;
     status: string;
     accepted_option: number | null;
+    selected_option?: number;
     created_at: string;
     pdf_name: string | null;
   }>>([]);
@@ -224,6 +239,8 @@ function LeadDetail() {
         "",
     );
     setEditParty(detail.lead.party_type === "business" ? "business" : "individual");
+    setEditEntity(detail.lead.legal_entity_name || "");
+    setEditPartner(detail.lead.partner_id || "");
     setEditPhone(detail.lead.phone || "");
     setEditEmail(detail.lead.email || "");
     setActivities(detail.activities);
@@ -276,6 +293,8 @@ function LeadDetail() {
       setEditFirst(updated.first_name || updated.name.split(" ")[0] || "");
       setEditLast(updated.last_name || updated.name.split(" ").slice(1).join(" ") || "");
       setEditParty(updated.party_type === "business" ? "business" : "individual");
+      setEditEntity(updated.legal_entity_name || "");
+      setEditPartner(updated.partner_id || "");
       setEditPhone(updated.phone || "");
       setEditEmail(updated.email || "");
       await load();
@@ -302,11 +321,17 @@ function LeadDetail() {
       toast.error("Add a phone or email");
       return;
     }
+    if (editParty === "business" && !editEntity.trim()) {
+      toast.error("Add the business name");
+      return;
+    }
     await patch({
       name,
       first_name: first || null,
       last_name: last || null,
       party_type: editParty,
+      legal_entity_name: editParty === "business" ? editEntity.trim() : null,
+      partner_id: editPartner || null,
       phone: phone || null,
       email: email || null,
     });
@@ -373,11 +398,21 @@ function LeadDetail() {
 
       <PageHeader
         title={lead.name}
-        description={[lead.phone, lead.email].filter(Boolean).join(" · ") || "No contact yet"}
+        description={[lead.party_type === "business" ? lead.legal_entity_name : null, lead.partner_name ? `via ${lead.partner_name}` : null, lead.phone, lead.email].filter(Boolean).join(" · ") || "No contact yet"}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button asChild size="sm" variant="outline">
-              <Link to="/quote" search={{ leadId: lead.id }}>
+              <Link
+                to="/quote"
+                search={{
+                  leadId: lead.id,
+                  quoteId:
+                    savedQuotes.find(
+                      (q) =>
+                        q.status === "accepted" || q.id === lead.accepted_quote_id,
+                    )?.id || savedQuotes[0]?.id,
+                }}
+              >
                 Lease quote
               </Link>
             </Button>
@@ -424,16 +459,16 @@ function LeadDetail() {
                 "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
                 lead.lead_type === "lease"
                   ? "border-accent-foreground/30 bg-accent text-accent-foreground"
-                  : lead.lead_type === "general"
-                    ? "border-border bg-muted text-foreground"
-                    : "border-primary/40 bg-primary/15 text-primary",
+                  : lead.lead_type === "wholesale"
+                    ? "border-amber-700/40 bg-amber-500/15 text-amber-900 dark:text-amber-200"
+                    : lead.lead_type === "cash"
+                      ? "border-sky-700/40 bg-sky-500/15 text-sky-900 dark:text-sky-200"
+                      : lead.lead_type === "general"
+                        ? "border-border bg-muted text-foreground"
+                        : "border-primary/40 bg-primary/15 text-primary",
               )}
             >
-              {lead.lead_type === "lease"
-                ? "Lease"
-                : lead.lead_type === "general"
-                  ? "General"
-                  : "Inventory"}
+              {leadTypeLabel(lead.lead_type)}
             </span>
             <StageBadge stage={lead.stage} />
           </div>
@@ -641,7 +676,7 @@ function LeadDetail() {
                       </span>
                       <span>{formatRelative(a.created_at)}</span>
                     </div>
-                    <p className="whitespace-pre-wrap text-sm">{a.body}</p>
+                    <p className="whitespace-pre-wrap text-sm">{displayActivityBody(a.kind, a.body)}</p>
                   </div>
                 ))}
               </div>
@@ -905,6 +940,36 @@ function LeadDetail() {
                           Reopen
                         </Link>
                       </Button>
+                      {q.status !== "accepted" ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!lead.email) {
+                              toast.error("Add the client email first");
+                              return;
+                            }
+                            setBusy(true);
+                            try {
+                              const res = await sendQuoteAcceptLink({
+                                data: {
+                                  quoteId: q.id,
+                                  optionNumber: q.selected_option || 1,
+                                  email: lead.email,
+                                },
+                              });
+                              toast.success(`Accept link sent to ${res.email}`);
+                            } catch (e) {
+                              toast.error(e instanceof Error ? e.message : "Send failed");
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        >
+                          Email accept link
+                        </Button>
+                      ) : null}
                       <Button
                         size="sm"
                         variant="outline"
@@ -1037,6 +1102,22 @@ function LeadDetail() {
                   </SelectContent>
                 </Select>
               </Field>
+              <PartnerField
+                value={editPartner}
+                onChange={(id) => setEditPartner(id)}
+                disabled={busy}
+              />
+              {editParty === "business" ? (
+                <Field label="Business name">
+                  <Input
+                    value={editEntity}
+                    onChange={(e) => setEditEntity(e.target.value)}
+                    placeholder="Legal company name"
+                    disabled={busy}
+                    className="h-11"
+                  />
+                </Field>
+              ) : null}
               <Field label="Phone">
                 <div className="flex gap-2">
                   <Input
@@ -1164,7 +1245,7 @@ function LeadDetail() {
                 </Select>
               </Field>
 
-              {lead.lead_type === "inventory" ? (
+              {["inventory", "cash", "wholesale"].includes(lead.lead_type) ? (
                 <Field label="Inventory unit">
                   <Select
                     value={lead.inventory_id || "none"}
@@ -1204,6 +1285,20 @@ function LeadDetail() {
                   onBlur={(e) => {
                     if (e.target.value !== (lead.vehicle_interest || "")) {
                       void patch({ vehicle_interest: e.target.value || null });
+                    }
+                  }}
+                  disabled={busy}
+                />
+              </Field>
+
+              <Field label="Where the car went / sold to">
+                <Input
+                  defaultValue={lead.destination || ""}
+                  key={lead.destination || "dest"}
+                  placeholder="Buyer, dealer, city…"
+                  onBlur={(e) => {
+                    if (e.target.value !== (lead.destination || "")) {
+                      void patch({ destination: e.target.value || null });
                     }
                   }}
                   disabled={busy}

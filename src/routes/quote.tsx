@@ -1,5 +1,5 @@
-import { createFileRoute, Link, useSearch } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { AuthGate, PageHeader } from "@/components/app-shell";
@@ -41,6 +41,7 @@ import type { InventoryItem, Lead } from "@/lib/crm/types";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { getMyProfile } from "@/lib/crm/server";
 import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
+import { sendQuoteAcceptLink } from "@/lib/crm/quote-accept";
 import { Check, Calculator, FolderOpen, Mail, Printer, Save, Search, Trash2 } from "lucide-react";
 
 
@@ -67,10 +68,22 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function pickPreferredQuote(
+  rows: Array<{ id: string; status: string }>,
+  requested?: string,
+): string | null {
+  if (requested && rows.some((r) => r.id === requested)) return requested;
+  const accepted = rows.find((r) => r.status === "accepted");
+  if (accepted) return accepted.id;
+  return rows[0]?.id ?? null;
+}
+
 function QuotePage() {
   const search = useSearch({ from: "/quote" });
+  const navigate = useNavigate();
   const save = useServerFn(saveLeaseQuote);
   const acceptFn = useServerFn(acceptLeaseQuoteOption);
+  const sendAcceptFn = useServerFn(sendQuoteAcceptLink);
   const getQuoteFn = useServerFn(getLeaseQuote);
   const deleteQuoteFn = useServerFn(deleteLeaseQuote);
   const decodeVinFn = useServerFn(decodeVin);
@@ -94,6 +107,7 @@ function QuotePage() {
   const [leadId, setLeadId] = useState(search.leadId || "");
   const [quoteId, setQuoteId] = useState<string | null>(search.quoteId || null);
   const [salesman, setSalesman] = useState("");
+  const openedQuoteRef = useRef<string | null>(search.quoteId || null);
 
   const [client, setClient] = useState<ClientQuoteInfo>({
     clientName: "",
@@ -128,6 +142,13 @@ function QuotePage() {
     daysLeftOverride: null,
     contractStyle: "qc_individual_en",
     partyType: "individual",
+    tradeVin: "",
+    tradeYear: null,
+    tradeMake: "",
+    tradeModel: "",
+    tradeTrim: "",
+    tradeKm: null,
+    tradeKind: "financed",
   });
 
   const [options, setOptions] = useState<LeaseOptionInput[]>([
@@ -139,10 +160,11 @@ function QuotePage() {
   async function refreshSaved(forLead = leadId) {
     if (!forLead) {
       setSaved([]);
-      return;
+      return [];
     }
     const rows = await listLeaseQuotes({ data: { leadId: forLead } });
     setSaved(rows);
+    return rows;
   }
 
   useEffect(() => {
@@ -161,15 +183,25 @@ function QuotePage() {
   }, [user?.id]);
 
   useEffect(() => {
-    void refreshSaved(leadId);
+    let cancelled = false;
+    void (async () => {
+      if (!leadId) {
+        setSaved([]);
+        return;
+      }
+      const rows = await refreshSaved(leadId);
+      if (cancelled) return;
+      const preferred = pickPreferredQuote(rows, search.quoteId);
+      if (preferred && openedQuoteRef.current !== preferred) {
+        openedQuoteRef.current = preferred;
+        await loadQuote(preferred, { silent: true, syncUrl: true });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leadId]);
-
-  useEffect(() => {
-    if (!search.quoteId) return;
-    void loadQuote(search.quoteId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search.quoteId]);
+  }, [leadId, search.quoteId]);
 
   useEffect(() => {
     if (!leadId) return;
@@ -177,9 +209,14 @@ function QuotePage() {
       .then((res) => {
         const lead = res?.lead;
         if (!lead) return;
+        // A saved quote owns the form — don't overwrite with a generic lead template
+        if (openedQuoteRef.current) return;
         setClient((c) => ({
           ...c,
-          clientName: lead.name || c.clientName,
+          clientName:
+            lead.party_type === "business" && lead.legal_entity_name
+              ? lead.legal_entity_name
+              : lead.name || c.clientName,
           phone: lead.phone || c.phone,
           email: lead.email || c.email,
           notes: lead.notes || c.notes,
@@ -219,11 +256,22 @@ function QuotePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId, inventory.length]);
 
-  async function loadQuote(id: string) {
+  async function loadQuote(
+    id: string,
+    opts?: { silent?: boolean; syncUrl?: boolean },
+  ) {
     try {
       const q = await getQuoteFn({ data: { id } });
+      openedQuoteRef.current = q.id;
       setQuoteId(q.id);
       if (q.lead_id) setLeadId(q.lead_id);
+      if (opts?.syncUrl) {
+        void navigate({
+          to: "/quote",
+          search: { leadId: q.lead_id || leadId || undefined, quoteId: q.id },
+          replace: true,
+        });
+      }
       const payload = JSON.parse(q.payload) as {
         client: ClientQuoteInfo;
         options: LeaseOptionResult[];
@@ -235,6 +283,13 @@ function QuotePage() {
           daysLeftOverride: payload.client.daysLeftOverride ?? null,
           contractStyle: payload.client.contractStyle || "qc_individual_en",
           partyType: payload.client.partyType || "individual",
+          tradeVin: payload.client.tradeVin || "",
+          tradeYear: payload.client.tradeYear ?? null,
+          tradeMake: payload.client.tradeMake || "",
+          tradeModel: payload.client.tradeModel || "",
+          tradeTrim: payload.client.tradeTrim || "",
+          tradeKm: payload.client.tradeKm ?? null,
+          tradeKind: payload.client.tradeKind === "leased" ? "leased" : "financed",
         });
       }
       if (payload.options?.length) {
@@ -254,7 +309,7 @@ function QuotePage() {
           })),
         );
       }
-      toast.success("Quote reopened");
+      if (!opts?.silent) toast.success("Quote reopened");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not open quote");
     }
@@ -342,6 +397,36 @@ function QuotePage() {
     }
   }
 
+  async function explodeTradeVin() {
+    const vin = normalizeVin(client.tradeVin || "");
+    if (vin.length !== 17) {
+      toast.error("Enter the trade-in 17-character VIN first");
+      return;
+    }
+    setVinBusy(true);
+    try {
+      const result = await decodeVinFn({ data: { vin } });
+      if (!result.ok) {
+        toast.error(result.message);
+        setClient((c) => ({ ...c, tradeVin: result.vin || c.tradeVin }));
+        return;
+      }
+      setClient((c) => ({
+        ...c,
+        tradeVin: result.vin,
+        tradeYear: result.year ?? c.tradeYear,
+        tradeMake: result.make || c.tradeMake,
+        tradeModel: result.model || c.tradeModel,
+        tradeTrim: result.trim || c.tradeTrim,
+      }));
+      toast.success(`${result.message} · enter trade kilometres`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "VIN decode failed");
+    } finally {
+      setVinBusy(false);
+    }
+  }
+
   const taxRate = taxRateForProvince(client.province);
   const fees = {
     admin: client.adminFee,
@@ -360,7 +445,10 @@ function QuotePage() {
   const calculated: LeaseOptionResult[] = useMemo(
     () =>
       options.map((o) =>
-        calcLeaseOption(o, client.province || "QC", fees, proRataCtx),
+        calcLeaseOption(o, client.province || "QC", fees, proRataCtx, undefined, {
+          partyType: client.partyType,
+          tradeKind: client.tradeKind === "leased" ? "leased" : "financed",
+        }),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
@@ -388,10 +476,10 @@ function QuotePage() {
 
   function vehicleTotalForOption(i: number) {
     const o = options[i];
-    return Math.max(0, (o.cost || 0) + (o.profit || 0));
+    return Math.max(0, (o.cost || 0) + (o.extra || 0));
   }
 
-  /** Dollar amount drives % (and vice versa) against cost+extra+profit. */
+  /** Dollar amount drives % against sale price (pad is not in the sticker). */
   function setDepositDollar(i: number, dollars: number) {
     const vt = vehicleTotalForOption(i);
     patchOption(i, { deposit: dollars });
@@ -415,9 +503,14 @@ function QuotePage() {
     setBusy(true);
     try {
       await deleteQuoteFn({ data: { id } });
-      if (quoteId === id) setQuoteId(null);
+      if (quoteId === id) {
+        openedQuoteRef.current = null;
+        setQuoteId(null);
+      }
       toast.success("Quote deleted");
-      await refreshSaved();
+      const rows = await refreshSaved();
+      const next = pickPreferredQuote(rows);
+      if (next) await loadQuote(next, { silent: true, syncUrl: true });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Delete failed");
     } finally {
@@ -612,6 +705,30 @@ function QuotePage() {
     }
   }
 
+  async function onSendAcceptLink(optionNumber: number) {
+    if (!quoteId) {
+      toast.error("Save the quote first");
+      return;
+    }
+    const to = (client.email || "").trim();
+    if (!to || !to.includes("@")) {
+      toast.error("Add the client email on the quote, then try again");
+      return;
+    }
+    setBusy(true);
+    try {
+      await silentSave(false);
+      const res = await sendQuoteAcceptLink({
+        data: { quoteId, optionNumber, email: to },
+      });
+      toast.success(`Accept link sent to ${res.email}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not send accept link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onEmailInvoice() {
     if (!quoteId) {
       toast.error("Save and accept an option first so the first invoice exists");
@@ -711,7 +828,12 @@ function QuotePage() {
               saved.map((q) => (
                 <div
                   key={q.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border px-3 py-2 text-sm"
+                  className={
+                    "flex flex-wrap items-center justify-between gap-2 rounded-sm border px-3 py-2 text-sm " +
+                    (q.id === quoteId
+                      ? "border-primary bg-primary/5"
+                      : "border-border")
+                  }
                 >
                   <div>
                     <p className="font-medium">
@@ -728,7 +850,7 @@ function QuotePage() {
                       type="button"
                       size="sm"
                       variant="outline"
-                      onClick={() => void loadQuote(q.id)}
+                      onClick={() => void loadQuote(q.id, { syncUrl: true })}
                     >
                       <FolderOpen className="size-4" />
                       Reopen
@@ -863,6 +985,89 @@ function QuotePage() {
               </p>
             </div>
             <Field label="Stock #" value={client.stock} onChange={(v) => setClient((c) => ({ ...c, stock: v }))} />
+
+            <div className="sm:col-span-2 rounded-sm border border-border bg-muted/30 p-3 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">Trade-in vehicle</p>
+                <p className="text-[11px] text-muted-foreground">
+                  VIN explode fills year / make / model / trim for Chris on the contract. KM is manual.
+                </p>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Trade VIN</Label>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    value={client.tradeVin || ""}
+                    onChange={(e) =>
+                      setClient((c) => ({
+                        ...c,
+                        tradeVin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, "").slice(0, 17),
+                      }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void explodeTradeVin();
+                      }
+                    }}
+                    placeholder="Trade-in 17-character VIN"
+                    className="font-mono tracking-wide uppercase"
+                    maxLength={17}
+                    autoComplete="off"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={vinBusy || normalizeVin(client.tradeVin || "").length !== 17}
+                    onClick={() => void explodeTradeVin()}
+                    className="shrink-0"
+                  >
+                    <Search className="size-4" />
+                    {vinBusy ? "Decoding…" : "Explode VIN"}
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Trade year" value={client.tradeYear?.toString() || ""} onChange={(v) => setClient((c) => ({ ...c, tradeYear: v ? Number(v) : null }))} />
+                <Field label="Trade make" value={client.tradeMake || ""} onChange={(v) => setClient((c) => ({ ...c, tradeMake: v }))} />
+                <Field label="Trade model" value={client.tradeModel || ""} onChange={(v) => setClient((c) => ({ ...c, tradeModel: v }))} />
+                <Field label="Trade trim" value={client.tradeTrim || ""} onChange={(v) => setClient((c) => ({ ...c, tradeTrim: v }))} />
+                <Field
+                  label="Trade kilometres"
+                  value={client.tradeKm != null ? String(client.tradeKm) : ""}
+                  onChange={(v) => setClient((c) => ({ ...c, tradeKm: v.trim() ? Number(v) || 0 : null }))}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Trade payout</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={client.tradeKind !== "leased" ? "default" : "outline"}
+                    onClick={() => setClient((c) => ({ ...c, tradeKind: "financed" }))}
+                  >
+                    Financed (payout includes tax)
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={client.tradeKind === "leased" ? "default" : "outline"}
+                    onClick={() => setClient((c) => ({ ...c, tradeKind: "leased" }))}
+                  >
+                    Leased (buyout is pre-tax)
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {client.partyType === "business"
+                    ? "Business: no consumer tax credit on the trade or the payout. Lien is added as entered."
+                    : client.tradeKind === "leased"
+                      ? "Lease buyout is pre-tax — we fund buyout + GST/QST (or HST) on the payout. Tax credit still uses price − trade (not the lien)."
+                      : "Bank loan payout already includes tax — we fund the lien as entered. Individual tax credit: tax the (price − trade) payment, finance the (price − trade + payout) payment."}
+                </p>
+              </div>
+            </div>
+
             <Field
               label="KM allowance (per year)"
               value={String(client.kmPerYear || "")}
@@ -885,14 +1090,20 @@ function QuotePage() {
               }
             />
             <p className="text-[11px] text-muted-foreground -mt-1">
-              Pro-rata uses today's date automatically. Override only if delivery is a different day.
+              Leave blank to auto-calc from today. Type <strong>0</strong> to charge no pro-rata.
             </p>
             <Field label="Salesman" value={client.salesman} onChange={(v) => setClient((c) => ({ ...c, salesman: v }))} />
             <div className="grid gap-1.5">
               <Label>Contract style</Label>
               <Select
                 value={client.contractStyle}
-                onValueChange={(v) => setClient((c) => ({ ...c, contractStyle: v }))}
+                onValueChange={(v) =>
+                  setClient((c) => ({
+                    ...c,
+                    contractStyle: v,
+                    partyType: /business/i.test(v) ? "business" : "individual",
+                  }))
+                }
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -919,7 +1130,8 @@ function QuotePage() {
             <MoneyField label="License" value={client.license} onChange={(v) => setClient((c) => ({ ...c, license: v }))} />
             <MoneyField label="Tire tax" value={client.tireTax} onChange={(v) => setClient((c) => ({ ...c, tireTax: v }))} />
             <p className="text-xs text-muted-foreground">
-              Pro-rata = payment × (days left ÷ days in month). Tax:{" "}
+              Pro-rata = payment × (days left ÷ days in month). Type 0 days for $0. Tax on pro-rata
+              is the <strong>full</strong> provincial / HST rate (not the NAV monthly code). Tax:{" "}
               <strong>
                 {client.province?.toUpperCase() === "BC"
                   ? (() => {
@@ -972,7 +1184,7 @@ function QuotePage() {
             </CardHeader>
             <CardContent className="space-y-2">
               <MoneyField label="Cost / price" value={options[i].cost} onChange={(v) => patchOption(i, { cost: v })} />
-              <MoneyField label="Profit" value={options[i].profit} onChange={(v) => patchOption(i, { profit: v })} />
+              <MoneyField label="Pad (dealer / cap-cost pad)" value={options[i].profit} onChange={(v) => patchOption(i, { profit: v })} />
               <MoneyField label="Trade-in" value={options[i].tradeIn} onChange={(v) => patchOption(i, { tradeIn: v })} />
               <MoneyField
                 label="Trade-in lien amount"
@@ -1023,16 +1235,17 @@ function QuotePage() {
               <MoneyField label="Handling $ (default 0)" value={options[i].handling} onChange={(v) => patchOption(i, { handling: v })} />
 
               <div className="mt-3 space-y-1 rounded-sm border border-border bg-muted/40 p-3 text-xs">
+                <Row label="Price" value={formatMoney(o.salePrice)} bold />
+                {o.profit > 0 ? <Row label="Pad (in cap only — hidden on client quote)" value={formatMoney(o.profit)} /> : null}
                 <Row
-                  label="Price"
-                  value={formatMoney(o.cost + o.extra + o.profit)}
-                  bold
+                  label="Trade equity (allowance − payout we fund)"
+                  value={formatMoney((options[i].tradeIn || 0) - (o.payoutFunded || 0))}
                 />
-                <Row
-                  label="Trade equity (trade − lien)"
-                  value={formatMoney((options[i].tradeIn || 0) - (options[i].tradeInLien || 0))}
-                />
-                <Row label="Financed (cap. cost)" value={formatMoney(o.financed)} bold />
+                <Row label="Payout we fund" value={formatMoney(o.payoutFunded || 0)} />
+                <Row label="Payment cap (financed)" value={formatMoney(o.financed)} bold />
+                {o.taxCreditApplied ? (
+                  <Row label="Tax cap (price − trade − cash down)" value={formatMoney(o.taxCapCost)} />
+                ) : null}
                 <Row label="Cash down" value={formatMoney(o.deposit)} bold />
                 <Row label="Cash down %" value={`${o.depositPct.toFixed(1)}%`} />
                 <Row label="Security deposit" value={formatMoney(o.securityDeposit || 0)} bold />
@@ -1051,11 +1264,69 @@ function QuotePage() {
                     <Row label="TRV (gross cap)" value={formatMoney(o.trv)} />
                     <Row label="Buyout tax (end)" value={formatMoney(o.residualTax)} />
                   </>
+                ) : o.taxProvince === "QC" ? (
+                  <>
+                    <Row
+                      label={`GST ${(o.gstRate * 100).toFixed(2)}%${o.taxCreditApplied ? " on tax-cap pmt" : ""}`}
+                      value={formatMoney(o.gstOnPayment)}
+                    />
+                    <Row
+                      label={`QST ${(o.pstRate * 100).toFixed(3)}%${o.taxCreditApplied ? " on tax-cap pmt" : ""}`}
+                      value={formatMoney(o.pstOnPayment)}
+                    />
+                    <Row label="Taxes total" value={formatMoney(o.taxOnPayment)} bold />
+                    {o.taxCreditApplied ? (
+                      <Row
+                        label="NAV tax codes"
+                        value={`GST ${(o.effectiveGstRate * 100).toFixed(4)}% · QST ${(o.effectivePstRate * 100).toFixed(4)}%`}
+                      />
+                    ) : null}
+                  </>
+                ) : o.pstRate > 0 ? (
+                  <>
+                    <Row
+                      label={`GST ${(o.gstRate * 100).toFixed(2)}%${o.taxCreditApplied ? " on tax-cap pmt" : ""}`}
+                      value={formatMoney(o.gstOnPayment)}
+                    />
+                    <Row
+                      label={`PST ${(o.pstRate * 100).toFixed(2)}%${o.taxCreditApplied ? " on tax-cap pmt" : ""}`}
+                      value={formatMoney(o.pstOnPayment)}
+                    />
+                    <Row label="Taxes total" value={formatMoney(o.taxOnPayment)} bold />
+                    {o.taxCreditApplied ? (
+                      <Row
+                        label="NAV tax codes (monthly / BC)"
+                        value={`GST ${(o.effectiveGstRate * 100).toFixed(4)}% · PST ${(o.effectivePstRate * 100).toFixed(4)}%`}
+                      />
+                    ) : null}
+                  </>
                 ) : (
-                  <Row label="Taxes" value={formatMoney(o.taxOnPayment)} bold />
+                  <>
+                    <Row
+                      label={
+                        o.taxCreditApplied
+                          ? `HST/GST ${(o.gstRate * 100).toFixed(2)}% on tax-cap pmt`
+                          : `HST/GST ${(o.gstRate * 100).toFixed(2)}%`
+                      }
+                      value={formatMoney(o.taxOnPayment)}
+                      bold
+                    />
+                    {o.taxCreditApplied ? (
+                      <Row
+                        label="NAV tax code (monthly / BC)"
+                        value={`${(o.effectiveGstRate * 100).toFixed(4)}%`}
+                      />
+                    ) : null}
+                  </>
                 )}
                 <Row label="Total payment" value={formatMoney(o.totalPayment)} bold />
+                <Row label="Admin / document" value={formatMoney(o.admin)} />
+                <Row label="Anti-theft / tracker" value={formatMoney(o.tracker)} />
                 <Row label={`Pro-rata (${o.daysLeftMonth}/${o.daysInMonth}d)`} value={formatMoney(o.proRata)} />
+                <Row
+                  label={`Pro-rata tax (full ${o.taxProvince || "prov."} rate)`}
+                  value={formatMoney(o.proRataTax)}
+                />
                 <Row label="Due on delivery" value={formatMoney(o.dueTotal)} bold />
               </div>
 
@@ -1066,7 +1337,17 @@ function QuotePage() {
                 onClick={() => void onAccept(i + 1)}
               >
                 <Check className="size-4" />
-                Quote Accepted (Option {i + 1})
+                Staff accept Option {i + 1}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-1 w-full"
+                disabled={busy || !quoteId || !(o.cost > 0 || o.payment > 0)}
+                onClick={() => void onSendAcceptLink(i + 1)}
+              >
+                <Mail className="size-4" />
+                Email lessee to accept Option {i + 1}
               </Button>
             </CardContent>
           </Card>
@@ -1077,7 +1358,7 @@ function QuotePage() {
       <p className="text-center text-xs text-muted-foreground">
         Share quote opens a customer PDF and sets the lead to Quote Sent.
         Update draft / Back to lead save without changing stage.
-        Accept builds contract + invoice. Email 1st invoice sends the pro forma to the client email. Push to Drive is on the lead page.
+        Staff accept locks the option in-house. Email lessee to accept sends a token link that records the exact option, time, and IP. Email 1st invoice sends the pro forma to the client email. Push to Drive is on the lead page.
       </p>
       {leadId ? (
         <div className="mt-6 flex justify-center">
