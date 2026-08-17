@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, Zap } from "lucide-react";
+import { Search, X, Zap } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { StageBadge } from "@/components/stage-badge";
 import { Button } from "@/components/ui/button";
@@ -158,11 +158,30 @@ function LeadsPage() {
     setQApplied(q.trim());
   }
 
+  function clearFilters() {
+    setQ("");
+    setQApplied("");
+    setStage("all");
+    setAssigned("all");
+    setLeadType("all");
+    setPartner("all");
+    setOffset(0);
+  }
+
+  const filtersActive = Boolean(
+    qApplied ||
+      q ||
+      stage !== "all" ||
+      assigned !== "all" ||
+      leadType !== "all" ||
+      partner !== "all",
+  );
+
   return (
     <>
       <PageHeader
         title="Leads"
-        description="All deals — inventory, lease, cash, wholesale, and general inquiries."
+        description="All deals — inventory, lease, cash, wholesale, consignment, and general inquiries."
         actions={
           <Button asChild>
             <Link to="/capture">
@@ -179,7 +198,7 @@ function LeadsPage() {
             <div className="relative flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                className="h-11 pl-9"
+                className="h-11 pl-9 pr-9"
                 placeholder="Search name, dealer, business, phone, vehicle…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
@@ -187,6 +206,20 @@ function LeadsPage() {
                   if (e.key === "Enter") applySearch();
                 }}
               />
+              {q ? (
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label="Clear search"
+                  onClick={() => {
+                    setQ("");
+                    setQApplied("");
+                    setOffset(0);
+                  }}
+                >
+                  <X className="size-4" />
+                </button>
+              ) : null}
             </div>
             <Select
               value={leadType}
@@ -256,7 +289,7 @@ function LeadsPage() {
                 <SelectValue placeholder="Owner" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">My leads + unassigned</SelectItem>
+                <SelectItem value="all">Everyone</SelectItem>
                 <SelectItem value="unassigned">Unassigned only</SelectItem>
                 {profiles.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
@@ -268,6 +301,11 @@ function LeadsPage() {
             <Button variant="secondary" className="h-11" onClick={applySearch}>
               Apply
             </Button>
+            {filtersActive ? (
+              <Button variant="outline" className="h-11" onClick={clearFilters}>
+                Clear
+              </Button>
+            ) : null}
           </div>
 
           <p className="text-xs text-muted-foreground">
