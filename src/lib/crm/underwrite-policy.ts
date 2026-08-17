@@ -64,7 +64,7 @@ export function runUnderwritePolicy(input: UnderwriteInputs): PolicyResult {
   const oldCar = age != null && age > AGE_FLOOR;
   const nonCitizen = isNonCitizen(input.citizenship);
   const needsYieldFloor = nonCitizen || scoreLow || oldCar;
-  const yieldFloorPct = input.primeRate + 3;
+  const yieldFloorPct = input.primeRate + 4;
   const yieldOk =
     input.yieldPct == null ? null : !needsYieldFloor || input.yieldPct + 1e-6 >= yieldFloorPct;
 
@@ -89,7 +89,7 @@ export function runUnderwritePolicy(input: UnderwriteInputs): PolicyResult {
     flags.push({
       id: "yield_floor",
       severity: yieldOk === false ? "fail" : yieldOk ? "pass" : "warn",
-      label: `Yield must be ≥ prime + 3% (${yieldFloorPct.toFixed(2)}%)`,
+      label: `Yield must be ≥ prime + 4% (${yieldFloorPct.toFixed(2)}%)`,
       detail:
         input.yieldPct == null
           ? `Required because ${why}. No yield on file — accept a quote first.`

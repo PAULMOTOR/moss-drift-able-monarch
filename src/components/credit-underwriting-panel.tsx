@@ -17,7 +17,6 @@ import {
   runAiUnderwrite,
   type UnderwriteReport,
 } from "@/lib/crm/underwrite";
-import type { CitizenshipStatus } from "@/lib/crm/underwrite-policy";
 import {
   generateApprovedLeaseContract,
   getLeadContractPacket,
@@ -81,13 +80,7 @@ export function CreditUnderwritingPanel({
   const [docKinds, setDocKinds] = useState<string[]>([]);
   const [docEmail, setDocEmail] = useState("");
   const [uwReports, setUwReports] = useState<UnderwriteReport[]>([]);
-  const [showUw, setShowUw] = useState(false);
   const [uwBusy, setUwBusy] = useState(false);
-  const [uwScore, setUwScore] = useState("");
-  const [uwCitizen, setUwCitizen] = useState<CitizenshipStatus>("unknown");
-  const [uwMarket, setUwMarket] = useState("");
-  const [uwClaim, setUwClaim] = useState("");
-  const [uwNotes, setUwNotes] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -206,18 +199,20 @@ export function CreditUnderwritingPanel({
               size="sm"
               variant="outline"
               disabled={busy || uwBusy}
-              onClick={() => {
-                const last = uwReports[0];
-                const inp = last?.inputs;
-                setUwScore(inp?.creditScore != null ? String(inp.creditScore) : "");
-                setUwCitizen(inp?.citizenship || "unknown");
-                setUwMarket(inp?.marketValue != null ? String(inp.marketValue) : "");
-                setUwClaim(inp?.carfaxClaim != null ? String(inp.carfaxClaim) : "");
-                setUwNotes("");
-                setShowUw(true);
+              onClick={async () => {
+                setUwBusy(true);
+                try {
+                  const report = await runAiUnderwrite({ data: { leadId } });
+                  setUwReports((prev) => [report, ...prev]);
+                  toast.success("Underwrite ready — it read the file and the documents");
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Underwrite failed");
+                } finally {
+                  setUwBusy(false);
+                }
               }}
             >
-              Run AI underwrite
+              {uwBusy ? "Reading file…" : "Run AI underwrite"}
             </Button>
           ) : null}
           {canApprove && app.status === "pending_gsm" ? (
@@ -1076,107 +1071,6 @@ export function CreditUnderwritingPanel({
               }}
             >
               Send envelope
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={showUw} onOpenChange={setShowUw}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Run AI underwrite</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Second look for GSM / Admin. Does not approve the deal. Fill any blanks the file is
-            missing — score, status, market, Carfax claim.
-          </p>
-          <div className="grid gap-3">
-            <div>
-              <Label>Equifax score</Label>
-              <Input
-                className="mt-1"
-                inputMode="numeric"
-                value={uwScore}
-                onChange={(e) => setUwScore(e.target.value)}
-                placeholder="e.g. 712"
-              />
-            </div>
-            <div>
-              <Label>Status in Canada</Label>
-              <select
-                className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={uwCitizen}
-                onChange={(e) => setUwCitizen(e.target.value as CitizenshipStatus)}
-              >
-                <option value="unknown">Unknown / not set</option>
-                <option value="canadian_citizen">Canadian citizen</option>
-                <option value="permanent_resident">Permanent resident</option>
-                <option value="work_permit">Work permit</option>
-                <option value="student">Student / study permit</option>
-                <option value="other">Other / none of the above</option>
-              </select>
-            </div>
-            <div>
-              <Label>Canadian market value ($)</Label>
-              <Input
-                className="mt-1"
-                inputMode="decimal"
-                value={uwMarket}
-                onChange={(e) => setUwMarket(e.target.value)}
-                placeholder="Retail / CBB if you have it"
-              />
-            </div>
-            <div>
-              <Label>Carfax claim amount ($)</Label>
-              <Input
-                className="mt-1"
-                inputMode="decimal"
-                value={uwClaim}
-                onChange={(e) => setUwClaim(e.target.value)}
-                placeholder="0 if clean"
-              />
-            </div>
-            <div>
-              <Label>Notes for the reviewer</Label>
-              <Textarea
-                className="mt-1"
-                rows={3}
-                value={uwNotes}
-                onChange={(e) => setUwNotes(e.target.value)}
-                placeholder="Anything Chris or the rep flagged…"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowUw(false)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={uwBusy}
-              onClick={async () => {
-                setUwBusy(true);
-                try {
-                  const report = await runAiUnderwrite({
-                    data: {
-                      leadId,
-                      creditScore: uwScore.trim() ? Number(uwScore) : null,
-                      citizenship: uwCitizen,
-                      marketValue: uwMarket.trim() ? Number(uwMarket.replace(/,/g, "")) : null,
-                      carfaxClaim: uwClaim.trim() ? Number(uwClaim.replace(/,/g, "")) : null,
-                      reviewerNotes: uwNotes.trim() || undefined,
-                    },
-                  });
-                  setUwReports((prev) => [report, ...prev]);
-                  setShowUw(false);
-                  toast.success("Underwrite ready — read the card, then approve or send back");
-                } catch (e) {
-                  toast.error(e instanceof Error ? e.message : "Underwrite failed");
-                } finally {
-                  setUwBusy(false);
-                }
-              }}
-            >
-              {uwBusy ? "Reading the file…" : "Run underwrite"}
             </Button>
           </DialogFooter>
         </DialogContent>

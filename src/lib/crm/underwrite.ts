@@ -163,54 +163,188 @@ function mergeRecommendation(
   return ai;
 }
 
-async function callGrok(prompt: string): Promise<{ text: string; model: string }> {
+async function callGrok(
+  prompt: string,
+  attachments: Array<{ name: string; mime: string; dataUrl: string }>,
+): Promise<{ text: string; model: string; filesSent: string[] }> {
   const key = process.env.XAI_API_KEY?.trim();
   if (!key) {
     throw new Error("XAI_API_KEY is not set. Add it in Vercel, then Redeploy.");
   }
-  const models = [process.env.XAI_MODEL?.trim(), "grok-4.6", "grok-4", "grok-3"].filter(
+  const models = [process.env.XAI_MODEL?.trim(), "grok-4.6", "grok-4"].filter(
     (m): m is string => Boolean(m),
   );
-  let lastErr = "xAI request failed";
-  for (const model of models) {
-    const res = await fetch("https://api.x.ai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.15,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are the second-look credit underwriter for Paul Motor Leasing (Montreal). " +
-              "You re-do the salesman and credit manager's work. You never approve a deal yourself. " +
-              "You are conservative: we mitigate with large cash down; we do not approve anyone who looks shady or criminal. " +
-              "Reply with JSON only, no markdown.",
-          },
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
-    const body = await res.text();
-    if (!res.ok) {
-      lastErr = `xAI ${model} ${res.status}: ${body.slice(0, 240)}`;
-      continue;
+  const uploaded: string[] = [];
+  const filesSent: string[] = [];
+  try {
+    const fileParts: Array<Record<string, unknown>> = [];
+    const imageParts: Array<Record<string, unknown>> = [];
+    for (const f of attachments.slice(0, 12)) {
+      const parsed = parseDataUrl(f.dataUrl);
+      if (!parsed) continue;
+      if (parsed.buf.length > 12 * 1024 * 1024) {
+        filesSent.push(`${f.name} (skipped — over 12MB)`);
+        continue;
+      }
+      const isImage = parsed.mime.startsWith("image/");
+      if (isImage && parsed.buf.length < 4 * 1024 * 1024) {
+        imageParts.push({
+          type: "image_url",
+          image_url: { url: `data:${parsed.mime};base64,${parsed.buf.toString("base64")}`, detail: "high" },
+        });
+        filesSent.push(f.name);
+        continue;
+      }
+      const form = new FormData();
+      form.append(
+        "file",
+        new Blob([new Uint8Array(parsed.buf)], { type: parsed.mime || "application/pdf" }),
+        f.name,
+      );
+      form.append("purpose", "assistants");
+      const up = await fetch("https://api.x.ai/v1/files", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}` },
+        body: form,
+      });
+      const upText = await up.text();
+      if (!up.ok) {
+        filesSent.push(`${f.name} (upload failed)`);
+        continue;
+      }
+      let id = "";
+      try {
+        id = String((JSON.parse(upText) as { id?: string }).id || "");
+      } catch {
+        id = "";
+      }
+      if (!id) {
+        filesSent.push(`${f.name} (no file id)`);
+        continue;
+      }
+      uploaded.push(id);
+      fileParts.push({ type: "input_file", file_id: id });
+      filesSent.push(f.name);
     }
-    try {
-      const json = JSON.parse(body) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      const text = json.choices?.[0]?.message?.content?.trim() || "";
-      if (text) return { text, model };
-    } catch {
-      lastErr = "xAI returned unreadable JSON";
+
+    const system =
+      "You are the second-look credit underwriter for Paul Motor Leasing (Montreal). " +
+      "Open and read every attached document (Equifax, Carfax, IDs, bank statements, NOAs, listing photos). " +
+      "Extract score, claims, names, DOB, address, citizenship/visa. You never approve a deal yourself. " +
+      "Conservative: large cash down to mitigate; decline anyone shady or criminal. Reply with JSON only.";
+
+    let lastErr = "xAI request failed";
+    for (const model of models) {
+      // Responses API — PDFs as file_id
+      const resIn = await fetch("https://api.x.ai/v1/responses", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.15,
+          input: [
+            { role: "system", content: system },
+            {
+              role: "user",
+              content: [{ type: "input_text", text: prompt }, ...fileParts, ...imageParts.map((p) => ({
+                type: "input_image",
+                image_url: (p as { image_url: { url: string } }).image_url.url,
+              }))],
+            },
+          ],
+        }),
+      });
+      const resBody = await resIn.text();
+      if (resIn.ok) {
+        const text = extractResponseText(resBody);
+        if (text) return { text, model, filesSent };
+        lastErr = "xAI Responses returned empty text";
+      } else {
+        lastErr = `xAI Responses ${model} ${resIn.status}: ${resBody.slice(0, 220)}`;
+      }
+
+      // Chat Completions fallback (images + file_ids)
+      const chatContent: Array<Record<string, unknown>> = [
+        { type: "text", text: prompt },
+        ...imageParts,
+        ...fileParts.map((p) => ({ type: "file", file: { file_id: p.file_id } })),
+      ];
+      const chat = await fetch("https://api.x.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.15,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: chatContent },
+          ],
+        }),
+      });
+      const chatBody = await chat.text();
+      if (!chat.ok) {
+        lastErr = `xAI chat ${model} ${chat.status}: ${chatBody.slice(0, 220)}`;
+        continue;
+      }
+      try {
+        const json = JSON.parse(chatBody) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const text = json.choices?.[0]?.message?.content?.trim() || "";
+        if (text) return { text, model, filesSent };
+      } catch {
+        lastErr = "xAI chat returned unreadable JSON";
+      }
     }
+    throw new Error(lastErr);
+  } finally {
+    await Promise.all(
+      uploaded.map((id) =>
+        fetch(`https://api.x.ai/v1/files/${id}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${key}` },
+        }).catch(() => null),
+      ),
+    );
   }
-  throw new Error(lastErr);
+}
+
+function parseDataUrl(s: string): { mime: string; buf: Buffer } | null {
+  const m = String(s || "").match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
+  if (!m) return null;
+  const mime = m[1] || "application/octet-stream";
+  try {
+    const buf = m[2] ? Buffer.from(m[3], "base64") : Buffer.from(decodeURIComponent(m[3]));
+    if (!buf.length) return null;
+    return { mime, buf };
+  } catch {
+    return null;
+  }
+}
+
+function extractResponseText(body: string): string {
+  try {
+    const json = JSON.parse(body) as {
+      output_text?: string;
+      output?: Array<{ content?: Array<{ text?: string; type?: string }> }>;
+    };
+    if (json.output_text?.trim()) return json.output_text.trim();
+    const parts: string[] = [];
+    for (const item of json.output || []) {
+      for (const c of item.content || []) {
+        if (c.text) parts.push(c.text);
+      }
+    }
+    return parts.join("\n").trim();
+  } catch {
+    return "";
+  }
 }
 
 function parseAiJson(text: string): {
@@ -220,6 +354,10 @@ function parseAiJson(text: string): {
   red_flags: string[];
   id_consistency: string;
   suggested_cash_down: number | null;
+  credit_score: number | null;
+  citizenship: CitizenshipStatus | null;
+  market_value: number | null;
+  carfax_claim: number | null;
 } {
   const cleaned = text.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
   const start = cleaned.indexOf("{");
@@ -249,7 +387,22 @@ function parseAiJson(text: string): {
     red_flags,
     id_consistency: String(obj.id_consistency || "").slice(0, 500),
     suggested_cash_down: num(obj.suggested_cash_down),
+    credit_score: num(obj.credit_score),
+    citizenship: parseCitizenship(obj.citizenship),
+    market_value: num(obj.market_value),
+    carfax_claim: num(obj.carfax_claim),
   };
+}
+
+function parseCitizenship(v: unknown): CitizenshipStatus | null {
+  const s = String(v || "").toLowerCase().replace(/\s+/g, "_");
+  if (s === "canadian_citizen" || s === "citizen") return "canadian_citizen";
+  if (s === "permanent_resident" || s === "pr") return "permanent_resident";
+  if (s === "work_permit" || s === "work") return "work_permit";
+  if (s === "student" || s === "study_permit") return "student";
+  if (s === "other") return "other";
+  if (s === "unknown") return "unknown";
+  return null;
 }
 
 export const getBocPrime = createServerFn({ method: "GET" })
@@ -348,8 +501,13 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
        where application_id = $1`,
       [app?.id || ""],
     );
-    const docs = await sql.query<{ kind: string; file_name: string }>(
-      `select kind, file_name from credit_documents where application_id = $1`,
+    const docs = await sql.query<{
+      kind: string;
+      file_name: string;
+      mime_type: string | null;
+      file_data: string | null;
+    }>(
+      `select kind, file_name, mime_type, file_data from credit_documents where application_id = $1`,
       [app?.id || ""],
     );
 
@@ -376,48 +534,52 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
     const kycNotes = checklist.find((c) => c.item_key === "kyc")?.notes || "";
     const carfaxNotes = checklist.find((c) => c.item_key === "carfax_lien")?.notes || "";
 
+    const attachments: Array<{ name: string; mime: string; dataUrl: string; rank: number }> = [];
+    if (app?.equifax_file_data) {
+      attachments.push({
+        name: String(app.equifax_file_name || "Equifax.pdf"),
+        mime: "application/pdf",
+        dataUrl: String(app.equifax_file_data),
+        rank: 0,
+      });
+    }
+    for (const d of docs) {
+      if (!d.file_data) continue;
+      const kind = (d.kind || "").toLowerCase();
+      const rank =
+        kind.includes("equifax") ? 1 :
+        kind.includes("carfax") ? 2 :
+        kind.includes("id") || kind === "ids_verified" ? 3 :
+        kind.includes("visa") || kind === "status_visa" ? 4 :
+        kind.includes("bank") || kind.includes("noa") ? 5 :
+        8;
+      attachments.push({
+        name: `${d.kind || "doc"}-${d.file_name}`,
+        mime: d.mime_type || "application/octet-stream",
+        dataUrl: d.file_data,
+        rank,
+      });
+    }
+    attachments.sort((a, b) => a.rank - b.rank);
+
     const prime = await readBocPrime(sql);
-    const citizenship = data.citizenship || guessCitizenship(payload, visaNotes);
-    const creditScore =
-      data.creditScore ??
-      num(payload.credit_score) ??
-      num(equifaxNotes.match(/score[:\s]+(\d{3})/i)?.[1]);
-    const marketValue = data.marketValue ?? num(payload.market_value);
-    const carfaxClaim =
-      data.carfaxClaim ??
-      num(carfaxNotes.match(/claim[:\s$]+([\d,]+)/i)?.[1]);
-
-    const policyInput: UnderwriteInputs = {
-      yieldPct: quote.metrics?.yieldPct ?? null,
-      primeRate: prime,
-      creditScore,
-      citizenship,
-      vehicleYear: quote.metrics?.vehicleYear ?? null,
-      salePrice: quote.metrics?.salePrice ?? null,
-      marketValue,
-      carfaxClaim,
-      cashDown: quote.metrics?.cashDown ?? null,
-      financed: quote.metrics?.financed ?? null,
-    };
-    const policy = runUnderwritePolicy(policyInput);
-
     const safeApp = redactPayload(payload);
     const checkLines = [...VEHICLE_CHECKLIST, ...CUSTOMER_CHECKLIST].map((def) => {
       const row = checklist.find((c) => c.item_key === def.key);
       return `${row?.done ? "[x]" : "[ ]"} ${def.label}${row?.notes ? ` — ${row.notes}` : ""}`;
     });
 
-    const prompt = `Paul Motor lease file — produce a second underwrite.
-
-HARD POLICY (already computed — you must respect it):
-${JSON.stringify(policy, null, 2)}
+    const prompt = `Paul Motor lease file — open EVERY attached file (Equifax, Carfax, IDs, statements) and produce a second underwrite.
 
 QUOTE / STRUCTURE:
 ${JSON.stringify(quote.metrics, null, 2)}
 
 PRIME (Bank of Canada): ${prime}%
-Yield floor when non-citizen OR score < 690 OR car > 8 years: prime + 3% = ${policy.yieldFloorPct.toFixed(2)}%
-Carfax haircut = 20% of claim amount. Compare sale price to adjusted market.
+HARD RULES you must apply after reading the docs:
+- Yield floor when non-citizen OR Equifax score < 690 OR car > 8 years: prime + 4% = ${(prime + 4).toFixed(2)}%
+- Carfax haircut = 20% of the largest claim on the Carfax (e.g. $25,000 claim → $5,000 off market). Compare sale price to adjusted market.
+- Pad is internal cap-cost only — not part of the sale price the client sees.
+- Mitigate weak-but-real files with a large cash down. Decline shady / criminal / identity-inconsistent files.
 
 LEAD:
 ${JSON.stringify(
@@ -434,39 +596,66 @@ ${JSON.stringify(
   2,
 )}
 
-CREDIT APP (SIN redacted):
+CREDIT APP (SIN redacted — read the real name/DOB/address from the ID attachments):
 ${JSON.stringify(safeApp, null, 2)}
 
 CHECKLIST:
 ${checkLines.join("\n")}
 
-DOCUMENTS ON FILE (names only — do not invent contents you cannot see):
-${docs.map((d) => `- ${d.kind}: ${d.file_name}`).join("\n") || "(none)"}
+ATTACHED FILES (you must read these, not just the names):
+${attachments.map((d) => `- ${d.name}`).join("\n") || "(none on file)"}
 
-EQUIFAX NOTES: ${equifaxNotes.slice(0, 800) || "(none)"}
-KYC NOTES (staff Google/social/CanLII): ${kycNotes.slice(0, 800) || "(none — treat as incomplete)"}
-REVIEWER NOTES: ${data.reviewerNotes || "(none)"}
+EQUIFAX STAFF NOTES: ${equifaxNotes.slice(0, 800) || "(none)"}
+KYC STAFF NOTES: ${kycNotes.slice(0, 800) || "(none — treat as incomplete)"}
+CARFAX STAFF NOTES: ${carfaxNotes.slice(0, 400) || "(none)"}
+VISA / STATUS NOTES: ${visaNotes.slice(0, 400) || "(none)"}
 DO NOT PULL CREDIT: ${Boolean(app?.do_not_pull_credit)}
 
-Rules:
-- Compare names, DOB, address, phone, employer on the app vs checklist notes. Flag mismatches.
-- If IDs / Equifax / Carfax / visa lines are empty, call that out.
-- If KYC is thin, say what still needs to be checked (CanLII, news, LinkedIn) — do not invent criminal hits.
-- If anything looks fraudulent, identity-inconsistent, or criminal, recommendation = decline.
-- Prefer large cash down as the mitigator when the person is otherwise real.
-- Pad is internal cap-cost only; do not treat pad as a higher sale price.
-- Return JSON:
+Return JSON only:
 {
   "recommendation": "approve" | "approve_with_conditions" | "send_back" | "decline",
-  "summary": "8-14 sentences for the GSM",
+  "summary": "8-14 sentences for the GSM, citing what you saw on Equifax and Carfax",
   "conditions": ["concrete next items"],
   "red_flags": ["short bullets"],
-  "id_consistency": "one paragraph",
-  "suggested_cash_down": number or null
+  "id_consistency": "IDs vs credit app vs Equifax — one paragraph",
+  "suggested_cash_down": number or null,
+  "credit_score": number or null,
+  "citizenship": "canadian_citizen" | "permanent_resident" | "work_permit" | "student" | "other" | "unknown",
+  "market_value": number or null,
+  "carfax_claim": number or null
 }`;
 
-    const grok = await callGrok(prompt);
+    const grok = await callGrok(prompt, attachments);
     const ai = parseAiJson(grok.text);
+
+    const citizenship =
+      ai.citizenship ||
+      data.citizenship ||
+      guessCitizenship(payload, visaNotes);
+    const creditScore =
+      ai.credit_score ??
+      data.creditScore ??
+      num(payload.credit_score) ??
+      num(equifaxNotes.match(/score[:\s]+(\d{3})/i)?.[1]);
+    const marketValue = ai.market_value ?? data.marketValue ?? num(payload.market_value);
+    const carfaxClaim =
+      ai.carfax_claim ??
+      data.carfaxClaim ??
+      num(carfaxNotes.match(/claim[:\s$]+([\d,]+)/i)?.[1]);
+
+    const policyInput: UnderwriteInputs = {
+      yieldPct: quote.metrics?.yieldPct ?? null,
+      primeRate: prime,
+      creditScore,
+      citizenship,
+      vehicleYear: quote.metrics?.vehicleYear ?? null,
+      salePrice: quote.metrics?.salePrice ?? null,
+      marketValue,
+      carfaxClaim,
+      cashDown: quote.metrics?.cashDown ?? null,
+      financed: quote.metrics?.financed ?? null,
+    };
+    const policy = runUnderwritePolicy(policyInput);
     const recommendation = mergeRecommendation(policy, ai.recommendation);
     const conditions = [...ai.conditions];
     if (policy.blockPlainApprove && recommendation === "approve") {
@@ -479,6 +668,9 @@ Rules:
     }
     if (ai.id_consistency) {
       conditions.push(`ID / data consistency: ${ai.id_consistency}`);
+    }
+    if (grok.filesSent.length) {
+      conditions.push(`Documents read: ${grok.filesSent.join(", ")}`);
     }
 
     const inputsSnap: UnderwriteReport["inputs"] = {

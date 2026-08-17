@@ -454,7 +454,7 @@ function AdminPage() {
         <CardContent className="space-y-2">
           <p className="text-sm text-muted-foreground">
             Used on AI underwrite. Non-citizen, score under 690, or a car older than 8 years must
-            yield at least prime + 3%.
+            yield at least prime + 4%.
           </p>
           <div className="flex flex-wrap items-end gap-2">
             <div className="w-32">
