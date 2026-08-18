@@ -890,6 +890,7 @@ export const CUSTOMER_CHECKLIST: ChecklistDef[] = [
 export const LESSEE_DOC_TYPES = [
   { key: "personal_bank_statements", label: "Personal bank statements" },
   { key: "business_bank_statements", label: "Business bank statements" },
+  { key: "articles_of_incorporation", label: "Articles of incorporation" },
   { key: "noas", label: "NOAs" },
   { key: "tax_bill", label: "Tax bill" },
   { key: "t4", label: "T4" },
