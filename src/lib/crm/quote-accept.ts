@@ -309,7 +309,7 @@ export const sendQuoteAcceptLink = createServerFn({ method: "POST" })
       profileId: me.id,
       fromName: clientFacingFromName(me.name),
       replyTo: replyToForActor(me.email, me.name),
-      text: `Hi ${first},\n\n${referral.text ? referral.text + "\n\n" : ""}Please review and accept this exact lease option:\n\n${summary}\n\nAccept here (secure link, no password):\n${link}\n\nThis is not a vague agreement — the page shows these numbers. Clicking accept records the option, time, and your confirmation.\n\n— ${me.name}\nPaul Motor Leasing`,
+      text: `Hi ${first},\n\n${referral.text ? referral.text + "\n\n" : ""}Please review and accept this exact lease option:\n\n${summary}\n\nAccept here (secure link, no password):\n${link}\n\nThe page shows these numbers. Clicking accept records the option, time, and your confirmation.\n\n— ${me.name}\nPaul Motor Leasing`,
       html:
         `<div style="font-family:system-ui,sans-serif;max-width:560px;line-height:1.5">` +
         `<p>Hi ${first.replace(/</g, "")},</p>${referral.html}` +
@@ -323,7 +323,7 @@ export const sendQuoteAcceptLink = createServerFn({ method: "POST" })
         `<tr><td style="padding:4px 12px 4px 0;color:#555">Rate</td><td>${opt.ratePct.toFixed(2)}%</td></tr>` +
         `</table>` +
         `<p><a href="${link}" style="display:inline-block;background:#008272;color:#fff;padding:12px 20px;border-radius:4px;text-decoration:none;font-weight:600">Review & accept Option ${data.optionNumber}</a></p>` +
-        `<p style="font-size:13px;color:#555">This records the option you accepted, the time, and a confirmation — not a vague “I agree.”</p>` +
+        `<p style="font-size:13px;color:#555">This records the option you accepted, the time, and a confirmation.</p>` +
         `<p>— ${me.name.replace(/</g, "")}<br/>Paul Motor Leasing</p></div>`,
     });
     if (!mail.ok) throw new Error(mail.error || "Email failed to send");
