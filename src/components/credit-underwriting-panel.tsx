@@ -249,7 +249,7 @@ export function CreditUnderwritingPanel({
               onClick={async () => {
                 setUwBusy(true);
                 setUwError("");
-                toast.message("Reading the file and documents — this can take a minute");
+                toast.message("Fast underwrite — about 20 seconds");
                 try {
                   const report = await runAiUnderwrite({ data: { leadId } });
                   setUwReports((prev) => [report, ...prev.filter((r) => r.id !== report.id)]);
@@ -265,7 +265,7 @@ export function CreditUnderwritingPanel({
                     );
                     if (!reps.length) continue;
                     setUwReports(reps);
-                    if (reps[0] && !/Reading the file/.test(reps[0].summary || "")) {
+                    if (reps[0] && !/about 20 seconds|Reading the file/.test(reps[0].summary || "")) {
                       setUwError("");
                       toast.success("Underwrite ready");
                       break;
@@ -346,7 +346,7 @@ export function CreditUnderwritingPanel({
       <div ref={uwCardRef} className="space-y-2">
         {uwBusy ? (
           <div className="rounded-sm border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            Reading the file and documents — stay on this tab. The result appears here.
+            Reading the file… stay on this tab. Result appears here in about 20 seconds.
           </div>
         ) : null}
         {uwError && !uwBusy ? (
@@ -1439,7 +1439,9 @@ function recLabel(r: UnderwriteReport["recommendation"]) {
 }
 
 function UnderwriteCard({ report }: { report: UnderwriteReport }) {
-  const pending = report.model === "pending" || /Reading the file/.test(report.summary || "");
+  const pending =
+    report.model === "pending" ||
+    /about 20 seconds|Reading the file/.test(report.summary || "");
   const tone = pending
     ? "border-amber-300 bg-amber-50 text-amber-950"
     : report.recommendation === "approve"

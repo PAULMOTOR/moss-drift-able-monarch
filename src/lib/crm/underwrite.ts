@@ -19,7 +19,6 @@ function uid() {
 }
 
 const DEFAULT_PRIME = 4.95;
-const SENSITIVE_KEYS = /^(sin|ssn|social|credit_card|password)$/i;
 
 export type UnderwriteRecommendation =
   | "approve"
@@ -69,14 +68,30 @@ export async function readBocPrime(sql: Awaited<ReturnType<typeof getSql>>): Pro
   return Number.isFinite(n) && n > 0 && n < 30 ? n : DEFAULT_PRIME;
 }
 
-function redactPayload(raw: Record<string, string>): Record<string, string> {
+function compactAppPayload(raw: Record<string, string>): Record<string, string> {
+  const keep = [
+    "first_name",
+    "last_name",
+    "date_of_birth",
+    "dob",
+    "address",
+    "city",
+    "province",
+    "employer",
+    "occupation",
+    "income",
+    "income_notes",
+    "housing",
+    "status",
+    "citizenship",
+    "years_at_address",
+    "email",
+    "phone",
+  ];
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(raw || {})) {
-    if (SENSITIVE_KEYS.test(k)) {
-      out[k] = v?.trim() ? "[provided — redacted]" : "";
-      continue;
-    }
-    out[k] = String(v ?? "").slice(0, 400);
+  for (const k of keep) {
+    const v = raw[k];
+    if (v) out[k] = String(v).slice(0, 200);
   }
   return out;
 }
@@ -171,154 +186,105 @@ async function callGrok(
   if (!key) {
     throw new Error("XAI_API_KEY is not set. Add it in Vercel, then Redeploy.");
   }
-  const models = uniqueModels([process.env.XAI_MODEL?.trim(), "grok-4.6", "grok-4"]);
-  const uploaded: string[] = [];
+  const models = uniqueModels([
+    process.env.XAI_MODEL?.trim(),
+    "grok-4-fast-non-reasoning",
+    "grok-4-1-fast-non-reasoning",
+    "grok-4.6",
+  ]);
   const filesSent: string[] = [];
-  try {
-    const fileParts: Array<{ type: "input_file"; file_id: string }> = [];
-    const imageParts: Array<{ type: "input_image"; image_url: string }> = [];
-    const uploadOne = async (f: (typeof attachments)[number]) => {
-      const parsed = parseDataUrl(f.dataUrl);
-      if (!parsed) {
-        filesSent.push(`${f.name} (skipped — unreadable)`);
-        return;
+  const excerpts: string[] = [];
+  for (const f of attachments.slice(0, 5)) {
+    const parsed = parseDataUrl(f.dataUrl);
+    if (!parsed) {
+      filesSent.push(`${f.name} (skipped)`);
+      continue;
+    }
+    const mime = (parsed.mime || "").toLowerCase();
+    const name = f.name || "document";
+    if (mime.includes("pdf") || /\.pdf$/i.test(name)) {
+      const text = extractPdfPlain(parsed.buf);
+      if (text.length > 40) {
+        excerpts.push(`--- ${name} ---\n${text}`);
+        filesSent.push(name);
+      } else {
+        filesSent.push(`${name} (scan / no text)`);
       }
-      if (parsed.buf.length > 8 * 1024 * 1024) {
-        filesSent.push(`${f.name} (skipped — over 8MB)`);
-        return;
-      }
-      const mime = (parsed.mime || "").toLowerCase();
-      const isImage = /^image\/(jpeg|jpg|png|gif|webp)$/i.test(mime);
-      if (isImage && parsed.buf.length < 4 * 1024 * 1024) {
-        imageParts.push({
-          type: "input_image",
-          image_url: `data:${parsed.mime};base64,${parsed.buf.toString("base64")}`,
-        });
-        filesSent.push(f.name);
-        return;
-      }
-      const form = new FormData();
-      form.append(
-        "file",
-        new Blob([new Uint8Array(parsed.buf)], { type: parsed.mime || "application/pdf" }),
-        safeFileName(f.name, mime),
-      );
-      form.append("purpose", "assistants");
-      const up = await fetch("https://api.x.ai/v1/files", {
+      continue;
+    }
+    if (mime.startsWith("text/") || mime.includes("json") || mime.includes("csv")) {
+      excerpts.push(`--- ${name} ---\n${parsed.buf.toString("utf8").slice(0, 2500)}`);
+      filesSent.push(name);
+      continue;
+    }
+    filesSent.push(`${name} (image — not sent)`);
+  }
+
+  const system =
+    "You are a fast second-look credit underwriter for Paul Motor Leasing (Montreal). " +
+    "Use the structured file, staff notes, and any document text extracts. " +
+    "Conservative: large cash down to mitigate; decline shady or criminal files. " +
+    "You never approve a deal yourself. Reply with JSON only. Be brief.";
+
+  const user =
+    excerpts.length > 0
+      ? `${prompt}\n\nDOCUMENT TEXT EXTRACTS:\n${excerpts.join("\n\n").slice(0, 16000)}`
+      : prompt;
+
+  const ask = async (model: string) => {
+    let resIn: Response;
+    try {
+      resIn = await fetch("https://api.x.ai/v1/chat/completions", {
         method: "POST",
-        headers: { Authorization: `Bearer ${key}` },
-        body: form,
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.15,
+          max_tokens: 800,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+        }),
         signal: AbortSignal.timeout(20_000),
       });
-      const upText = await up.text();
-      if (!up.ok) {
-        filesSent.push(`${f.name} (upload failed)`);
-        return;
-      }
-      let id = "";
-      try {
-        id = String((JSON.parse(upText) as { id?: string }).id || "");
-      } catch {
-        id = "";
-      }
-      if (!id) {
-        filesSent.push(`${f.name} (no file id)`);
-        return;
-      }
-      uploaded.push(id);
-      fileParts.push({ type: "input_file", file_id: id });
-      filesSent.push(f.name);
-    };
-    await Promise.all(
-      attachments.slice(0, 4).map((f) =>
-        uploadOne(f).catch(() => {
-          filesSent.push(`${f.name} (upload error)`);
-        }),
-      ),
-    );
-
-    const system =
-      "You are the second-look credit underwriter for Paul Motor Leasing (Montreal). " +
-      "Open and read every attached document (Equifax, Carfax, IDs, bank statements, NOAs, listing photos). " +
-      "If the deal has guarantors, read each party's file and cite them separately. " +
-      "Extract score, claims, names, DOB, address, citizenship/visa. You never approve a deal yourself. " +
-      "Conservative: large cash down to mitigate; decline anyone shady or criminal. Reply with JSON only.";
-
-    const model = models[0] || "grok-4.6";
-
-    const ask = async (content: Array<Record<string, unknown>>, ms: number) => {
-      let resIn: Response;
-      try {
-        resIn = await fetch("https://api.x.ai/v1/responses", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            instructions: system,
-            store: false,
-            max_output_tokens: 2500,
-            input: [{ role: "user", content }],
-          }),
-          signal: AbortSignal.timeout(ms),
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        throw new Error(
-          /abort|timeout/i.test(msg)
-            ? "Grok timed out reading the documents. Try again."
-            : msg,
-        );
-      }
-      const resBody = await resIn.text();
-      if (resIn.ok) {
-        const text = extractResponseText(resBody);
-        if (text) return text;
-        throw new Error(`Grok returned no readable text (${summarizeResponse(resBody)})`);
-      }
-      throw new Error(`Grok ${model} ${resIn.status}: ${resBody.slice(0, 240)}`);
-    };
-
-    const fullContent: Array<Record<string, unknown>> = [
-      { type: "input_text", text: prompt },
-      ...fileParts,
-      ...imageParts,
-    ];
-
-    try {
-      const text = await ask(fullContent, 50_000);
-      return { text, model, filesSent };
-    } catch (first) {
-      const firstMsg = first instanceof Error ? first.message : String(first);
-      if (fileParts.length + imageParts.length > 0) {
-        const text = await ask(
-          [
-            {
-              type: "input_text",
-              text:
-                `${prompt}\n\nNOTE: Attached documents could not be opened (${firstMsg.slice(0, 180)}). ` +
-                `Underwrite from the structured file, checklists, and staff notes.`,
-            },
-          ],
-          30_000,
-        );
-        filesSent.push(`(files not read: ${firstMsg.slice(0, 140)})`);
-        return { text, model, filesSent };
-      }
-      throw new Error(firstMsg);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(/abort|timeout/i.test(msg) ? "Grok timed out. Try again." : msg);
     }
-  } finally {
-    await Promise.all(
-      uploaded.map((id) =>
-        fetch(`https://api.x.ai/v1/files/${id}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${key}` },
-        }).catch(() => null),
-      ),
-    );
+    const resBody = await resIn.text();
+    if (resIn.status === 404 || (resIn.status === 400 && /model/i.test(resBody))) {
+      throw new Error(`MODEL_UNAVAILABLE ${model}`);
+    }
+    if (!resIn.ok) {
+      throw new Error(`Grok ${model} ${resIn.status}: ${resBody.slice(0, 240)}`);
+    }
+    try {
+      const json = JSON.parse(resBody) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const text = String(json.choices?.[0]?.message?.content || "").trim();
+      if (text) return text;
+    } catch {
+      /* fall through */
+    }
+    throw new Error(`Grok returned no readable text (${resBody.slice(0, 120)})`);
+  };
+
+  let last = "No model available";
+  for (const model of models) {
+    try {
+      const text = await ask(model);
+      return { text, model, filesSent };
+    } catch (e) {
+      last = e instanceof Error ? e.message : String(e);
+      if (!last.startsWith("MODEL_UNAVAILABLE")) throw new Error(last);
+    }
   }
+  throw new Error(last);
 }
 
 function parseDataUrl(s: string): { mime: string; buf: Buffer } | null {
@@ -332,6 +298,48 @@ function parseDataUrl(s: string): { mime: string; buf: Buffer } | null {
   } catch {
     return null;
   }
+}
+
+function decodePdfLiteral(s: string): string {
+  return s
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "")
+    .replace(/\\t/g, " ")
+    .replace(/\\\(/g, "(")
+    .replace(/\\\)/g, ")")
+    .replace(/\\\\/g, "\\")
+    .replace(/\\(\d{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+function extractPdfPlain(buf: Buffer): string {
+  const src = buf.toString("latin1");
+  const parts: string[] = [];
+  const tj = /\(((?:\\.|[^\\)])*)\)\s*Tj/g;
+  let m: RegExpExecArray | null;
+  while ((m = tj.exec(src))) {
+    const t = decodePdfLiteral(m[1]).trim();
+    if (t) parts.push(t);
+  }
+  const tjArr = /\[([\s\S]*?)\]\s*TJ/g;
+  while ((m = tjArr.exec(src))) {
+    const inner = /\(((?:\\.|[^\\)])*)\)/g;
+    let im: RegExpExecArray | null;
+    while ((im = inner.exec(m[1]))) {
+      const t = decodePdfLiteral(im[1]).trim();
+      if (t) parts.push(t);
+    }
+  }
+  let text = parts.join(" ").replace(/\s+/g, " ").trim();
+  if (text.length < 80) {
+    const loose: string[] = [];
+    const any = /\(((?:\\.|[^\\)]){3,160})\)/g;
+    while ((m = any.exec(src))) {
+      const t = decodePdfLiteral(m[1]);
+      if (/[A-Za-z0-9]/.test(t)) loose.push(t);
+    }
+    text = loose.join(" ").replace(/\s+/g, " ").trim();
+  }
+  return text.slice(0, 5000);
 }
 
 function extractResponseText(body: string): string {
@@ -530,7 +538,7 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
         policy_json, inputs_json, model
       ) values (
         ${pendingId}, ${data.leadId}, ${null}, ${me.id}, ${me.name},
-        ${"send_back"}, ${"Reading the file and documents — this can take a minute."},
+        ${"send_back"}, ${"Running a fast underwrite — about 20 seconds."},
         ${"[]"}, ${"[]"}, ${"{}"}, ${"{}"}, ${"pending"}
       )
     `;
@@ -703,8 +711,8 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
         phone: String(row.applicant_phone || ""),
         status: String(row.status || ""),
         do_not_pull_credit: Boolean(row.do_not_pull_credit),
-        application: redactPayload(payloadOf(row)),
-        checklist: checks,
+        application: compactAppPayload(payloadOf(row)),
+        checklist: checks.filter((c) => c.startsWith("[x]") || c.includes(" — ")),
       };
     });
     const primaryChecks = checklist.filter((c) => String(c.application_id) === String(app?.id || ""));
@@ -713,62 +721,34 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
       return `${row?.done ? "[x]" : "[ ]"} ${def.label}${row?.notes ? ` — ${row.notes}` : ""}`;
     });
 
-    const prompt = `Paul Motor lease file — open EVERY attached file (Equifax, Carfax, IDs, statements) and produce a second underwrite of the COMPLETE deal (primary + every guarantor).
+    const prompt = `Fast underwrite — Paul Motor lease. Use staff notes + document extracts. 4–6 sentences.
 
-QUOTE / STRUCTURE:
-${JSON.stringify(quote.metrics, null, 2)}
+QUOTE: ${JSON.stringify(quote.metrics)}
+PRIME: ${prime}%
+RULES: yield floor prime+4% = ${(prime + 4).toFixed(2)}% if non-citizen OR score < 690 OR car > 8yrs. Carfax haircut = 20% of largest claim. Pad is internal only. Weak-but-real file → large cash down. Shady/criminal → decline. Weak guarantor does not auto-decline a strong primary.
 
-PRIME (Bank of Canada): ${prime}%
-HARD RULES you must apply after reading the docs:
-- Yield floor when non-citizen OR Equifax score < 690 OR car > 8 years: prime + 4% = ${(prime + 4).toFixed(2)}%
-- Carfax haircut = 20% of the largest claim on the Carfax (e.g. $25,000 claim → $5,000 off market). Compare sale price to adjusted market.
-- Pad is internal cap-cost only — not part of the sale price the client sees.
-- Mitigate weak-but-real files with a large cash down. Decline shady / criminal / identity-inconsistent files.
-- This file may include up to 2 guarantors. Analyze every party's IDs, Equifax, and application. A weak guarantor does not automatically decline a strong primary; identity fraud, criminal flags, or inconsistent IDs on ANY party are material.
+LEAD: ${JSON.stringify({
+      name: lead.name,
+      party: lead.party_type,
+      company: lead.legal_entity_name,
+      vehicle: lead.vehicle_interest,
+      status: lead.credit_status,
+    })}
 
-LEAD (deal / primary borrower):
-${JSON.stringify(
-  {
-    name: lead.name,
-    email: lead.email,
-    phone: lead.phone,
-    party: lead.party_type,
-    company: lead.legal_entity_name,
-    vehicle_interest: lead.vehicle_interest,
-    credit_status: lead.credit_status,
-  },
-  null,
-  2,
-)}
+PARTIES:
+${JSON.stringify(partyBlocks)}
 
-PARTIES (${partyBlocks.length} on this deal — analyze EVERYONE, not just the primary):
-${JSON.stringify(partyBlocks, null, 2)}
-
-PRIMARY CHECKLIST:
+CHECKLIST:
 ${checkLines.join("\n")}
 
-ATTACHED FILES (you must read these, not just the names):
-${attachments.map((d) => `- ${d.name}`).join("\n") || "(none on file)"}
+EQUIFAX NOTES: ${equifaxNotes.slice(0, 500) || "(none)"}
+KYC: ${kycNotes.slice(0, 400) || "(none)"}
+CARFAX: ${carfaxNotes.slice(0, 300) || "(none)"}
+VISA: ${visaNotes.slice(0, 200) || "(none)"}
+DO NOT PULL: ${Boolean(app?.do_not_pull_credit)}
 
-EQUIFAX STAFF NOTES: ${equifaxNotes.slice(0, 800) || "(none)"}
-KYC STAFF NOTES: ${kycNotes.slice(0, 800) || "(none — treat as incomplete)"}
-CARFAX STAFF NOTES: ${carfaxNotes.slice(0, 400) || "(none)"}
-VISA / STATUS NOTES: ${visaNotes.slice(0, 400) || "(none)"}
-DO NOT PULL CREDIT: ${Boolean(app?.do_not_pull_credit)}
-
-Return JSON only:
-{
-  "recommendation": "approve" | "approve_with_conditions" | "send_back" | "decline",
-  "summary": "8-14 sentences for the GSM, citing what you saw on Equifax and Carfax for the primary AND each guarantor",
-  "conditions": ["concrete next items"],
-  "red_flags": ["short bullets"],
-  "id_consistency": "IDs vs credit app vs Equifax for every party — one paragraph",
-  "suggested_cash_down": number or null,
-  "credit_score": number or null,
-  "citizenship": "canadian_citizen" | "permanent_resident" | "work_permit" | "student" | "other" | "unknown",
-  "market_value": number or null,
-  "carfax_claim": number or null
-}`;
+JSON only:
+{"recommendation":"approve"|"approve_with_conditions"|"send_back"|"decline","summary":"4-6 sentences","conditions":["..."],"red_flags":["..."],"id_consistency":"one line","suggested_cash_down":null,"credit_score":null,"citizenship":"canadian_citizen"|"permanent_resident"|"work_permit"|"student"|"other"|"unknown","market_value":null,"carfax_claim":null}`;
 
     let grok: { text: string; model: string; filesSent: string[] };
     let ai: ReturnType<typeof parseAiJson>;
