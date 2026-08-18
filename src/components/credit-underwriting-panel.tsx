@@ -246,12 +246,23 @@ export function CreditUnderwritingPanel({
               disabled={busy || uwBusy}
               onClick={async () => {
                 setUwBusy(true);
+                toast.message("Reading the file and documents — this can take a minute");
                 try {
                   const report = await runAiUnderwrite({ data: { leadId } });
-                  setUwReports((prev) => [report, ...prev]);
+                  setUwReports((prev) => [report, ...prev.filter((r) => r.id !== report.id)]);
                   toast.success("Underwrite ready — it read the file and the documents");
                 } catch (e) {
-                  toast.error(e instanceof Error ? e.message : "Underwrite failed");
+                  const msg =
+                    e instanceof Error && e.message
+                      ? e.message
+                      : typeof e === "string" && e
+                        ? e
+                        : "Underwrite timed out or failed. Refresh this Credit tab and try again.";
+                  toast.error(msg);
+                  const reps = await listUnderwriteReports({ data: { leadId } }).catch(
+                    (): UnderwriteReport[] => [],
+                  );
+                  if (reps.length) setUwReports(reps);
                 } finally {
                   setUwBusy(false);
                 }

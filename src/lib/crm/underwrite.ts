@@ -177,15 +177,15 @@ async function callGrok(
   try {
     const fileParts: Array<{ type: "input_file"; file_id: string }> = [];
     const imageParts: Array<{ type: "input_image"; image_url: string }> = [];
-    for (const f of attachments.slice(0, 16)) {
+    const uploadOne = async (f: (typeof attachments)[number]) => {
       const parsed = parseDataUrl(f.dataUrl);
       if (!parsed) {
         filesSent.push(`${f.name} (skipped — unreadable)`);
-        continue;
+        return;
       }
-      if (parsed.buf.length > 12 * 1024 * 1024) {
-        filesSent.push(`${f.name} (skipped — over 12MB)`);
-        continue;
+      if (parsed.buf.length > 8 * 1024 * 1024) {
+        filesSent.push(`${f.name} (skipped — over 8MB)`);
+        return;
       }
       const mime = (parsed.mime || "").toLowerCase();
       const isImage = /^image\/(jpeg|jpg|png|gif|webp)$/i.test(mime);
@@ -195,7 +195,7 @@ async function callGrok(
           image_url: `data:${parsed.mime};base64,${parsed.buf.toString("base64")}`,
         });
         filesSent.push(f.name);
-        continue;
+        return;
       }
       const form = new FormData();
       form.append(
@@ -208,11 +208,12 @@ async function callGrok(
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
         body: form,
+        signal: AbortSignal.timeout(20_000),
       });
       const upText = await up.text();
       if (!up.ok) {
         filesSent.push(`${f.name} (upload failed)`);
-        continue;
+        return;
       }
       let id = "";
       try {
@@ -222,12 +223,19 @@ async function callGrok(
       }
       if (!id) {
         filesSent.push(`${f.name} (no file id)`);
-        continue;
+        return;
       }
       uploaded.push(id);
       fileParts.push({ type: "input_file", file_id: id });
       filesSent.push(f.name);
-    }
+    };
+    await Promise.all(
+      attachments.slice(0, 8).map((f) =>
+        uploadOne(f).catch(() => {
+          filesSent.push(`${f.name} (upload error)`);
+        }),
+      ),
+    );
 
     const system =
       "You are the second-look credit underwriter for Paul Motor Leasing (Montreal). " +
@@ -236,7 +244,7 @@ async function callGrok(
       "Extract score, claims, names, DOB, address, citizenship/visa. You never approve a deal yourself. " +
       "Conservative: large cash down to mitigate; decline anyone shady or criminal. Reply with JSON only.";
 
-    let lastErr = "xAI request failed";
+    const model = models[0] || "grok-4.6";
     const fullContent: Array<Record<string, unknown>> = [
       { type: "input_text", text: prompt },
       ...fileParts,
@@ -244,15 +252,14 @@ async function callGrok(
     ];
     const compactContent: Array<Record<string, unknown>> = [
       { type: "input_text", text: prompt },
-      ...fileParts.slice(0, 6),
-      ...imageParts.slice(0, 4),
+      ...fileParts.slice(0, 4),
+      ...imageParts.slice(0, 3),
     ];
-    const payloads =
-      fileParts.length + imageParts.length > 8 ? [fullContent, compactContent] : [fullContent];
 
-    for (const model of models) {
-      for (const content of payloads) {
-        const resIn = await fetch("https://api.x.ai/v1/responses", {
+    const ask = async (content: Array<Record<string, unknown>>, ms: number) => {
+      let resIn: Response;
+      try {
+        resIn = await fetch("https://api.x.ai/v1/responses", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${key}`,
@@ -263,60 +270,36 @@ async function callGrok(
             instructions: system,
             input: [{ role: "user", content }],
           }),
+          signal: AbortSignal.timeout(ms),
         });
-        const resBody = await resIn.text();
-        if (resIn.ok) {
-          const text = extractResponseText(resBody);
-          if (text) return { text, model, filesSent };
-          lastErr = `xAI Responses ${model} returned no readable text`;
-          continue;
-        }
-        lastErr = `xAI Responses ${model} ${resIn.status}: ${resBody.slice(0, 280)}`;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(
+          /abort|timeout/i.test(msg)
+            ? "Grok timed out reading the documents. Try again."
+            : msg,
+        );
       }
-    }
+      const resBody = await resIn.text();
+      if (resIn.ok) {
+        const text = extractResponseText(resBody);
+        if (text) return text;
+        throw new Error(`Grok returned no readable text (${summarizeResponse(resBody)})`);
+      }
+      throw new Error(`Grok ${model} ${resIn.status}: ${resBody.slice(0, 240)}`);
+    };
 
-    // Chat completions cannot accept PDFs / file_ids. Images + text only.
-    if (fileParts.length === 0) {
-      for (const model of models) {
-        const chatContent: Array<Record<string, unknown>> = [
-          { type: "text", text: prompt },
-          ...imageParts.map((p) => ({
-            type: "image_url",
-            image_url: { url: p.image_url, detail: "high" },
-          })),
-        ];
-        const chat = await fetch("https://api.x.ai/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            temperature: 0.15,
-            messages: [
-              { role: "system", content: system },
-              { role: "user", content: chatContent },
-            ],
-          }),
-        });
-        const chatBody = await chat.text();
-        if (!chat.ok) {
-          lastErr = `xAI chat ${model} ${chat.status}: ${chatBody.slice(0, 220)}`;
-          continue;
-        }
-        try {
-          const json = JSON.parse(chatBody) as {
-            choices?: Array<{ message?: { content?: string } }>;
-          };
-          const text = json.choices?.[0]?.message?.content?.trim() || "";
-          if (text) return { text, model, filesSent };
-        } catch {
-          lastErr = "xAI chat returned unreadable JSON";
-        }
+    try {
+      const text = await ask(fullContent, 80_000);
+      return { text, model, filesSent };
+    } catch (first) {
+      const firstMsg = first instanceof Error ? first.message : String(first);
+      if (/ 400[:\s]/.test(firstMsg) && fileParts.length + imageParts.length > 4) {
+        const text = await ask(compactContent, 60_000);
+        return { text, model, filesSent };
       }
+      throw new Error(firstMsg);
     }
-    throw new Error(lastErr);
   } finally {
     await Promise.all(
       uploaded.map((id) =>
@@ -364,6 +347,20 @@ function extractResponseText(body: string): string {
     return parts.join("\n").trim();
   } catch {
     return "";
+  }
+}
+
+
+function summarizeResponse(body: string): string {
+  try {
+    const json = JSON.parse(body) as {
+      status?: string;
+      output?: Array<{ type?: string }>;
+    };
+    const types = (json.output || []).map((o) => o.type || "?").join(",") || "none";
+    return `status=${json.status || "ok"} output=${types}`;
+  } catch {
+    return body.slice(0, 120);
   }
 }
 
@@ -513,7 +510,10 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
     if (!lead) throw new Error("Lead not found");
 
     const apps = await sql.query<Record<string, unknown>>(
-      `select * from credit_applications where lead_id = $1
+      `select id, lead_id, status, party_type, payload, applicant_role, guarantor_slot,
+              applicant_name, applicant_email, applicant_phone, app_email,
+              do_not_pull_credit, equifax_notes, equifax_file_name, equifax_file_data
+       from credit_applications where lead_id = $1
        order by case when coalesce(applicant_role,'primary') = 'primary' then 0 else 1 end,
                 guarantor_slot nulls last, created_at`,
       [data.leadId],
@@ -549,16 +549,44 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
        where application_id in (select id from credit_applications where lead_id = $1)`,
       [data.leadId],
     );
-    const docs = await sql.query<{
+    const docMeta = await sql.query<{
+      id: string;
       application_id: string | null;
       kind: string;
       file_name: string;
       mime_type: string | null;
-      file_data: string | null;
     }>(
-      `select application_id, kind, file_name, mime_type, file_data from credit_documents where lead_id = $1`,
+      `select id, application_id, kind, file_name, mime_type
+       from credit_documents where lead_id = $1 and file_data is not null`,
       [data.leadId],
     );
+    const rankedMeta = [...docMeta].sort((a, b) => {
+      const rank = (kind: string) => {
+        const k = (kind || "").toLowerCase();
+        if (k.includes("equifax")) return 1;
+        if (k.includes("carfax")) return 2;
+        if (k.includes("id") || k === "ids_verified") return 3;
+        if (k.includes("visa") || k === "status_visa") return 4;
+        if (k.includes("bank") || k.includes("noa")) return 5;
+        return 8;
+      };
+      return rank(a.kind) - rank(b.kind);
+    });
+    const keepIds = rankedMeta.slice(0, 8).map((d) => d.id);
+    const docs = keepIds.length
+      ? await sql.query<{
+          id: string;
+          application_id: string | null;
+          kind: string;
+          file_name: string;
+          mime_type: string | null;
+          file_data: string | null;
+        }>(
+          `select id, application_id, kind, file_name, mime_type, file_data
+           from credit_documents where id = any($1::text[])`,
+          [keepIds],
+        )
+      : [];
 
     const quotes = await sql.query<{
       payload: unknown;
@@ -716,7 +744,7 @@ Return JSON only:
   "carfax_claim": number or null
 }`;
 
-    const grok = await callGrok(prompt, attachments);
+    const grok = await callGrok(prompt, attachments.slice(0, 8));
     const ai = parseAiJson(grok.text);
 
     const citizenship =

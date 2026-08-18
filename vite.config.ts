@@ -137,7 +137,18 @@ export default defineConfig(({ command }) => ({
     authPopupPlugin(),
     tailwindcss(),
     tanstackStart(),
-    ...(command === "build" ? [nitro({ preset: "vercel" })] : []),
+    ...(command === "build"
+      ? [
+          nitro({
+            preset: "vercel",
+            vercel: {
+              functions: {
+                maxDuration: 300,
+              },
+            },
+          }),
+        ]
+      : []),
     viteReact(),
   ],
 }));
