@@ -34,6 +34,9 @@ export const Route = createFileRoute("/api/health")({
           ),
           user: process.env.GMAIL_USER?.trim() || null,
           hasCronSecret: Boolean(process.env.CRON_SECRET?.trim()),
+          hasHandoffSecret: Boolean(
+            process.env.CRM_HANDOFF_SECRET?.trim() || process.env.HANDOFF_SECRET?.trim(),
+          ),
           configured: Boolean(
             process.env.GMAIL_CLIENT_ID?.trim() &&
               process.env.GMAIL_CLIENT_SECRET?.trim() &&
@@ -295,8 +298,8 @@ export const Route = createFileRoute("/api/health")({
         if (db.ok && !db.email_portal_column) {
           hints.push("DB missing email_portal column — redeploy so migration 0005 applies");
         }
-        if (!gmail.hasCronSecret) {
-          hints.push("CRON_SECRET not set — Vercel cron will get 401");
+        if (!gmail.hasHandoffSecret) {
+          hints.push("CRM_HANDOFF_SECRET not set — Palmetto Apply cannot post into the CRM");
         }
         if (!mail.hasResendKey) {
           hints.push(
@@ -333,6 +336,7 @@ export const Route = createFileRoute("/api/health")({
             betterAuthUrl,
             vercelUrl,
             crmSeedDemo,
+            hasHandoffSecret: gmail.hasHandoffSecret,
           },
           mail,
           resendProbe,
