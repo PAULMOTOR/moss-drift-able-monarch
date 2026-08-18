@@ -36,6 +36,7 @@ import { Route as ApiCronImportEmailsRouteImport } from './routes/api/cron/impor
 import { Route as ApiCronRemindersRouteImport } from './routes/api/cron/reminders'
 import { Route as ApiCronRemindersDailyRouteImport } from './routes/api/cron/reminders-daily'
 import { Route as ApiCronRemindersHourlyRouteImport } from './routes/api/cron/reminders-hourly'
+import { Route as ApiHandoffLeaseRouteImport } from './routes/api/handoff/lease'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -172,6 +173,11 @@ const ApiCronRemindersHourlyRoute = ApiCronRemindersHourlyRouteImport.update({
   path: '/api/cron/reminders-hourly',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiHandoffLeaseRoute = ApiHandoffLeaseRouteImport.update({
+  id: '/api/handoff/lease',
+  path: '/api/handoff/lease',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -201,6 +207,7 @@ export interface FileRoutesByFullPath {
   '/api/cron/reminders': typeof ApiCronRemindersRoute
   '/api/cron/reminders-daily': typeof ApiCronRemindersDailyRoute
   '/api/cron/reminders-hourly': typeof ApiCronRemindersHourlyRoute
+  '/api/handoff/lease': typeof ApiHandoffLeaseRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -229,6 +236,7 @@ export interface FileRoutesByTo {
   '/api/cron/reminders': typeof ApiCronRemindersRoute
   '/api/cron/reminders-daily': typeof ApiCronRemindersDailyRoute
   '/api/cron/reminders-hourly': typeof ApiCronRemindersHourlyRoute
+  '/api/handoff/lease': typeof ApiHandoffLeaseRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -259,6 +267,7 @@ export interface FileRoutesById {
   '/api/cron/reminders': typeof ApiCronRemindersRoute
   '/api/cron/reminders-daily': typeof ApiCronRemindersDailyRoute
   '/api/cron/reminders-hourly': typeof ApiCronRemindersHourlyRoute
+  '/api/handoff/lease': typeof ApiHandoffLeaseRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -290,6 +299,7 @@ export interface FileRouteTypes {
     | '/api/cron/reminders'
     | '/api/cron/reminders-daily'
     | '/api/cron/reminders-hourly'
+    | '/api/handoff/lease'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -318,6 +328,7 @@ export interface FileRouteTypes {
     | '/api/cron/reminders'
     | '/api/cron/reminders-daily'
     | '/api/cron/reminders-hourly'
+    | '/api/handoff/lease'
   id:
     | '__root__'
     | '/'
@@ -347,6 +358,7 @@ export interface FileRouteTypes {
     | '/api/cron/reminders'
     | '/api/cron/reminders-daily'
     | '/api/cron/reminders-hourly'
+    | '/api/handoff/lease'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -375,6 +387,7 @@ export interface RootRouteChildren {
   ApiCronRemindersRoute: typeof ApiCronRemindersRoute
   ApiCronRemindersDailyRoute: typeof ApiCronRemindersDailyRoute
   ApiCronRemindersHourlyRoute: typeof ApiCronRemindersHourlyRoute
+  ApiHandoffLeaseRoute: typeof ApiHandoffLeaseRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -568,6 +581,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCronRemindersHourlyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/handoff/lease': {
+      id: '/api/handoff/lease'
+      path: '/api/handoff/lease'
+      fullPath: '/api/handoff/lease'
+      preLoaderRoute: typeof ApiHandoffLeaseRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -609,6 +629,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCronRemindersRoute: ApiCronRemindersRoute,
   ApiCronRemindersDailyRoute: ApiCronRemindersDailyRoute,
   ApiCronRemindersHourlyRoute: ApiCronRemindersHourlyRoute,
+  ApiHandoffLeaseRoute: ApiHandoffLeaseRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
