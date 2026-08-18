@@ -483,16 +483,44 @@ export function buildDealFolderName(parts: {
   trim: string;
   lessee: string;
   guarantor: string;
+  companyName?: string | null;
+  contactName?: string | null;
+  isBusiness?: boolean;
 }): string {
   const vehicle = [parts.year, parts.make, parts.model, parts.trim]
     .map((x) => (x == null ? "" : String(x).trim()))
     .filter(Boolean)
     .join(" ");
-  const lessee = (parts.lessee || "Client").trim();
-  const guar = (parts.guarantor || "").trim();
-  const right =
-    guar && guar.toUpperCase() !== "N/A" ? `${lessee} (${guar})` : lessee;
-  return `${vehicle || "Vehicle"} - ${right}`.replace(/\s+/g, " ").trim();
+  const same = (a: string, b: string) =>
+    Boolean(a && b && a.trim().toLowerCase().replace(/\s+/g, " ") === b.trim().toLowerCase().replace(/\s+/g, " "));
+  const company = (parts.companyName || "").trim();
+  const contact = (parts.contactName || "").trim();
+  const lessee = (parts.lessee || "").trim();
+  const guarRaw = (parts.guarantor || "").trim();
+  const isBiz = Boolean(parts.isBusiness || company);
+  const companyLabel = isBiz ? company || lessee : "";
+  const personLabel = isBiz
+    ? contact && !same(contact, companyLabel)
+      ? contact
+      : lessee && !same(lessee, companyLabel)
+        ? lessee
+        : ""
+    : contact || lessee || "Client";
+  const guar =
+    guarRaw &&
+    guarRaw.toUpperCase() !== "N/A" &&
+    !same(guarRaw, personLabel) &&
+    !same(guarRaw, companyLabel)
+      ? guarRaw
+      : "";
+  let right: string;
+  if (isBiz && companyLabel) {
+    right = personLabel ? `${companyLabel} (${personLabel})` : companyLabel;
+  } else {
+    right = personLabel || "Client";
+  }
+  if (guar) right = `${right} (${guar})`;
+  return safeDriveFileName(`${vehicle || "Vehicle"} - ${right}`);
 }
 
 export function buildQuotePdfFileName(parts: {

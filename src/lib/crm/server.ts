@@ -2569,6 +2569,8 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       throw new Error("Corrupt quote");
     }
     const client = payload.client;
+    const personName = [lead.first_name, lead.last_name].filter(Boolean).join(" ").trim() || lead.name || "";
+    const companyName = (lead.legal_entity_name || "").trim();
     const folderName = (await driveApi()).buildDealFolderName({
       year: client.year,
       make: client.make,
@@ -2576,6 +2578,9 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
       trim: client.trim,
       lessee: client.clientName || lead.name,
       guarantor: client.guarantor || lead.guarantor || "",
+      companyName,
+      contactName: personName,
+      isBusiness: lead.party_type === "business" || Boolean(companyName),
     });
     const now = new Date();
     if (!(await driveApi()).isDriveConfigured()) {
