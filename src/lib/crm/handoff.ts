@@ -291,20 +291,6 @@ async function findOrCreateDealer(sql: Sql, input: PalmettoHandoffInput): Promis
   return id;
 }
 
-async function resolveLucasId(sql: Sql): Promise<string | null> {
-  const rows = await sql<{ id: string }>`
-    select id from profiles
-    where active = true
-      and (
-        lower(email) = 'lucasl@paulmotorcompany.com'
-        or lower(name) like 'lucas%'
-      )
-    order by case when lower(email) = 'lucasl@paulmotorcompany.com' then 0 else 1 end
-    limit 1
-  `;
-  return rows[0]?.id ?? null;
-}
-
 async function seedChecklist(sql: Sql, appId: string) {
   for (const item of VEHICLE_CHECKLIST) {
     await sql`
@@ -331,10 +317,6 @@ function money(n: number | null): string {
   }).format(n);
 }
 
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function websiteQuoteLines(input: PalmettoHandoffInput): string[] {
   return [
     input.price != null ? `Price ${money(input.price)}` : "",
@@ -346,17 +328,17 @@ function websiteQuoteLines(input: PalmettoHandoffInput): string[] {
   ].filter(Boolean);
 }
 
-/** Persist the Palmetto website numbers as a real CRM lease quote (Lease quote button). */
-async function persistWebsiteQuote(
+/** Persist Palmetto numbers as a real CRM lease quote (Lease quote button). */
+async function savePalmettoQuote(
   sql: Sql,
   leadId: string,
   input: PalmettoHandoffInput,
   name: string,
-  createdBy: string | null,
-): Promise<string | null> {
+): Promise<{ quoteId: string; monthly: number } | null> {
   if (input.price == null && input.monthly == null) return null;
-  const province = (input.province || "QC").toUpperCase() || "QC";
-  const start = todayIso();
+  const today = new Date().toISOString().slice(0, 10);
+  const province = (input.province || input.dealerProvince || "QC").slice(0, 2) || "QC";
+  const yearN = Number(input.year);
   const client: ClientQuoteInfo = {
     clientName: name,
     phone: input.phone,
@@ -366,8 +348,8 @@ async function persistWebsiteQuote(
     city: input.city,
     province,
     postalCode: input.postal,
-    salesman: "Palmetto website",
-    year: input.year ? Number(input.year) || null : null,
+    salesman: "",
+    year: Number.isFinite(yearN) && yearN > 1980 ? yearN : null,
     make: input.make,
     model: input.model,
     trim: input.trim,
@@ -379,22 +361,22 @@ async function persistWebsiteQuote(
     kmPerYear: 16000,
     excessKmFee: 0.9,
     quoteDate: new Date().toLocaleDateString("en-CA"),
-    deliveryDate: start,
-    startDate: start,
+    deliveryDate: today,
+    startDate: today,
     notes: [
-      "Website quote from Palmetto Apply.",
-      input.referenceId ? `Reference ${input.referenceId}` : "",
-      input.monthly != null ? `Monthly shown to customer: ${money(input.monthly)}` : "",
+      "Quoted on Palmetto — review before sharing.",
+      input.monthly != null ? `Palmetto showed ${money(input.monthly)}/mo.` : "",
+      input.referenceId ? `Ref ${input.referenceId}` : "",
     ]
       .filter(Boolean)
       .join(" "),
-    adminFee: 0,
-    trackerFee: 0,
+    adminFee: 999,
+    trackerFee: 795,
     lienPpsa: 0,
     license: 0,
     tireTax: 0,
     daysLeftOverride: null,
-    contractStyle: "qc_individual_en",
+    contractStyle: province === "QC" ? "qc_individual_en" : "ca_individual_en",
     partyType: "individual",
     tradeVin: "",
     tradeYear: null,
@@ -404,22 +386,30 @@ async function persistWebsiteQuote(
     tradeKm: null,
     tradeKind: "financed",
   };
-
+  const optIn = emptyOption({
+    cost: Math.max(0, input.price || 0),
+    extra: 0,
+    profit: 0,
+    deposit: Math.max(0, input.down || 0),
+    residual: Math.max(0, input.residual || 0),
+    termMonths: Math.max(1, Math.round(input.term || 36)),
+    ratePct: Math.max(0, input.rate || 6.99),
+    handling: 0,
+  });
   const computed = calcLeaseOption(
-    emptyOption({
-      cost: input.price || 0,
-      deposit: input.down || 0,
-      residual: input.residual || 0,
-      termMonths: input.term || 36,
-      ratePct: input.rate || 0,
-      handling: 0,
-    }),
+    optIn,
     province,
-    { admin: 0, tracker: 0, lienPpsa: 0, license: 0, tireTax: 0 },
-    { startDate: start },
+    {
+      admin: client.adminFee,
+      tracker: client.trackerFee,
+      lienPpsa: client.lienPpsa,
+      license: client.license,
+      tireTax: client.tireTax,
+    },
+    { startDate: client.startDate, daysLeftOverride: client.daysLeftOverride },
+    undefined,
+    { partyType: client.partyType, tradeKind: client.tradeKind },
   );
-
-  // Keep the monthly the customer saw on Palmetto; CRM engine can differ slightly.
   const option: LeaseOptionResult =
     input.monthly != null && Number.isFinite(input.monthly)
       ? {
@@ -428,30 +418,49 @@ async function persistWebsiteQuote(
           totalPayment: Math.round((input.monthly + computed.taxOnPayment) * 100) / 100,
         }
       : computed;
-
+  const blankFees = { admin: 0, tracker: 0, lienPpsa: 0, license: 0, tireTax: 0 };
+  const blanks: LeaseOptionResult[] = [
+    calcLeaseOption(emptyOption({ termMonths: 0, ratePct: 0 }), province, blankFees, {
+      startDate: client.startDate,
+    }),
+    calcLeaseOption(emptyOption({ termMonths: 0, ratePct: 0 }), province, blankFees, {
+      startDate: client.startDate,
+    }),
+  ];
+  const options: LeaseOptionResult[] = [option, blanks[0], blanks[1]];
   const taxRate = taxRateForProvince(province);
-  const html = buildRetailQuoteHtml(client, [option], taxRate);
+  const html = buildRetailQuoteHtml(client, options, taxRate);
   const quoteId = uid();
-  const title = `Palmetto · ${input.vehicle || name} · ${option.termMonths}mo`;
-  const payload = {
-    client,
-    options: [option],
-    taxRate,
-    selectedOption: 1,
-    source: "palmetto",
-  };
-
+  const title = `Palmetto · ${name} · ${input.vehicle || "lease"}`.slice(0, 160);
+  const payload = { client, options, taxRate, selectedOption: 1, source: "palmetto" };
+  let pdfName: string | null = null;
+  let pdfData: string | null = null;
+  try {
+    const { buildRetailQuotePdf, pdfDataUrl } = await import("./quote-pdf");
+    const buf = await buildRetailQuotePdf(client, options, taxRate, { acceptedOption: 1 });
+    pdfData = pdfDataUrl(buf);
+    pdfName = `Palmetto-${name.replace(/[^a-z0-9]+/gi, "-").slice(0, 40)}.pdf`;
+  } catch {
+    /* quote still opens without PDF */
+  }
   await sql`
     insert into lease_quotes (
-      id, lead_id, created_by, client_name, payload, retail_html,
-      selected_option, status, title
+      id, lead_id, created_by, client_name, payload, retail_html, selected_option, status,
+      title, pdf_name, pdf_data
     ) values (
-      ${quoteId}, ${leadId}, ${createdBy}, ${name},
-      ${JSON.stringify(payload)}::jsonb, ${html},
-      1, 'draft', ${title}
+      ${quoteId}, ${leadId}, null, ${name},
+      ${JSON.stringify(payload)}::jsonb, ${html}, 1, 'draft',
+      ${title}, ${pdfName}, ${pdfData}
     )
   `;
-  return quoteId;
+  await sql`
+    update leads set
+      quote_notes = ${`Palmetto quote · ${money(option.totalPayment)}/mo · ${optIn.termMonths} mo`},
+      estimated_value = ${input.price},
+      updated_at = now()
+    where id = ${leadId}
+  `;
+  return { quoteId, monthly: option.totalPayment };
 }
 
 export async function ingestPalmettoLease(
@@ -474,7 +483,6 @@ export async function ingestPalmettoLease(
   }
 
   const partnerId = await findOrCreateDealer(sql, input);
-  const assigned = await resolveLucasId(sql);
   const leadId = uid();
   const quoteLines = websiteQuoteLines(input);
   const notes = [
@@ -500,8 +508,8 @@ export async function ingestPalmettoLease(
         ${leadId}, ${name}, ${input.firstName || null}, ${input.lastName || null},
         'individual', ${input.phone || null}, ${input.email || null},
         'web', 'lease', ${notes}, ${input.vehicle || null},
-        ${assigned}, 'new', now(),
-        ${quoteLines.length > 0}, ${quoteLines.length > 0 ? new Date().toISOString() : null},
+        ${null}, 'new', now(),
+        false, null,
         ${quoteLines.join("\n") || null}, ${input.price}, ${partnerId},
         'app_submitted', ${input.referenceId || null}, null
       )
@@ -555,26 +563,16 @@ export async function ingestPalmettoLease(
   await sql`update leads set credit_app_id = ${appId}, updated_at = now() where id = ${leadId}`;
   await seedChecklist(sql, appId);
 
-  let quoteId: string | null = null;
-  try {
-    quoteId = await persistWebsiteQuote(sql, leadId, input, name, assigned);
-  } catch (e) {
+  const savedQuote = await savePalmettoQuote(sql, leadId, input, name).catch((e) => {
     console.error("[palmetto-handoff] lease quote persist failed", e);
-  }
-
-  const activityBody = [
-    `Palmetto Apply${input.referenceId ? ` · ${input.referenceId}` : ""}${input.dealerName ? ` · ${input.dealerName}` : ""}`,
-    input.vehicle || "",
-    ...quoteLines,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    return null;
+  });
 
   await sql`
     insert into lead_activities (id, lead_id, kind, body, created_by_name)
     values (
-      ${uid()}, ${leadId}, ${quoteId ? "quote" : "system"},
-      ${activityBody},
+      ${uid()}, ${leadId}, ${savedQuote ? "quote" : "system"},
+      ${`Palmetto Apply${input.referenceId ? ` · ${input.referenceId}` : ""}${input.dealerName ? ` · ${input.dealerName}` : ""}${savedQuote ? ` · quote saved ${money(savedQuote.monthly)}/mo` : ""} · unassigned`},
       ${"Palmetto"}
     )
   `;
@@ -583,10 +581,7 @@ export async function ingestPalmettoLease(
   const staff = await sql<{ email: string; name: string }>`
     select email, name from profiles
     where active = true
-      and (
-        role in ('gsm', 'admin', 'credit_manager')
-        or id = ${assigned}
-      )
+      and role in ('gsm', 'admin', 'credit_manager')
   `;
   const seen = new Set<string>();
   for (const r of staff) {
@@ -599,7 +594,7 @@ export async function ingestPalmettoLease(
       kind: "palmetto_handoff",
       leadId,
       text: [
-        `${name} applied on Palmetto.`,
+        `${name} applied on Palmetto. Unassigned — pick who works it.`,
         ``,
         `  Phone: ${input.phone || "—"}`,
         `  Email: ${input.email || "—"}`,
@@ -607,6 +602,7 @@ export async function ingestPalmettoLease(
         `  Dealer: ${input.dealerName || "—"}`,
         `  ${quoteLines.join(" · ") || "No quote numbers"}`,
         `  Consent: ${input.creditConsent ? "yes" : "not marked"}`,
+        savedQuote ? `  Saved quote: ${money(savedQuote.monthly)}/mo` : "",
         ``,
         link,
       ].join("\n"),
