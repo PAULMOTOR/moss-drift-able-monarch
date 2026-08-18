@@ -693,8 +693,13 @@ function LeadDetail() {
                   </Button>
                 </div>
               </form>
-              <div className="space-y-2 border-t border-border pt-4">
-                {activities.map((a) => (
+              <div className="h-[22rem] space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain rounded-lg border border-border bg-muted/10 p-2">
+                {activities.length === 0 ? (
+                  <p className="px-1 py-6 text-center text-xs text-muted-foreground">
+                    No activity yet.
+                  </p>
+                ) : (
+                  activities.map((a) => (
                   <div key={a.id} className="rounded-xl border border-border/70 bg-muted/20 p-3">
                     <div className="mb-1 flex justify-between text-xs text-muted-foreground">
                       <span className="capitalize text-foreground/80">
@@ -705,7 +710,8 @@ function LeadDetail() {
                     </div>
                     <p className="whitespace-pre-wrap text-sm">{displayActivityBody(a.kind, a.body)}</p>
                   </div>
-                ))}
+                  ))
+                )}
               </div>
             </CardContent>
           </Card>
