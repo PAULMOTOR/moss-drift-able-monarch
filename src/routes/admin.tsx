@@ -374,8 +374,8 @@ function AdminPage() {
                 Unmatched financing forms ({importStatus!.unmatched!.length})
               </p>
               <p className="text-xs text-muted-foreground">
-                These TAdvantage / website apps did not find an open deal. Search a name and attach.
-                They also retry automatically for 7 days.
+                These TAdvantage / website apps did not find an open deal. Search a name and choose
+                whether they are the primary borrower or a guarantor (up to 2). They also retry for 7 days.
               </p>
               {importStatus!.unmatched!.map((u) => (
                 <div key={u.id} className="rounded-md border border-border bg-background/70 p-2 text-xs">
@@ -401,29 +401,49 @@ function AdminPage() {
                         }}
                       />
                       {attachHits.map((h) => (
-                        <Button
-                          key={h.id}
-                          size="sm"
-                          variant="outline"
-                          className="h-8 w-full justify-start"
-                          disabled={attaching}
-                          onClick={async () => {
-                            setAttaching(true);
-                            try {
-                              const res = await attachApp({ data: { importId: u.id, leadId: h.id } });
-                              toast.success(`Attached to ${res.leadName}`);
-                              setAttachFor(null);
-                              const st = await loadImportStatus();
-                              setImportStatus(st);
-                            } catch (e) {
-                              toast.error(e instanceof Error ? e.message : "Attach failed");
-                            } finally {
-                              setAttaching(false);
-                            }
-                          }}
-                        >
-                          Attach to {h.name}
-                        </Button>
+                        <div key={h.id} className="space-y-1 rounded-md border border-border p-2">
+                          <p className="font-medium">{h.name}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Attach {u.parsed_name || "this form"} as
+                          </p>
+                          <div className="flex flex-wrap gap-1">
+                            {(
+                              [
+                                ["primary", "Primary borrower"],
+                                ["guarantor1", "Guarantor 1"],
+                                ["guarantor2", "Guarantor 2"],
+                              ] as const
+                            ).map(([cap, label]) => (
+                              <Button
+                                key={cap}
+                                size="sm"
+                                variant={cap === "primary" ? "default" : "outline"}
+                                className="h-8"
+                                disabled={attaching}
+                                onClick={async () => {
+                                  setAttaching(true);
+                                  try {
+                                    const res = await attachApp({
+                                      data: { importId: u.id, leadId: h.id, capacity: cap },
+                                    });
+                                    toast.success(
+                                      `${u.parsed_name || "Form"} attached to ${res.leadName} as ${label.toLowerCase()}`,
+                                    );
+                                    setAttachFor(null);
+                                    const st = await loadImportStatus();
+                                    setImportStatus(st);
+                                  } catch (e) {
+                                    toast.error(e instanceof Error ? e.message : "Attach failed");
+                                  } finally {
+                                    setAttaching(false);
+                                  }
+                                }}
+                              >
+                                {label}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
                       ))}
                     </div>
                   ) : (

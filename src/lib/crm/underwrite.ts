@@ -179,7 +179,7 @@ async function callGrok(
   try {
     const fileParts: Array<Record<string, unknown>> = [];
     const imageParts: Array<Record<string, unknown>> = [];
-    for (const f of attachments.slice(0, 12)) {
+    for (const f of attachments.slice(0, 16)) {
       const parsed = parseDataUrl(f.dataUrl);
       if (!parsed) continue;
       if (parsed.buf.length > 12 * 1024 * 1024) {
@@ -230,6 +230,7 @@ async function callGrok(
     const system =
       "You are the second-look credit underwriter for Paul Motor Leasing (Montreal). " +
       "Open and read every attached document (Equifax, Carfax, IDs, bank statements, NOAs, listing photos). " +
+      "If the deal has guarantors, read each party's file and cite them separately. " +
       "Extract score, claims, names, DOB, address, citizenship/visa. You never approve a deal yourself. " +
       "Conservative: large cash down to mitigate; decline anyone shady or criminal. Reply with JSON only.";
 
@@ -472,43 +473,51 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
     if (!lead) throw new Error("Lead not found");
 
     const apps = await sql.query<Record<string, unknown>>(
-      `select * from credit_applications where lead_id = $1 order by updated_at desc limit 1`,
+      `select * from credit_applications where lead_id = $1
+       order by case when coalesce(applicant_role,'primary') = 'primary' then 0 else 1 end,
+                guarantor_slot nulls last, created_at`,
       [data.leadId],
     );
-    const app = apps[0];
-    let payload: Record<string, string> = {};
-    if (app?.payload) {
-      const raw = app.payload;
+    const app =
+      apps.find((a) => String(a.applicant_role || "primary") === "primary") || apps[0];
+
+    function payloadOf(row: Record<string, unknown> | undefined): Record<string, string> {
+      if (!row?.payload) return {};
+      const raw = row.payload;
       if (typeof raw === "string") {
         try {
-          payload = JSON.parse(raw) as Record<string, string>;
+          return JSON.parse(raw) as Record<string, string>;
         } catch {
-          payload = {};
+          return {};
         }
-      } else if (typeof raw === "object") {
-        payload = raw as Record<string, string>;
       }
+      if (typeof raw === "object") return raw as Record<string, string>;
+      return {};
     }
 
+    const payload = payloadOf(app);
+
     const checklist = await sql.query<{
+      application_id: string;
       section: string;
       item_key: string;
       label: string;
       notes: string;
       done: boolean;
     }>(
-      `select section, item_key, label, notes, done from credit_checklist
-       where application_id = $1`,
-      [app?.id || ""],
+      `select application_id, section, item_key, label, notes, done from credit_checklist
+       where application_id in (select id from credit_applications where lead_id = $1)`,
+      [data.leadId],
     );
     const docs = await sql.query<{
+      application_id: string | null;
       kind: string;
       file_name: string;
       mime_type: string | null;
       file_data: string | null;
     }>(
-      `select kind, file_name, mime_type, file_data from credit_documents where application_id = $1`,
-      [app?.id || ""],
+      `select application_id, kind, file_name, mime_type, file_data from credit_documents where lead_id = $1`,
+      [data.leadId],
     );
 
     const quotes = await sql.query<{
@@ -526,26 +535,49 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
     const q = quotes[0];
     const quote = quoteFromPayload(q?.payload, q?.accepted_option || q?.selected_option || 1);
 
-    const visaNotes = checklist.find((c) => c.item_key === "status_visa")?.notes || "";
-    const equifaxNotes =
-      String(app?.equifax_notes || "") +
-      " " +
-      (checklist.find((c) => c.item_key === "equifax")?.notes || "");
-    const kycNotes = checklist.find((c) => c.item_key === "kyc")?.notes || "";
-    const carfaxNotes = checklist.find((c) => c.item_key === "carfax_lien")?.notes || "";
+    const visaNotes = checklist
+      .filter((c) => c.item_key === "status_visa")
+      .map((c) => c.notes)
+      .filter(Boolean)
+      .join(" | ");
+    const equifaxNotes = [
+      ...apps.map((a) => String(a.equifax_notes || "")),
+      ...checklist.filter((c) => c.item_key === "equifax").map((c) => c.notes),
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const kycNotes = checklist
+      .filter((c) => c.item_key === "kyc")
+      .map((c) => c.notes)
+      .filter(Boolean)
+      .join(" | ");
+    const carfaxNotes = checklist
+      .filter((c) => c.item_key === "carfax_lien")
+      .map((c) => c.notes)
+      .filter(Boolean)
+      .join(" | ");
+
+    const partyName = (row: Record<string, unknown>) => {
+      const role = String(row.applicant_role || "primary");
+      const slot = row.guarantor_slot != null ? ` ${row.guarantor_slot}` : "";
+      return `${role}${slot}`.replace(/\s+/g, " ").trim();
+    };
 
     const attachments: Array<{ name: string; mime: string; dataUrl: string; rank: number }> = [];
-    if (app?.equifax_file_data) {
+    for (const a of apps) {
+      if (!a.equifax_file_data) continue;
       attachments.push({
-        name: String(app.equifax_file_name || "Equifax.pdf"),
+        name: `${partyName(a)}-Equifax-${String(a.equifax_file_name || "Equifax.pdf")}`,
         mime: "application/pdf",
-        dataUrl: String(app.equifax_file_data),
+        dataUrl: String(a.equifax_file_data),
         rank: 0,
       });
     }
     for (const d of docs) {
       if (!d.file_data) continue;
       const kind = (d.kind || "").toLowerCase();
+      const owner = apps.find((a) => String(a.id) === String(d.application_id));
+      const prefix = owner ? `${partyName(owner)}-` : "";
       const rank =
         kind.includes("equifax") ? 1 :
         kind.includes("carfax") ? 2 :
@@ -554,7 +586,7 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
         kind.includes("bank") || kind.includes("noa") ? 5 :
         8;
       attachments.push({
-        name: `${d.kind || "doc"}-${d.file_name}`,
+        name: `${prefix}${d.kind || "doc"}-${d.file_name}`,
         mime: d.mime_type || "application/octet-stream",
         dataUrl: d.file_data,
         rank,
@@ -563,13 +595,31 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
     attachments.sort((a, b) => a.rank - b.rank);
 
     const prime = await readBocPrime(sql);
-    const safeApp = redactPayload(payload);
+    const partyBlocks = apps.map((row) => {
+      const role = String(row.applicant_role || "primary");
+      const slot = row.guarantor_slot != null ? Number(row.guarantor_slot) : null;
+      const checks = checklist
+        .filter((c) => String(c.application_id) === String(row.id))
+        .map((c) => `${c.done ? "[x]" : "[ ]"} ${c.label}${c.notes ? ` — ${c.notes}` : ""}`);
+      return {
+        role,
+        slot,
+        name: String(row.applicant_name || (role === "primary" ? lead.name : "Unnamed")),
+        email: String(row.applicant_email || row.app_email || ""),
+        phone: String(row.applicant_phone || ""),
+        status: String(row.status || ""),
+        do_not_pull_credit: Boolean(row.do_not_pull_credit),
+        application: redactPayload(payloadOf(row)),
+        checklist: checks,
+      };
+    });
+    const primaryChecks = checklist.filter((c) => String(c.application_id) === String(app?.id || ""));
     const checkLines = [...VEHICLE_CHECKLIST, ...CUSTOMER_CHECKLIST].map((def) => {
-      const row = checklist.find((c) => c.item_key === def.key);
+      const row = primaryChecks.find((c) => c.item_key === def.key);
       return `${row?.done ? "[x]" : "[ ]"} ${def.label}${row?.notes ? ` — ${row.notes}` : ""}`;
     });
 
-    const prompt = `Paul Motor lease file — open EVERY attached file (Equifax, Carfax, IDs, statements) and produce a second underwrite.
+    const prompt = `Paul Motor lease file — open EVERY attached file (Equifax, Carfax, IDs, statements) and produce a second underwrite of the COMPLETE deal (primary + every guarantor).
 
 QUOTE / STRUCTURE:
 ${JSON.stringify(quote.metrics, null, 2)}
@@ -580,8 +630,9 @@ HARD RULES you must apply after reading the docs:
 - Carfax haircut = 20% of the largest claim on the Carfax (e.g. $25,000 claim → $5,000 off market). Compare sale price to adjusted market.
 - Pad is internal cap-cost only — not part of the sale price the client sees.
 - Mitigate weak-but-real files with a large cash down. Decline shady / criminal / identity-inconsistent files.
+- This file may include up to 2 guarantors. Analyze every party's IDs, Equifax, and application. A weak guarantor does not automatically decline a strong primary; identity fraud, criminal flags, or inconsistent IDs on ANY party are material.
 
-LEAD:
+LEAD (deal / primary borrower):
 ${JSON.stringify(
   {
     name: lead.name,
@@ -596,10 +647,10 @@ ${JSON.stringify(
   2,
 )}
 
-CREDIT APP (SIN redacted — read the real name/DOB/address from the ID attachments):
-${JSON.stringify(safeApp, null, 2)}
+PARTIES (${partyBlocks.length} on this deal — analyze EVERYONE, not just the primary):
+${JSON.stringify(partyBlocks, null, 2)}
 
-CHECKLIST:
+PRIMARY CHECKLIST:
 ${checkLines.join("\n")}
 
 ATTACHED FILES (you must read these, not just the names):
@@ -614,10 +665,10 @@ DO NOT PULL CREDIT: ${Boolean(app?.do_not_pull_credit)}
 Return JSON only:
 {
   "recommendation": "approve" | "approve_with_conditions" | "send_back" | "decline",
-  "summary": "8-14 sentences for the GSM, citing what you saw on Equifax and Carfax",
+  "summary": "8-14 sentences for the GSM, citing what you saw on Equifax and Carfax for the primary AND each guarantor",
   "conditions": ["concrete next items"],
   "red_flags": ["short bullets"],
-  "id_consistency": "IDs vs credit app vs Equifax — one paragraph",
+  "id_consistency": "IDs vs credit app vs Equifax for every party — one paragraph",
   "suggested_cash_down": number or null,
   "credit_score": number or null,
   "citizenship": "canadian_citizen" | "permanent_resident" | "work_permit" | "student" | "other" | "unknown",
@@ -695,7 +746,7 @@ Return JSON only:
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'note',
-        ${`AI underwrite (${recommendation.replace(/_/g, " ")}) by ${me.name}. ${ai.summary.slice(0, 400)}`},
+        ${`AI underwrite (${recommendation.replace(/_/g, " ")}) by ${me.name} · ${apps.length} part${apps.length === 1 ? "y" : "ies"}. ${ai.summary.slice(0, 400)}`},
         ${me.id}, ${me.name}
       )
     `;

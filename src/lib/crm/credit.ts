@@ -86,6 +86,11 @@ function mapApp(r: Record<string, unknown>): CreditApplication {
     approval_notes: (r.approval_notes as string) ?? null,
     vehicle_checklist_complete: Boolean(r.vehicle_checklist_complete),
     customer_checklist_complete: Boolean(r.customer_checklist_complete),
+    applicant_role: r.applicant_role === "guarantor" ? "guarantor" : "primary",
+    guarantor_slot: r.guarantor_slot != null ? Number(r.guarantor_slot) : null,
+    applicant_name: (r.applicant_name as string) ?? null,
+    applicant_email: (r.applicant_email as string) ?? null,
+    applicant_phone: (r.applicant_phone as string) ?? null,
     created_at: String(r.created_at),
     updated_at: String(r.updated_at),
   };
@@ -169,9 +174,36 @@ async function refreshChecklistComplete(
   `;
 }
 
+async function ensureCreditPartySchema(sql: Awaited<ReturnType<typeof getSql>>) {
+  await sql`alter table credit_applications add column if not exists applicant_role text default 'primary'`;
+  await sql`alter table credit_applications add column if not exists guarantor_slot int`;
+  await sql`alter table credit_applications add column if not exists applicant_name text`;
+  await sql`alter table credit_applications add column if not exists applicant_email text`;
+  await sql`alter table credit_applications add column if not exists applicant_phone text`;
+}
+
+async function syncLeadGuarantorLabel(sql: Awaited<ReturnType<typeof getSql>>, leadId: string) {
+  const rows = await sql<{ applicant_name: string | null; guarantor_slot: number | null }>`
+    select applicant_name, guarantor_slot from credit_applications
+    where lead_id = ${leadId} and applicant_role = 'guarantor'
+    order by guarantor_slot nulls last
+  `;
+  const label =
+    rows
+      .map((r) => (r.applicant_name || "").trim())
+      .filter(Boolean)
+      .join(" · ") || null;
+  await sql`update leads set guarantor = ${label}, updated_at = now() where id = ${leadId}`;
+  return label;
+}
+
 async function getOrCreateApp(sql: Awaited<ReturnType<typeof getSql>>, leadId: string, meId: string) {
+  await ensureCreditPartySchema(sql);
   const existing = await sql.query<Record<string, unknown>>(
-    `select * from credit_applications where lead_id = $1 order by created_at desc limit 1`,
+    `select * from credit_applications
+     where lead_id = $1
+       and coalesce(applicant_role, 'primary') = 'primary'
+     order by created_at asc limit 1`,
     [leadId],
   );
   if (existing[0]) {
@@ -183,13 +215,88 @@ async function getOrCreateApp(sql: Awaited<ReturnType<typeof getSql>>, leadId: s
   const pub = token();
   await sql`
     insert into credit_applications (
-      id, lead_id, status, party_type, public_token, requested_by
+      id, lead_id, status, party_type, public_token, requested_by, applicant_role
     ) values (
-      ${id}, ${leadId}, 'draft', 'individual', ${pub}, ${meId}
+      ${id}, ${leadId}, 'draft', 'individual', ${pub}, ${meId}, 'primary'
     )
   `;
   await seedChecklist(sql, id);
   await sql`update leads set credit_app_id = ${id}, updated_at = now() where id = ${leadId}`;
+  const rows = await sql.query<Record<string, unknown>>(
+    `select * from credit_applications where id = $1`,
+    [id],
+  );
+  return mapApp(rows[0]!);
+}
+
+export async function getOrCreateGuarantorApp(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  opts: {
+    leadId: string;
+    slot: 1 | 2;
+    meId: string | null;
+    name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  },
+): Promise<CreditApplication> {
+  await ensureCreditPartySchema(sql);
+  const existing = await sql.query<Record<string, unknown>>(
+    `select * from credit_applications
+     where lead_id = $1 and applicant_role = 'guarantor' and guarantor_slot = $2
+     limit 1`,
+    [opts.leadId, opts.slot],
+  );
+  if (existing[0]) {
+    const app = mapApp(existing[0]);
+    await seedChecklist(sql, app.id);
+    if (opts.name || opts.email || opts.phone) {
+      await sql`
+        update credit_applications set
+          applicant_name = coalesce(${opts.name?.trim() || null}, applicant_name),
+          applicant_email = coalesce(${opts.email?.trim().toLowerCase() || null}, applicant_email),
+          applicant_phone = coalesce(${opts.phone?.trim() || null}, applicant_phone),
+          app_email = coalesce(${opts.email?.trim().toLowerCase() || null}, app_email),
+          updated_at = now()
+        where id = ${app.id}
+      `;
+    }
+    await syncLeadGuarantorLabel(sql, opts.leadId);
+    const rows = await sql.query<Record<string, unknown>>(
+      `select * from credit_applications where id = $1`,
+      [app.id],
+    );
+    return mapApp(rows[0]!);
+  }
+  const count = await sql<{ n: number }>`
+    select count(*)::int as n from credit_applications
+    where lead_id = ${opts.leadId} and applicant_role = 'guarantor'
+  `;
+  if ((count[0]?.n ?? 0) >= 2) throw new Error("This deal already has two guarantors");
+  const id = uid();
+  const pub = token();
+  const name = opts.name?.trim() || `Guarantor ${opts.slot}`;
+  const email = opts.email?.trim().toLowerCase() || null;
+  const phone = opts.phone?.trim() || null;
+  const payload = {
+    full_name: name,
+    email: email || "",
+    phone: phone || "",
+    role: "guarantor",
+  };
+  await sql`
+    insert into credit_applications (
+      id, lead_id, status, party_type, public_token, requested_by,
+      applicant_role, guarantor_slot, applicant_name, applicant_email, applicant_phone,
+      app_email, payload
+    ) values (
+      ${id}, ${opts.leadId}, 'app_submitted', 'individual', ${pub}, ${opts.meId},
+      'guarantor', ${opts.slot}, ${name}, ${email}, ${phone},
+      ${email}, ${JSON.stringify(payload)}::jsonb
+    )
+  `;
+  await seedChecklist(sql, id);
+  await syncLeadGuarantorLabel(sql, opts.leadId);
   const rows = await sql.query<Record<string, unknown>>(
     `select * from credit_applications where id = $1`,
     [id],
@@ -213,7 +320,7 @@ export const getCreditPackage = createServerFn({ method: "GET" })
     const sql = await getSql();
     const leadRows = await sql.query<Record<string, unknown>>(
       `select l.id, l.name, l.email, l.phone, l.first_name, l.last_name, l.party_type, l.assigned_to,
-              l.credit_status, l.credit_app_id, l.vehicle_interest, l.stage,
+              l.credit_status, l.credit_app_id, l.vehicle_interest, l.stage, l.guarantor,
               l.partner_id, pr.name as partner_name, pr.kind as partner_kind, pr.email as partner_email,
               ap.email as assigned_email, ap.name as assigned_name
        from leads l
@@ -228,26 +335,51 @@ export const getCreditPackage = createServerFn({ method: "GET" })
       throw new Error("You do not have access to credit data for this lead");
     }
     const app = await getOrCreateApp(sql, data.leadId, me.id);
+    if (!app.applicant_name) {
+      await sql`
+        update credit_applications set
+          applicant_name = coalesce(applicant_name, ${String(lead.name)}),
+          applicant_email = coalesce(applicant_email, ${(lead.email as string) || null}),
+          applicant_phone = coalesce(applicant_phone, ${(lead.phone as string) || null})
+        where id = ${app.id}
+      `;
+    }
+    const allApps = await sql.query<Record<string, unknown>>(
+      `select * from credit_applications
+       where lead_id = $1
+       order by case when coalesce(applicant_role,'primary') = 'primary' then 0 else 1 end,
+                guarantor_slot nulls last, created_at`,
+      [data.leadId],
+    );
+    const parties = allApps.map(mapApp);
+    const guarantors = parties.filter((a) => a.applicant_role === "guarantor");
+    const primary = parties.find((a) => a.applicant_role === "primary") || app;
     const docs = await sql<CreditDocument>`
       select id, application_id, lead_id, kind, file_name, mime_type, file_data,
              uploaded_by, uploaded_via, created_at::text as created_at
-      from credit_documents where application_id = ${app.id}
+      from credit_documents where lead_id = ${data.leadId}
       order by created_at desc
     `;
-    const checklist = await sql<CreditChecklistItem>`
+    const allChecks = await sql<CreditChecklistItem>`
       select id, application_id, section, item_key, label, notes, done,
              filled_by, filled_at::text as filled_at
-      from credit_checklist where application_id = ${app.id}
-      order by section, item_key
+      from credit_checklist
+      where application_id in (
+        select id from credit_applications where lead_id = ${data.leadId}
+      )
     `;
-    // Stable sort by checklist definition order
     const order = new Map<string, number>();
     VEHICLE_CHECKLIST.forEach((i, idx) => order.set(i.key, idx));
     CUSTOMER_CHECKLIST.forEach((i, idx) => order.set(i.key, 100 + idx));
-    checklist.sort((a, b) => (order.get(a.item_key) ?? 999) - (order.get(b.item_key) ?? 999));
+    allChecks.sort((a, b) => (order.get(a.item_key) ?? 999) - (order.get(b.item_key) ?? 999));
+    const checklist = allChecks.filter((c) => c.application_id === primary.id);
+    const checklistsByApp: Record<string, CreditChecklistItem[]> = {};
+    for (const c of allChecks) {
+      (checklistsByApp[c.application_id] ||= []).push(c);
+    }
 
     const application: CreditApplication = {
-      ...app,
+      ...primary,
       equifax_file_data: null,
     };
     return {
@@ -270,16 +402,19 @@ export const getCreditPackage = createServerFn({ method: "GET" })
         partner_email: (lead.partner_email as string) || null,
         assigned_email: (lead.assigned_email as string) || null,
         assigned_name: (lead.assigned_name as string) || null,
+        guarantor: (lead.guarantor as string) || null,
       },
       application,
+      guarantors: guarantors.map((g) => ({ ...g, equifax_file_data: null })),
+      checklistsByApp,
       documents: docs,
       checklist,
       vehicleDefs: VEHICLE_CHECKLIST,
       customerDefs: CUSTOMER_CHECKLIST,
       lesseeDocTypes: [...LESSEE_DOC_TYPES],
-      appLink: app.public_token ? `${appBaseUrl()}/credit-app/${app.public_token}` : null,
-      docLink: app.doc_request_token
-        ? `${appBaseUrl()}/credit-docs/${app.doc_request_token}`
+      appLink: application.public_token ? `${appBaseUrl()}/credit-app/${application.public_token}` : null,
+      docLink: application.doc_request_token
+        ? `${appBaseUrl()}/credit-docs/${application.doc_request_token}`
         : null,
     };
   });
@@ -287,7 +422,7 @@ export const getCreditPackage = createServerFn({ method: "GET" })
 /** Request App & IDs — email lessee the public app link */
 export const requestCreditApp = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((data: { leadId: string; email?: string }) => data)
+  .validator((data: { leadId: string; email?: string; applicationId?: string }) => data)
   .handler(async ({ context, data }) => {
     const me = await requireProfile(context.userId);
     const sql = await getSql();
@@ -300,8 +435,25 @@ export const requestCreditApp = createServerFn({ method: "POST" })
     if (!canSeeCredit(me, (lead.assigned_to as string) || null) && me.role === "broker") {
       throw new Error("Brokers cannot start credit apps");
     }
-    const app = await getOrCreateApp(sql, data.leadId, me.id);
-    const email = (data.email || (lead.email as string) || "").trim().toLowerCase();
+    let app = await getOrCreateApp(sql, data.leadId, me.id);
+    if (data.applicationId && data.applicationId !== app.id) {
+      const picked = await sql.query<Record<string, unknown>>(
+        `select * from credit_applications where id = $1 and lead_id = $2 limit 1`,
+        [data.applicationId, data.leadId],
+      );
+      if (!picked[0]) throw new Error("Credit application not found");
+      app = mapApp(picked[0]);
+    }
+    const isGuar = app.applicant_role === "guarantor";
+    const email = (
+      data.email ||
+      app.applicant_email ||
+      app.app_email ||
+      (isGuar ? "" : (lead.email as string)) ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
     if (!email || !email.includes("@")) throw new Error("A valid email is required to send the app");
     const pub = app.public_token || token();
     await sql`
@@ -309,21 +461,30 @@ export const requestCreditApp = createServerFn({ method: "POST" })
         status = 'app_requested',
         public_token = ${pub},
         app_email = ${email},
+        applicant_email = coalesce(applicant_email, ${email}),
         requested_by = ${me.id},
         updated_at = now()
       where id = ${app.id}
     `;
-    await sql`
-      update leads set credit_status = 'app_requested', credit_app_id = ${app.id}, updated_at = now()
-      where id = ${data.leadId}
-    `;
+    if (!isGuar) {
+      await sql`
+        update leads set credit_status = 'app_requested', credit_app_id = ${app.id}, updated_at = now()
+        where id = ${data.leadId}
+      `;
+    }
     const link = `${appBaseUrl()}/credit-app/${pub}`;
-    const first = (lead.first_name as string) || String(lead.name).split(" ")[0] || "there";
+    const first =
+      (isGuar ? (app.applicant_name || "").split(" ")[0] : "") ||
+      (lead.first_name as string) ||
+      String(lead.name).split(" ")[0] ||
+      "there";
     const partner = await fetchPartnerForLead(sql, data.leadId);
     const referral = referralClientCopy(partner);
     const mailResult = await sendCrmEmail(sql, {
       to: email,
-      subject: "Paul Motor Leasing — Credit application & ID upload",
+      subject: isGuar
+        ? "Paul Motor Leasing — Guarantor credit application & ID upload"
+        : "Paul Motor Leasing — Credit application & ID upload",
       kind: "credit_app_request",
       leadId: data.leadId,
       profileId: me.id,
@@ -364,7 +525,7 @@ ${referral.html}
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'credit',
-        ${`Credit app & IDs requested → ${email} (email sent)`},
+        ${`Credit app & IDs requested → ${email}${isGuar ? ` (guarantor ${app.applicant_name || app.guarantor_slot || ""})` : ""} (email sent)`},
         ${me.id}, ${me.name}
       )
     `;
@@ -581,6 +742,7 @@ export const uploadDealDocument = createServerFn({ method: "POST" })
       fileName: string;
       mimeType?: string;
       fileData: string;
+      applicationId?: string;
     }) => data,
   )
   .handler(async ({ context, data }) => {
@@ -605,12 +767,22 @@ export const uploadDealDocument = createServerFn({ method: "POST" })
     if (!allowed.has(kind)) throw new Error("Unknown document type");
     if (data.fileData.length > 6_000_000) throw new Error("File too large (max ~4MB)");
     const app = await getOrCreateApp(sql, data.leadId, me.id);
+    let applicationId = app.id;
+    if (data.applicationId && data.applicationId !== app.id) {
+      const picked = await sql<{ id: string }>`
+        select id from credit_applications
+        where id = ${data.applicationId} and lead_id = ${data.leadId}
+        limit 1
+      `;
+      if (!picked[0]) throw new Error("Credit application not found");
+      applicationId = picked[0].id;
+    }
     const id = uid();
     await sql`
       insert into credit_documents (
         id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_by, uploaded_via
       ) values (
-        ${id}, ${app.id}, ${data.leadId}, ${kind},
+        ${id}, ${applicationId}, ${data.leadId}, ${kind},
         ${data.fileName}, ${data.mimeType || "application/octet-stream"}, ${data.fileData},
         ${me.id}, 'crm'
       )
@@ -916,6 +1088,7 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
       /** One or more keys from LESSEE_DOC_TYPES (also accepts legacy noa_payslip / bank_statement). */
       kinds: string[];
       email?: string;
+      applicationId?: string;
     }) => data,
   )
   .handler(async ({ context, data }) => {
@@ -931,7 +1104,15 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
     if (!canSeeCredit(me, owner[0].assigned_to)) {
       throw new Error("You can only request documents on your deals");
     }
-    const app = await getOrCreateApp(sql, data.leadId, me.id);
+    let app = await getOrCreateApp(sql, data.leadId, me.id);
+    if (data.applicationId && data.applicationId !== app.id) {
+      const picked = await sql.query<Record<string, unknown>>(
+        `select * from credit_applications where id = $1 and lead_id = $2 limit 1`,
+        [data.applicationId, data.leadId],
+      );
+      if (!picked[0]) throw new Error("Credit application not found");
+      app = mapApp(picked[0]);
+    }
     const validKeys = new Set<string>([
       ...LESSEE_DOC_TYPES.map((d) => d.key),
       // legacy
@@ -954,8 +1135,17 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
     const leads = await sql<{ email: string; name: string; first_name: string | null }>`
       select email, name, first_name from leads where id = ${data.leadId}
     `;
-    const email = (data.email || leads[0]?.email || app.app_email || "").trim().toLowerCase();
-    if (!email) throw new Error("Lessee email required");
+    const isGuar = app.applicant_role === "guarantor";
+    const email = (
+      data.email ||
+      app.applicant_email ||
+      app.app_email ||
+      (isGuar ? "" : leads[0]?.email) ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+    if (!email) throw new Error(isGuar ? "Guarantor email required" : "Lessee email required");
 
     const labels = kinds.map((k) => {
       if (k === "noa_payslip") return "NOA / payslips";
@@ -994,7 +1184,7 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'credit',
-        ${`Requested docs from lessee (${labels.join(", ")}) → ${email}`},
+        ${`Requested docs from ${isGuar ? `guarantor ${app.applicant_name || ""}` : "lessee"} (${labels.join(", ")}) → ${email}`},
         ${me.id}, ${me.name}
       )
     `;
@@ -1029,13 +1219,32 @@ export const getPublicCreditApp = createServerFn({ method: "GET" })
         party_type: app.party_type,
         payload: app.payload,
         submitted_at: app.submitted_at,
+        applicant_role: app.applicant_role,
       },
       lead: {
-        name: String(rows[0].lead_name),
-        first_name: (rows[0].first_name as string) || null,
-        last_name: (rows[0].last_name as string) || null,
-        email: (rows[0].lead_email as string) || app.app_email,
-        phone: (rows[0].lead_phone as string) || null,
+        name:
+          app.applicant_role === "guarantor"
+            ? app.applicant_name || String(rows[0].lead_name)
+            : String(rows[0].lead_name),
+        first_name:
+          app.applicant_role === "guarantor"
+            ? splitPersonName(app.applicant_name || "").first_name ||
+              (rows[0].first_name as string) ||
+              null
+            : (rows[0].first_name as string) || null,
+        last_name:
+          app.applicant_role === "guarantor"
+            ? splitPersonName(app.applicant_name || "").last_name || null
+            : (rows[0].last_name as string) || null,
+        email:
+          app.applicant_email ||
+          app.app_email ||
+          (rows[0].lead_email as string) ||
+          null,
+        phone:
+          app.applicant_phone ||
+          (app.applicant_role === "guarantor" ? null : (rows[0].lead_phone as string)) ||
+          null,
         vehicle_interest: (rows[0].vehicle_interest as string) || null,
         partner_name: (rows[0].partner_name as string) || null,
         partner_kind: (rows[0].partner_kind as string) || null,
@@ -1072,15 +1281,6 @@ export const savePublicCreditApp = createServerFn({ method: "POST" })
         ? "app_in_progress"
         : "app_in_progress";
     const cleanPayload = toCreditPayload(data.payload);
-    await sql`
-      update credit_applications set
-        payload = ${JSON.stringify(cleanPayload)}::jsonb,
-        party_type = ${party},
-        status = ${status},
-        submitted_at = case when ${Boolean(data.submit)} then now() else submitted_at end,
-        updated_at = now()
-      where id = ${app.id}
-    `;
     const p = cleanPayload;
     const first = String(p.full_name || p.first_name || "").trim();
     const { first_name, last_name } = p.first_name
@@ -1089,7 +1289,36 @@ export const savePublicCreditApp = createServerFn({ method: "POST" })
           last_name: String(p.last_name || ""),
         }
       : splitPersonName(first);
-    if (first_name || last_name) {
+    const fullName = [first_name, last_name].filter(Boolean).join(" ") || first || null;
+    const isGuar = app.applicant_role === "guarantor";
+    const email = p.email?.trim().toLowerCase() || null;
+    const phone = p.phone?.trim() || null;
+    await sql`
+      update credit_applications set
+        payload = ${JSON.stringify(cleanPayload)}::jsonb,
+        party_type = ${party},
+        status = ${status},
+        applicant_name = coalesce(${fullName}, applicant_name),
+        applicant_email = coalesce(${email}, applicant_email),
+        applicant_phone = coalesce(${phone}, applicant_phone),
+        submitted_at = case when ${Boolean(data.submit)} then now() else submitted_at end,
+        updated_at = now()
+      where id = ${app.id}
+    `;
+    if (isGuar) {
+      await syncLeadGuarantorLabel(sql, app.lead_id);
+      if (data.submit) {
+        await sql`
+          update leads set
+            credit_status = case
+              when credit_status in ('none', 'app_requested') then 'app_submitted'
+              else credit_status
+            end,
+            updated_at = now()
+          where id = ${app.lead_id}
+        `;
+      }
+    } else if (first_name || last_name) {
       await sql`
         update leads set
           first_name = ${first_name || null},
@@ -1118,18 +1347,27 @@ export const savePublicCreditApp = createServerFn({ method: "POST" })
         [app.lead_id],
       );
       const repEmail = lead[0]?.rep_email as string | undefined;
+      const who = isGuar
+        ? `Guarantor ${fullName || app.applicant_name || ""} on ${lead[0]?.name}`
+        : String(lead[0]?.name || "");
       if (repEmail) {
         await sendCrmEmail(sql, {
           to: repEmail,
-          subject: `Credit app received — ${lead[0]?.name}`,
+          subject: `Credit app received — ${who}`,
           kind: "credit_app_received",
           leadId: app.lead_id,
-          text: `The credit application for ${lead[0]?.name} has been submitted.\n\n${appBaseUrl()}/leads/${app.lead_id}?tab=credit`,
+          text: `The ${isGuar ? "guarantor " : ""}credit application for ${who} has been submitted.\n\n${appBaseUrl()}/leads/${app.lead_id}?tab=credit`,
         });
       }
       await sql`
         insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
-        values (${uid()}, ${app.lead_id}, 'credit', 'Lessee submitted credit application', null, 'Lessee portal')
+        values (
+          ${uid()}, ${app.lead_id}, 'credit',
+          ${isGuar
+            ? `Guarantor ${fullName || app.applicant_name || ""} submitted credit application`
+            : "Lessee submitted credit application"},
+          null, 'Lessee portal'
+        )
       `;
     }
     return { ok: true as const, status };
@@ -1214,7 +1452,7 @@ export const getPublicDocRequest = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const sql = await getSql();
     const rows = await sql.query<Record<string, unknown>>(
-      `select a.id, a.lead_id, a.pending_doc_kinds, l.name from credit_applications a
+      `select a.id, a.lead_id, a.pending_doc_kinds, a.applicant_role, a.applicant_name, l.name from credit_applications a
        join leads l on l.id = a.lead_id
        where a.doc_request_token = $1 limit 1`,
       [data.token],
@@ -1230,9 +1468,133 @@ export const getPublicDocRequest = createServerFn({ method: "GET" })
     } catch {
       pending = [];
     }
+    const isGuar = String(rows[0].applicant_role || "") === "guarantor";
+    const partyName = isGuar
+      ? String(rows[0].applicant_name || rows[0].name)
+      : String(rows[0].name);
     return {
-      leadName: String(rows[0].name),
+      leadName: partyName,
       applicationId: String(rows[0].id),
       pendingKinds: pending,
     };
   });
+
+export const addGuarantor = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: { leadId: string; name: string; email?: string; phone?: string; slot?: 1 | 2 }) => data,
+  )
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    if (!["admin", "gsm", "credit_manager", "rep"].includes(me.role)) {
+      throw new Error("Not allowed");
+    }
+    const sql = await getSql();
+    const lead = await sql<{ assigned_to: string | null; name: string }>`
+      select assigned_to, name from leads where id = ${data.leadId} limit 1
+    `;
+    if (!lead[0]) throw new Error("Lead not found");
+    if (!canSeeCredit(me, lead[0].assigned_to)) throw new Error("Not allowed on this deal");
+    await getOrCreateApp(sql, data.leadId, me.id);
+    const taken = await sql<{ guarantor_slot: number | null }>`
+      select guarantor_slot from credit_applications
+      where lead_id = ${data.leadId} and applicant_role = 'guarantor'
+    `;
+    const used = new Set(taken.map((r) => r.guarantor_slot));
+    const slot: 1 | 2 =
+      data.slot && !used.has(data.slot) ? data.slot : !used.has(1) ? 1 : !used.has(2) ? 2 : 0 as 1;
+    if (slot !== 1 && slot !== 2) throw new Error("This deal already has two guarantors");
+    const app = await getOrCreateGuarantorApp(sql, {
+      leadId: data.leadId,
+      slot,
+      meId: me.id,
+      name: data.name,
+      email: data.email,
+      phone: data.phone,
+    });
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+      values (
+        ${uid()}, ${data.leadId}, 'credit',
+        ${`Guarantor ${slot} added: ${data.name.trim()}`},
+        ${me.id}, ${me.name}
+      )
+    `;
+    return { ok: true as const, applicationId: app.id, slot };
+  });
+
+export const swapCreditParties = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { leadId: string; guarantorApplicationId: string }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    if (!["admin", "gsm", "credit_manager"].includes(me.role)) {
+      throw new Error("Only Credit, GSM, or Admin can switch primary and guarantor");
+    }
+    const sql = await getSql();
+    await ensureCreditPartySchema(sql);
+    const lead = await sql<{
+      name: string;
+      first_name: string | null;
+      last_name: string | null;
+      email: string | null;
+      phone: string | null;
+    }>`
+      select name, first_name, last_name, email, phone from leads where id = ${data.leadId} limit 1
+    `;
+    if (!lead[0]) throw new Error("Lead not found");
+    const primary = await getOrCreateApp(sql, data.leadId, me.id);
+    const guarRows = await sql.query<Record<string, unknown>>(
+      `select * from credit_applications where id = $1 and lead_id = $2 and applicant_role = 'guarantor' limit 1`,
+      [data.guarantorApplicationId, data.leadId],
+    );
+    if (!guarRows[0]) throw new Error("Guarantor application not found");
+    const guar = mapApp(guarRows[0]);
+    const slot = guar.guarantor_slot || 1;
+    const parts = splitPersonName(guar.applicant_name || lead[0].name);
+
+    await sql`
+      update credit_applications set applicant_role = 'guarantor', guarantor_slot = ${100 + slot}
+      where id = ${primary.id}
+    `;
+    await sql`
+      update credit_applications set
+        applicant_role = 'primary',
+        guarantor_slot = null,
+        applicant_name = coalesce(applicant_name, ${guar.applicant_name}),
+        updated_at = now()
+      where id = ${guar.id}
+    `;
+    await sql`
+      update credit_applications set
+        applicant_role = 'guarantor',
+        guarantor_slot = ${slot},
+        applicant_name = coalesce(applicant_name, ${lead[0].name}),
+        applicant_email = coalesce(applicant_email, ${lead[0].email}),
+        applicant_phone = coalesce(applicant_phone, ${lead[0].phone}),
+        updated_at = now()
+      where id = ${primary.id}
+    `;
+    await sql`
+      update leads set
+        name = ${guar.applicant_name || lead[0].name},
+        first_name = ${parts.first_name || lead[0].first_name},
+        last_name = ${parts.last_name || lead[0].last_name},
+        email = coalesce(${guar.applicant_email}, email),
+        phone = coalesce(${guar.applicant_phone}, phone),
+        credit_app_id = ${guar.id},
+        updated_at = now()
+      where id = ${data.leadId}
+    `;
+    await syncLeadGuarantorLabel(sql, data.leadId);
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+      values (
+        ${uid()}, ${data.leadId}, 'credit',
+        ${`Switched primary applicant with guarantor ${slot}: now ${guar.applicant_name || "guarantor"} (was ${lead[0].name})`},
+        ${me.id}, ${me.name}
+      )
+    `;
+    return { ok: true as const };
+  });
+

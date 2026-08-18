@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { X } from "lucide-react";
 import {
+  addGuarantor,
   approveDealGsm,
   deleteCreditDocument,
   getCreditPackage,
@@ -9,6 +10,7 @@ import {
   requestCreditReview,
   requestGsmApproval,
   requestLesseeDocument,
+  swapCreditParties,
   updateChecklistItem,
   uploadChecklistDocument,
   uploadDealDocument,
@@ -84,13 +86,26 @@ export function CreditUnderwritingPanel({
   const [docEmail, setDocEmail] = useState("");
   const [uwReports, setUwReports] = useState<UnderwriteReport[]>([]);
   const [uwBusy, setUwBusy] = useState(false);
+  const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
+  const [showAddGuar, setShowAddGuar] = useState(false);
+  const [guarName, setGuarName] = useState("");
+  const [guarEmail, setGuarEmail] = useState("");
+  const [guarPhone, setGuarPhone] = useState("");
+  const selectedAppIdRef = useRef<string | null>(null);
+  selectedAppIdRef.current = selectedAppId;
 
   const load = useCallback(async () => {
     try {
       const pkg = await getCreditPackage({ data: { leadId } });
       setData(pkg);
-      setAppEmail(pkg.lead.email || pkg.application.app_email || "");
-      setDocEmail(pkg.lead.email || pkg.application.app_email || "");
+      const ids = [pkg.application.id, ...(pkg.guarantors || []).map((g) => g.id)];
+      const cur = selectedAppIdRef.current;
+      const nextId = cur && ids.includes(cur) ? cur : pkg.application.id;
+      setSelectedAppId(nextId);
+      const focus =
+        (pkg.guarantors || []).find((g) => g.id === nextId) || pkg.application;
+      setAppEmail(focus.applicant_email || focus.app_email || pkg.lead.email || "");
+      setDocEmail(focus.applicant_email || focus.app_email || pkg.lead.email || "");
       if (["admin", "gsm", "credit_manager"].includes(me.role)) {
         const reps = await listUnderwriteReports({ data: { leadId } }).catch(
           (): UnderwriteReport[] => [],
@@ -124,23 +139,34 @@ export function CreditUnderwritingPanel({
     return <div className="h-24 animate-pulse rounded-sm bg-muted" />;
   }
 
-  const { application: app, documents, checklist, lead } = data;
+  const { application: primaryApp, documents: allDocs, lead } = data;
+  const guarantors = data.guarantors || [];
+  const selected =
+    guarantors.find((g) => g.id === selectedAppId) ||
+    (primaryApp.id === selectedAppId ? primaryApp : primaryApp);
+  const app = selected;
+  const isGuarantorView = app.applicant_role === "guarantor";
+  const checklistsByApp = data.checklistsByApp || {};
+  const partyChecks = checklistsByApp[app.id] || data.checklist;
+  const primaryChecks = checklistsByApp[primaryApp.id] || data.checklist;
+  const documents = allDocs.filter((d) => d.application_id === app.id);
   const canStaff = ["admin", "rep", "gsm", "credit_manager"].includes(me.role);
   const canUpload = canStaff;
   const canCustomerChecklist = ["admin", "credit_manager", "gsm"].includes(me.role);
   const canApprove = ["admin", "gsm"].includes(me.role);
   const canDeleteDocs = ["admin", "gsm"].includes(me.role);
-  const vehicleItems = checklist.filter((c) => c.section === "vehicle");
-  const customerItems = checklist.filter((c) => c.section === "customer");
+  const canSwap = ["admin", "gsm", "credit_manager"].includes(me.role);
+  const vehicleItems = (isGuarantorView ? primaryChecks : partyChecks).filter((c) => c.section === "vehicle");
+  const customerItems = partyChecks.filter((c) => c.section === "customer");
   const isDealApproved =
-    String(app.status || "").toLowerCase() === "approved" ||
+    String(primaryApp.status || "").toLowerCase() === "approved" ||
     String(lead.credit_status || "").toLowerCase() === "approved";
   const appReady =
-    app.status === "app_submitted" ||
-    app.status === "ids_uploaded" ||
-    app.status === "credit_requested" ||
-    app.status === "in_review" ||
-    app.status === "pending_gsm" ||
+    primaryApp.status === "app_submitted" ||
+    primaryApp.status === "ids_uploaded" ||
+    primaryApp.status === "credit_requested" ||
+    primaryApp.status === "in_review" ||
+    primaryApp.status === "pending_gsm" ||
     isDealApproved;
 
   async function readFile(file: File): Promise<string> {
@@ -164,6 +190,7 @@ export function CreditUnderwritingPanel({
             Status: <Badge variant="secondary">{app.status.replace(/_/g, " ")}</Badge>
             {" · "}
             Client: {lead.party_type === "business" ? "Business" : "Individual"}
+            {isGuarantorView ? " · viewing guarantor" : ""}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -179,11 +206,11 @@ export function CreditUnderwritingPanel({
               disabled={busy}
               onClick={() => {
                 setDocKinds([]);
-                setDocEmail(lead.email || app.app_email || "");
+                setDocEmail(app.applicant_email || app.app_email || lead.email || "");
                 setShowRequestDocs(true);
               }}
             >
-              Request Docs from Lessee
+              Request Docs
             </Button>
           ) : null}
           {canStaff && appReady ? (
@@ -191,7 +218,7 @@ export function CreditUnderwritingPanel({
               Get Credit Approval
             </Button>
           ) : null}
-          {canStaff && app.vehicle_checklist_complete && app.customer_checklist_complete ? (
+          {canStaff && primaryApp.vehicle_checklist_complete && primaryApp.customer_checklist_complete ? (
             <Button
               size="sm"
               variant="outline"
@@ -294,7 +321,100 @@ export function CreditUnderwritingPanel({
         </div>
       </div>
 
-      {app.do_not_pull_credit ? (
+      <div className="flex flex-wrap items-center gap-2 rounded-sm border border-border bg-muted/30 px-2 py-2">
+        <span className="px-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Parties
+        </span>
+        <button
+          type="button"
+          className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+            !isGuarantorView
+              ? "border-primary bg-primary text-primary-foreground"
+              : "border-border bg-background hover:bg-muted"
+          }`}
+          onClick={() => {
+            setSelectedAppId(primaryApp.id);
+            setAppEmail(primaryApp.applicant_email || primaryApp.app_email || lead.email || "");
+            setDocEmail(primaryApp.applicant_email || primaryApp.app_email || lead.email || "");
+          }}
+        >
+          Primary · {primaryApp.applicant_name || lead.name}
+        </button>
+        {guarantors.map((g) => (
+          <button
+            key={g.id}
+            type="button"
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+              selectedAppId === g.id
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-background hover:bg-muted"
+            }`}
+            onClick={() => {
+              setSelectedAppId(g.id);
+              setAppEmail(g.applicant_email || g.app_email || "");
+              setDocEmail(g.applicant_email || g.app_email || "");
+            }}
+          >
+            Guarantor {g.guarantor_slot || ""} · {g.applicant_name || "Unnamed"}
+          </button>
+        ))}
+        {guarantors.length < 2 && canStaff ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7"
+            onClick={() => {
+              setGuarName("");
+              setGuarEmail("");
+              setGuarPhone("");
+              setShowAddGuar(true);
+            }}
+          >
+            Add guarantor
+          </Button>
+        ) : null}
+        {isGuarantorView && canSwap ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7"
+            disabled={busy}
+            onClick={async () => {
+              const label = app.applicant_name || "this guarantor";
+              const current = primaryApp.applicant_name || lead.name;
+              if (
+                !window.confirm(
+                  `Switch ${label} with the primary applicant (${current})?\n\nThe deal will be under ${label}. ${current} becomes Guarantor ${app.guarantor_slot || ""}.`,
+                )
+              ) {
+                return;
+              }
+              setBusy(true);
+              try {
+                await swapCreditParties({
+                  data: { leadId, guarantorApplicationId: app.id },
+                });
+                toast.success(`${label} is now the primary applicant`);
+                setSelectedAppId(app.id);
+                await load();
+              } catch (e) {
+                toast.error(e instanceof Error ? e.message : "Switch failed");
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Switch with primary
+          </Button>
+        ) : null}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {isGuarantorView ? "Guarantor" : "Primary"}: {app.applicant_name || lead.name}
+        {app.applicant_email || app.app_email ? ` · ${app.applicant_email || app.app_email}` : ""}
+        {app.applicant_phone ? ` · ${app.applicant_phone}` : ""}
+      </p>
+
+      {primaryApp.do_not_pull_credit ? (
         <div
           role="alert"
           className="rounded-sm border-2 border-red-700 bg-red-700 px-4 py-3 text-sm font-bold text-white shadow-sm"
@@ -312,11 +432,11 @@ export function CreditUnderwritingPanel({
         <UnderwriteCard report={uwReports[0]} />
       ) : null}
 
-      {app.approval_notes &&
-      (app.status === "declined" || (lead.credit_status || "").toLowerCase() === "declined") ? (
+      {primaryApp.approval_notes &&
+      (primaryApp.status === "declined" || (lead.credit_status || "").toLowerCase() === "declined") ? (
         <div className="rounded-sm border border-red-200 bg-red-50 p-3 text-sm text-red-950">
           <p className="font-semibold">Decline reason</p>
-          <p className="mt-1 whitespace-pre-wrap">{app.approval_notes}</p>
+          <p className="mt-1 whitespace-pre-wrap">{primaryApp.approval_notes}</p>
         </div>
       ) : null}
 
@@ -488,7 +608,19 @@ export function CreditUnderwritingPanel({
         </div>
       ) : null}
 
-      {data.appLink ? (
+      {app.public_token ? (
+        <p className="break-all text-xs text-muted-foreground">
+          {isGuarantorView ? "Guarantor" : "Lessee"} app link:{" "}
+          <a
+            className="text-primary underline"
+            href={`/credit-app/${app.public_token}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            /credit-app/{app.public_token}
+          </a>
+        </p>
+      ) : data.appLink && !isGuarantorView ? (
         <p className="break-all text-xs text-muted-foreground">
           Lessee app link:{" "}
           <a className="text-primary underline" href={data.appLink} target="_blank" rel="noreferrer">
@@ -540,7 +672,11 @@ export function CreditUnderwritingPanel({
           }}
         />
         <ChecklistSection
-          title="Customer portion (Credit Manager)"
+          title={
+            isGuarantorView
+              ? `Customer portion — ${app.applicant_name || "Guarantor"}`
+              : "Customer portion (Credit Manager)"
+          }
           items={customerItems}
           documents={documents}
           canEdit={canCustomerChecklist}
@@ -620,6 +756,7 @@ export function CreditUnderwritingPanel({
                     await uploadDealDocument({
                       data: {
                         leadId,
+                        applicationId: app.id,
                         kind: uploadKind,
                         fileName: file.name,
                         mimeType: file.type || "application/octet-stream",
@@ -643,13 +780,25 @@ export function CreditUnderwritingPanel({
 
       <div>
         <h4 className="mb-2 text-sm font-semibold">All documents</h4>
-        {documents.length === 0 ? (
+        {allDocs.length === 0 ? (
           <p className="text-xs text-muted-foreground">No documents yet.</p>
         ) : (
           <ul className="space-y-1">
-            {documents.map((d) => (
+            {allDocs.map((d) => {
+              const party =
+                d.application_id === primaryApp.id
+                  ? "Primary"
+                  : guarantors.find((g) => g.id === d.application_id)
+                    ? `Guarantor ${
+                        guarantors.find((g) => g.id === d.application_id)?.guarantor_slot || ""
+                      }`.trim()
+                    : "Deal";
+              return (
               <li key={d.id} className="flex items-center justify-between gap-2 text-sm">
                 <span className="min-w-0 truncate">
+                  <Badge variant="outline" className="mr-2 text-[10px]">
+                    {party}
+                  </Badge>
                   <Badge variant="outline" className="mr-2 text-[10px]">
                     {lesseeDocLabel(d.kind) !== d.kind.replace(/_/g, " ")
                       ? lesseeDocLabel(d.kind)
@@ -691,7 +840,8 @@ export function CreditUnderwritingPanel({
                   ) : null}
                 </span>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>
@@ -726,11 +876,14 @@ export function CreditUnderwritingPanel({
       <Dialog open={showRequestApp} onOpenChange={setShowRequestApp}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Request App & IDs</DialogTitle>
+            <DialogTitle>
+              Request {isGuarantorView ? "guarantor" : "lessee"} app & IDs
+            </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             This will send a link to the following email asking the recipient to fill out our credit
-            app and upload IDs.
+            app and upload IDs
+            {isGuarantorView ? ` for guarantor ${app.applicant_name || ""}`.trimEnd() : ""}.
           </p>
           <div>
             <Label>Email</Label>
@@ -751,7 +904,7 @@ export function CreditUnderwritingPanel({
                 setBusy(true);
                 try {
                   const res = await requestCreditApp({
-                    data: { leadId, email: appEmail },
+                    data: { leadId, email: appEmail, applicationId: app.id },
                   });
                   toast.success(`Sent to ${res.email}`);
                   setShowRequestApp(false);
@@ -1017,7 +1170,9 @@ export function CreditUnderwritingPanel({
       <Dialog open={showRequestDocs} onOpenChange={setShowRequestDocs}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Request Docs from Lessee</DialogTitle>
+            <DialogTitle>
+              Request docs from {isGuarantorView ? app.applicant_name || "guarantor" : "lessee"}
+            </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Pick the documents you need. One secure upload link is emailed listing your selections.
@@ -1058,9 +1213,13 @@ export function CreditUnderwritingPanel({
                 setBusy(true);
                 try {
                   await requestLesseeDocument({
-                    data: { leadId, kinds: docKinds, email: docEmail },
+                    data: { leadId, kinds: docKinds, email: docEmail, applicationId: app.id },
                   });
-                  toast.success("Document request emailed to lessee");
+                  toast.success(
+                    isGuarantorView
+                      ? "Document request emailed to guarantor"
+                      : "Document request emailed to lessee",
+                  );
                   setShowRequestDocs(false);
                   await load();
                 } catch (e) {
@@ -1132,6 +1291,76 @@ export function CreditUnderwritingPanel({
               }}
             >
               Send envelope
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showAddGuar} onOpenChange={setShowAddGuar}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add guarantor</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Up to two guarantors, each with their own credit application, IDs, and document requests.
+            They do not replace the primary borrower.
+          </p>
+          <div>
+            <Label>Full name *</Label>
+            <Input
+              className="mt-1"
+              value={guarName}
+              onChange={(e) => setGuarName(e.target.value)}
+              placeholder="Sebastian Maneiro"
+            />
+          </div>
+          <div>
+            <Label>Email</Label>
+            <Input
+              className="mt-1"
+              type="email"
+              value={guarEmail}
+              onChange={(e) => setGuarEmail(e.target.value)}
+              placeholder="optional — needed to send the app"
+            />
+          </div>
+          <div>
+            <Label>Phone</Label>
+            <Input
+              className="mt-1"
+              value={guarPhone}
+              onChange={(e) => setGuarPhone(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAddGuar(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={busy || !guarName.trim()}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const res = await addGuarantor({
+                    data: {
+                      leadId,
+                      name: guarName.trim(),
+                      email: guarEmail.trim() || undefined,
+                      phone: guarPhone.trim() || undefined,
+                    },
+                  });
+                  toast.success(`${guarName.trim()} added as guarantor ${res.slot}`);
+                  setShowAddGuar(false);
+                  setSelectedAppId(res.applicationId);
+                  await load();
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Could not add guarantor");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Add guarantor
             </Button>
           </DialogFooter>
         </DialogContent>

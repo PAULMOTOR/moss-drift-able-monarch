@@ -778,6 +778,11 @@ export type CreditApplication = {
   approval_notes: string | null;
   vehicle_checklist_complete: boolean;
   customer_checklist_complete: boolean;
+  applicant_role: "primary" | "guarantor";
+  guarantor_slot: number | null;
+  applicant_name: string | null;
+  applicant_email: string | null;
+  applicant_phone: string | null;
   created_at: string;
   updated_at: string;
 };

@@ -7,6 +7,7 @@ import { sendCrmEmail } from "./mail";
 import { appBaseUrl, getTorontoClock } from "./reminders";
 import { normalizeEmail, normalizePhone } from "./classify-email";
 import { compactEmailBody } from "./email-text";
+import { getOrCreateGuarantorApp } from "./credit";
 
 export const LEASE_APP_UNMATCHED = "lease-app-no-existing-lead";
 export const LEASE_APP_AMBIGUOUS = "lease-app-ambiguous";
@@ -182,6 +183,8 @@ export async function findWebsiteLeaseDeal(
   };
 }
 
+export type LeaseAppCapacity = "primary" | "guarantor1" | "guarantor2";
+
 export async function applyWebsiteLeaseAppToLead(
   sql: Sql,
   leadId: string,
@@ -191,11 +194,13 @@ export async function applyWebsiteLeaseAppToLead(
     subject: string;
     body: string;
   },
+  capacity: LeaseAppCapacity = "primary",
 ): Promise<{
   leadName: string;
   assignedTo: string | null;
   unpaused: boolean;
   stageMoved: string | null;
+  capacity: LeaseAppCapacity;
 }> {
   const rows = await sql<{
     id: string;
@@ -223,15 +228,22 @@ export async function applyWebsiteLeaseAppToLead(
   if (!lead) throw new Error("Lead not found");
 
   const junkName = !lead.name || /^(trader|email lead|tadvantage|unknown)/i.test(lead.name);
+  const asGuarantor = capacity === "guarantor1" || capacity === "guarantor2";
   const nextName =
-    ident.name && ident.name !== "Email lead" && junkName ? ident.name : lead.name;
+    asGuarantor
+      ? lead.name
+      : ident.name && ident.name !== "Email lead" && junkName
+        ? ident.name
+        : lead.name;
   const nameParts = nextName.trim().split(/\s+/).filter(Boolean);
   const nextFirst = junkName ? nameParts[0] || lead.first_name : lead.first_name;
   const nextLast =
     junkName && nameParts.length > 1 ? nameParts.slice(1).join(" ") : lead.last_name;
 
-  const nextPhone = !normalizePhone(lead.phone) && ident.phone ? ident.phone : lead.phone;
-  const nextEmail = !normalizeEmail(lead.email) && ident.email ? ident.email : lead.email;
+  const nextPhone =
+    asGuarantor || normalizePhone(lead.phone) ? lead.phone : ident.phone || lead.phone;
+  const nextEmail =
+    asGuarantor || normalizeEmail(lead.email) ? lead.email : ident.email || lead.email;
   const nextCompany =
     ident.company && !lead.legal_entity_name?.trim() ? ident.company : lead.legal_entity_name;
   const nextParty =
@@ -257,10 +269,14 @@ export async function applyWebsiteLeaseAppToLead(
     cs === "none" || cs === "app_requested" ? "app_submitted" : cs;
 
   const block = [
-    "TAdvantage / website financing form received (attached to this deal, not a new lead).",
+    asGuarantor
+      ? `TAdvantage / website financing form attached as GUARANTOR ${capacity === "guarantor2" ? "2" : "1"} (${ident.name}).`
+      : "TAdvantage / website financing form received (attached as PRIMARY on this deal).",
     `From: ${msg.from}`,
     `Subject: ${msg.subject}`,
     ident.company ? `Company: ${ident.company}` : "",
+    ident.email ? `Applicant email: ${ident.email}` : "",
+    ident.phone ? `Applicant phone: ${ident.phone}` : "",
     compactEmailBody(msg.body, 1500),
   ]
     .filter(Boolean)
@@ -299,11 +315,41 @@ export async function applyWebsiteLeaseAppToLead(
     )
   `;
 
+  if (asGuarantor) {
+    const slot: 1 | 2 = capacity === "guarantor2" ? 2 : 1;
+    await getOrCreateGuarantorApp(sql, {
+      leadId,
+      slot,
+      meId: null,
+      name: ident.name,
+      email: ident.email,
+      phone: ident.phone,
+    });
+  } else {
+    const extra = JSON.stringify({
+      full_name: ident.name || "",
+      email: ident.email || "",
+      phone: ident.phone || "",
+      company: ident.company || "",
+      source: "tadvantage",
+    });
+    await sql`
+      update credit_applications set
+        applicant_name = coalesce(nullif(applicant_name, ''), ${ident.name || null}),
+        applicant_email = coalesce(nullif(applicant_email, ''), ${ident.email || null}),
+        applicant_phone = coalesce(nullif(applicant_phone, ''), ${ident.phone || null}),
+        payload = coalesce(payload, '{}'::jsonb) || ${extra}::jsonb,
+        updated_at = now()
+      where lead_id = ${leadId} and coalesce(applicant_role, 'primary') = 'primary'
+    `;
+  }
+
   return {
-    leadName: nextName,
+    leadName: asGuarantor ? lead.name : nextName,
     assignedTo: lead.assigned_to,
     unpaused,
     stageMoved,
+    capacity,
   };
 }
 
@@ -316,12 +362,19 @@ export async function notifyLeaseAppAttached(
     subject: string;
     unpaused: boolean;
     stageMoved: string | null;
+    capacity?: LeaseAppCapacity;
   },
 ) {
   const base = appBaseUrl();
   const link = `${base}/leads/${opts.leadId}?tab=credit`;
   const bits = [
-    `A website financing form was attached to ${opts.leadName}.`,
+    `A website financing form was attached to ${opts.leadName}${
+      opts.capacity === "guarantor1"
+        ? " as guarantor 1"
+        : opts.capacity === "guarantor2"
+          ? " as guarantor 2"
+          : ""
+    }.`,
     opts.unpaused ? "The deal was unpaused (they just applied)." : "",
     opts.stageMoved ? `Stage: ${opts.stageMoved}.` : "",
     `Credit is marked App received if it was still empty.`,
@@ -383,8 +436,8 @@ export async function listUnmatchedLeaseApps(sql: Sql): Promise<UnmatchedLeaseAp
 
 export async function attachUnmatchedLeaseApp(
   sql: Sql,
-  opts: { importId: string; leadId: string },
-): Promise<{ ok: true; leadName: string }> {
+  opts: { importId: string; leadId: string; capacity?: LeaseAppCapacity },
+): Promise<{ ok: true; leadName: string; capacity: LeaseAppCapacity }> {
   const rows = await sql<{
     id: string;
     from_address: string | null;
@@ -413,11 +466,12 @@ export async function attachUnmatchedLeaseApp(
     stock: null,
     isBusiness: Boolean(row.parsed_company),
   };
+  const capacity: LeaseAppCapacity = opts.capacity || "primary";
   const applied = await applyWebsiteLeaseAppToLead(sql, opts.leadId, ident, {
     from: row.from_address || "no-reply@tadvantage.ca",
     subject: row.subject || "Financing form",
     body: row.raw_body || row.raw_snippet || "",
-  });
+  }, capacity);
   await sql`
     update email_imports set
       lead_id = ${opts.leadId},
@@ -432,8 +486,9 @@ export async function attachUnmatchedLeaseApp(
     subject: row.subject || "Financing form",
     unpaused: applied.unpaused,
     stageMoved: applied.stageMoved,
+    capacity,
   });
-  return { ok: true, leadName: applied.leadName };
+  return { ok: true, leadName: applied.leadName, capacity };
 }
 
 export function isRetryableUnmatched(row: {

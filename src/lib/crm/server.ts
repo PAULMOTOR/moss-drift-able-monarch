@@ -1818,7 +1818,7 @@ export const listUnmatchedLeaseAppsFn = createServerFn({ method: "GET" })
 
 export const attachUnmatchedLeaseAppFn = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((data: { importId: string; leadId: string }) => data)
+  .validator((data: { importId: string; leadId: string; capacity?: "primary" | "guarantor1" | "guarantor2" }) => data)
   .handler(async ({ context, data }) => {
     const me = await requireProfile(context.userId);
     if (!isElevatedStaff(me)) throw new Error("Not allowed");

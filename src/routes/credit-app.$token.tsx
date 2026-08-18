@@ -34,6 +34,7 @@ function PublicCreditAppPage() {
   const [partyType, setPartyType] = useState<"individual" | "business">("individual");
   const [busy, setBusy] = useState(false);
   const [uploaded, setUploaded] = useState<string[]>([]);
+  const [isGuarantor, setIsGuarantor] = useState(false);
   const [files, setFiles] = useState<Record<string, File | null>>({
     dl_front: null,
     dl_back: null,
@@ -44,6 +45,7 @@ function PublicCreditAppPage() {
     void getPublicCreditApp({ data: { token } })
       .then((res) => {
         setLead(res.lead);
+        setIsGuarantor(res.application.applicant_role === "guarantor");
         setPayload({
           full_name: res.lead.name || "",
           first_name: res.lead.first_name || "",
@@ -163,7 +165,9 @@ function PublicCreditAppPage() {
       <header className="border-b bg-[#008272] px-4 py-4 text-white">
         <div className="mx-auto max-w-3xl">
           <p className="text-xs font-semibold tracking-wide opacity-90">PAUL MOTOR LEASING</p>
-          <h1 className="text-xl font-bold">Credit application</h1>
+          <h1 className="text-xl font-bold">
+            {isGuarantor ? "Guarantor credit application" : "Credit application"}
+          </h1>
           {lead?.vehicle_interest ? (
             <p className="mt-1 text-sm opacity-90">Vehicle: {lead.vehicle_interest}</p>
           ) : null}
@@ -174,8 +178,9 @@ function PublicCreditAppPage() {
         {step === "intro" ? (
           <CardBox title="Welcome">
             <p className="text-sm leading-relaxed text-muted-foreground">
-              Please complete this short application and upload two pieces of ID. No password is
-              required. Your documents are only visible to authorized Paul Motor staff.
+              Please complete this short {isGuarantor ? "guarantor " : ""}application and upload two
+              pieces of ID. No password is required. Your documents are only visible to authorized
+              Paul Motor staff.
             </p>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               <Button disabled={busy} onClick={() => setStep("individual")}>
@@ -193,7 +198,7 @@ function PublicCreditAppPage() {
         ) : null}
 
         {step === "individual" ? (
-          <CardBox title="Individual applicant">
+          <CardBox title={isGuarantor ? "Guarantor" : "Individual applicant"}>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Full name *" value={payload.full_name} onChange={(v) => setField("full_name", v)} />
               <Field label="Phone *" value={payload.phone} onChange={(v) => setField("phone", v)} />

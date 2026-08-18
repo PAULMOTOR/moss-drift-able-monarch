@@ -398,7 +398,7 @@ function LeadDetail() {
 
       <PageHeader
         title={lead.name}
-        description={[lead.party_type === "business" ? lead.legal_entity_name : null, lead.partner_name ? `via ${lead.partner_name}` : null, lead.phone, lead.email].filter(Boolean).join(" · ") || "No contact yet"}
+        description={[lead.party_type === "business" ? lead.legal_entity_name : null, lead.partner_name ? `via ${lead.partner_name}` : null, lead.phone, lead.email, lead.guarantor ? `Guarantor: ${lead.guarantor}` : null].filter(Boolean).join(" · ") || "No contact yet"}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button asChild size="sm" variant="outline">
@@ -520,6 +520,10 @@ function LeadDetail() {
                 <div>
                   <dt className="text-xs text-muted-foreground">Client</dt>
                   <dd className="font-medium">{lead.name}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Guarantor(s)</dt>
+                  <dd className="font-medium">{lead.guarantor || "—"}</dd>
                 </div>
                 <div>
                   <dt className="text-xs text-muted-foreground">Credit status</dt>
