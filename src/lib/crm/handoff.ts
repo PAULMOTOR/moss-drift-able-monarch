@@ -7,6 +7,14 @@ import { getSql, type Sql } from "@/lib/db";
 import { sendCrmEmail } from "./mail";
 import { publicAppUrl } from "./public-url";
 import { CUSTOMER_CHECKLIST, VEHICLE_CHECKLIST } from "./types";
+import {
+  buildRetailQuoteHtml,
+  calcLeaseOption,
+  emptyOption,
+  taxRateForProvince,
+  type ClientQuoteInfo,
+  type LeaseOptionResult,
+} from "./lease-quote";
 
 export const HANDOFF_SECRET_ENV = "CRM_HANDOFF_SECRET";
 
@@ -323,6 +331,129 @@ function money(n: number | null): string {
   }).format(n);
 }
 
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function websiteQuoteLines(input: PalmettoHandoffInput): string[] {
+  return [
+    input.price != null ? `Price ${money(input.price)}` : "",
+    input.down != null ? `Cash down ${money(input.down)}` : "",
+    input.residual != null ? `Residual ${money(input.residual)}` : "",
+    input.term != null ? `Term ${input.term} mo` : "",
+    input.monthly != null ? `Monthly ${money(input.monthly)}` : "",
+    input.rate != null ? `Rate ${input.rate}%` : "",
+  ].filter(Boolean);
+}
+
+/** Persist the Palmetto website numbers as a real CRM lease quote (Lease quote button). */
+async function persistWebsiteQuote(
+  sql: Sql,
+  leadId: string,
+  input: PalmettoHandoffInput,
+  name: string,
+  createdBy: string | null,
+): Promise<string | null> {
+  if (input.price == null && input.monthly == null) return null;
+  const province = (input.province || "QC").toUpperCase() || "QC";
+  const start = todayIso();
+  const client: ClientQuoteInfo = {
+    clientName: name,
+    phone: input.phone,
+    email: input.email,
+    guarantor: "N/A",
+    address: input.address,
+    city: input.city,
+    province,
+    postalCode: input.postal,
+    salesman: "Palmetto website",
+    year: input.year ? Number(input.year) || null : null,
+    make: input.make,
+    model: input.model,
+    trim: input.trim,
+    color: "",
+    km: null,
+    vin: input.vin,
+    stock: input.stock,
+    condition: "used",
+    kmPerYear: 16000,
+    excessKmFee: 0.9,
+    quoteDate: new Date().toLocaleDateString("en-CA"),
+    deliveryDate: start,
+    startDate: start,
+    notes: [
+      "Website quote from Palmetto Apply.",
+      input.referenceId ? `Reference ${input.referenceId}` : "",
+      input.monthly != null ? `Monthly shown to customer: ${money(input.monthly)}` : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+    adminFee: 0,
+    trackerFee: 0,
+    lienPpsa: 0,
+    license: 0,
+    tireTax: 0,
+    daysLeftOverride: null,
+    contractStyle: "qc_individual_en",
+    partyType: "individual",
+    tradeVin: "",
+    tradeYear: null,
+    tradeMake: "",
+    tradeModel: "",
+    tradeTrim: "",
+    tradeKm: null,
+    tradeKind: "financed",
+  };
+
+  const computed = calcLeaseOption(
+    emptyOption({
+      cost: input.price || 0,
+      deposit: input.down || 0,
+      residual: input.residual || 0,
+      termMonths: input.term || 36,
+      ratePct: input.rate || 0,
+      handling: 0,
+    }),
+    province,
+    { admin: 0, tracker: 0, lienPpsa: 0, license: 0, tireTax: 0 },
+    { startDate: start },
+  );
+
+  // Keep the monthly the customer saw on Palmetto; CRM engine can differ slightly.
+  const option: LeaseOptionResult =
+    input.monthly != null && Number.isFinite(input.monthly)
+      ? {
+          ...computed,
+          payment: input.monthly,
+          totalPayment: Math.round((input.monthly + computed.taxOnPayment) * 100) / 100,
+        }
+      : computed;
+
+  const taxRate = taxRateForProvince(province);
+  const html = buildRetailQuoteHtml(client, [option], taxRate);
+  const quoteId = uid();
+  const title = `Palmetto · ${input.vehicle || name} · ${option.termMonths}mo`;
+  const payload = {
+    client,
+    options: [option],
+    taxRate,
+    selectedOption: 1,
+    source: "palmetto",
+  };
+
+  await sql`
+    insert into lease_quotes (
+      id, lead_id, created_by, client_name, payload, retail_html,
+      selected_option, status, title
+    ) values (
+      ${quoteId}, ${leadId}, ${createdBy}, ${name},
+      ${JSON.stringify(payload)}::jsonb, ${html},
+      1, 'draft', ${title}
+    )
+  `;
+  return quoteId;
+}
+
 export async function ingestPalmettoLease(
   input: PalmettoHandoffInput,
 ): Promise<{ ok: true; id: string; duplicate?: boolean }> {
@@ -345,14 +476,7 @@ export async function ingestPalmettoLease(
   const partnerId = await findOrCreateDealer(sql, input);
   const assigned = await resolveLucasId(sql);
   const leadId = uid();
-  const quoteLines = [
-    input.price != null ? `Price ${money(input.price)}` : "",
-    input.down != null ? `Cash down ${money(input.down)}` : "",
-    input.residual != null ? `Residual ${money(input.residual)}` : "",
-    input.term != null ? `Term ${input.term} mo` : "",
-    input.monthly != null ? `Monthly ${money(input.monthly)}` : "",
-    input.rate != null ? `Rate ${input.rate}%` : "",
-  ].filter(Boolean);
+  const quoteLines = websiteQuoteLines(input);
   const notes = [
     "Palmetto website Apply",
     input.referenceId ? `Reference: ${input.referenceId}` : "",
@@ -360,7 +484,7 @@ export async function ingestPalmettoLease(
     input.vin ? `VIN: ${input.vin}` : "",
     input.stock ? `Stock: ${input.stock}` : "",
     input.creditConsent ? "Credit consent: yes" : "Credit consent: not marked",
-    quoteLines.length ? `Quote: ${quoteLines.join(" · ")}` : "",
+    quoteLines.length ? `Quote:\n${quoteLines.join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -431,11 +555,26 @@ export async function ingestPalmettoLease(
   await sql`update leads set credit_app_id = ${appId}, updated_at = now() where id = ${leadId}`;
   await seedChecklist(sql, appId);
 
+  let quoteId: string | null = null;
+  try {
+    quoteId = await persistWebsiteQuote(sql, leadId, input, name, assigned);
+  } catch (e) {
+    console.error("[palmetto-handoff] lease quote persist failed", e);
+  }
+
+  const activityBody = [
+    `Palmetto Apply${input.referenceId ? ` · ${input.referenceId}` : ""}${input.dealerName ? ` · ${input.dealerName}` : ""}`,
+    input.vehicle || "",
+    ...quoteLines,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   await sql`
     insert into lead_activities (id, lead_id, kind, body, created_by_name)
     values (
-      ${uid()}, ${leadId}, 'system',
-      ${`Palmetto Apply${input.referenceId ? ` · ${input.referenceId}` : ""}${input.dealerName ? ` · ${input.dealerName}` : ""}`},
+      ${uid()}, ${leadId}, ${quoteId ? "quote" : "system"},
+      ${activityBody},
       ${"Palmetto"}
     )
   `;

@@ -636,6 +636,21 @@ function LeadDetail() {
         <TabsContent value="lead" className="mt-0">
       <div className="grid gap-6 lg:grid-cols-5">
         <div className="space-y-6 lg:col-span-3">
+          {lead.quote_notes ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="font-display text-xl">Website quote</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="whitespace-pre-wrap text-sm tabular-nums leading-relaxed">
+                  {lead.quote_notes}
+                </p>
+                {lead.vehicle_interest ? (
+                  <p className="mt-2 text-xs text-muted-foreground">{lead.vehicle_interest}</p>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
           <Card>
             <CardHeader>
               <CardTitle className="font-display text-xl">Activity</CardTitle>
