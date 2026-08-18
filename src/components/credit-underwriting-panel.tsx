@@ -11,6 +11,7 @@ import {
   requestLesseeDocument,
   updateChecklistItem,
   uploadChecklistDocument,
+  uploadDealDocument,
 } from "@/lib/crm/credit";
 import {
   listUnderwriteReports,
@@ -25,6 +26,7 @@ import {
 import { emailFirstInvoice } from "@/lib/crm/server";
 import {
   LESSEE_DOC_TYPES,
+  STAFF_UPLOAD_DOC_TYPES,
   checklistDef,
   lesseeDocLabel,
   type ChecklistDef,
@@ -78,6 +80,7 @@ export function CreditUnderwritingPanel({
   const [notifyLessee, setNotifyLessee] = useState(false);
   const [showRequestDocs, setShowRequestDocs] = useState(false);
   const [docKinds, setDocKinds] = useState<string[]>([]);
+  const [uploadKind, setUploadKind] = useState<string>("other");
   const [docEmail, setDocEmail] = useState("");
   const [uwReports, setUwReports] = useState<UnderwriteReport[]>([]);
   const [uwBusy, setUwBusy] = useState(false);
@@ -123,6 +126,7 @@ export function CreditUnderwritingPanel({
 
   const { application: app, documents, checklist, lead } = data;
   const canStaff = ["admin", "rep", "gsm", "credit_manager"].includes(me.role);
+  const canUpload = canStaff;
   const canCustomerChecklist = ["admin", "credit_manager", "gsm"].includes(me.role);
   const canApprove = ["admin", "gsm"].includes(me.role);
   const canDeleteDocs = ["admin", "gsm"].includes(me.role);
@@ -166,6 +170,20 @@ export function CreditUnderwritingPanel({
           {canStaff ? (
             <Button size="sm" onClick={() => setShowRequestApp(true)}>
               Request App & IDs
+            </Button>
+          ) : null}
+          {canStaff ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                setDocKinds([]);
+                setDocEmail(lead.email || app.app_email || "");
+                setShowRequestDocs(true);
+              }}
+            >
+              Request Docs from Lessee
             </Button>
           ) : null}
           {canStaff && appReady ? (
@@ -485,6 +503,7 @@ export function CreditUnderwritingPanel({
           items={vehicleItems}
           documents={documents}
           canEdit={canStaff && me.role !== "broker"}
+          canUpload={canUpload}
           canDeleteDocs={canDeleteDocs}
           section="vehicle"
           leadId={leadId}
@@ -525,6 +544,7 @@ export function CreditUnderwritingPanel({
           items={customerItems}
           documents={documents}
           canEdit={canCustomerChecklist}
+          canUpload={canUpload}
           canDeleteDocs={canDeleteDocs}
           section="customer"
           leadId={leadId}
@@ -559,26 +579,67 @@ export function CreditUnderwritingPanel({
             toast.success("Document removed");
             await load();
           }}
-          extraActions={
-            canCustomerChecklist ? (
-              <div className="mb-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    setDocKinds([]);
-                    setDocEmail(lead.email || app.app_email || "");
-                    setShowRequestDocs(true);
-                  }}
-                >
-                  Request Docs from Lessee
-                </Button>
-              </div>
-            ) : null
-          }
+          extraActions={null}
         />
       </div>
+
+      {canUpload ? (
+        <div className="rounded-sm border border-border p-3">
+          <h4 className="mb-1 text-sm font-semibold">Upload a document</h4>
+          <p className="mb-2 text-xs text-muted-foreground">
+            Attach any file to this deal — IDs, bank statements, insurance, or other.
+          </p>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-[10rem] flex-1">
+              <Label className="text-xs">Type</Label>
+              <select
+                className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                value={uploadKind}
+                onChange={(e) => setUploadKind(e.target.value)}
+              >
+                {STAFF_UPLOAD_DOC_TYPES.map((t) => (
+                  <option key={t.key} value={t.key}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="min-w-[12rem] flex-[2]">
+              <Label className="text-xs">File</Label>
+              <Input
+                type="file"
+                accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.heic"
+                className="mt-1 h-9 text-xs"
+                disabled={busy}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setBusy(true);
+                  try {
+                    const fileData = await readFile(file);
+                    await uploadDealDocument({
+                      data: {
+                        leadId,
+                        kind: uploadKind,
+                        fileName: file.name,
+                        mimeType: file.type || "application/octet-stream",
+                        fileData,
+                      },
+                    });
+                    toast.success(`${file.name} uploaded`);
+                    await load();
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : "Upload failed");
+                  } finally {
+                    setBusy(false);
+                    e.target.value = "";
+                  }
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div>
         <h4 className="mb-2 text-sm font-semibold">All documents</h4>
@@ -1164,6 +1225,7 @@ function ChecklistSection({
   items,
   documents,
   canEdit,
+  canUpload,
   canDeleteDocs,
   section,
   busy,
@@ -1189,6 +1251,7 @@ function ChecklistSection({
     file_data: string;
   }[];
   canEdit: boolean;
+  canUpload: boolean;
   canDeleteDocs: boolean;
   section: "vehicle" | "customer";
   leadId: string;
@@ -1241,7 +1304,7 @@ function ChecklistSection({
                   ) : null}
                 </span>
               </label>
-              {needsUpload && canEdit ? (
+              {needsUpload && canUpload ? (
                 <div className="mt-1.5 space-y-1 pl-6">
                   <Input
                     type="file"

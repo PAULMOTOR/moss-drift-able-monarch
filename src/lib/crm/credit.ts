@@ -10,6 +10,7 @@ import { fetchPartnerForLead, referralClientCopy } from "./partners";
 import {
   CUSTOMER_CHECKLIST,
   LESSEE_DOC_TYPES,
+  STAFF_UPLOAD_DOC_TYPES,
   VEHICLE_CHECKLIST,
   checklistDef,
   lesseeDocLabel,
@@ -537,7 +538,7 @@ export const uploadChecklistDocument = createServerFn({ method: "POST" })
     if (section === "vehicle" && !["admin", "rep", "gsm", "credit_manager"].includes(me.role)) {
       throw new Error("Not allowed");
     }
-    if (section === "customer" && !["admin", "credit_manager", "gsm"].includes(me.role)) {
+    if (section === "customer" && !["admin", "credit_manager", "gsm", "rep"].includes(me.role)) {
       throw new Error("Not allowed");
     }
     if (data.fileData.length > 6_000_000) throw new Error("File too large (max ~4MB)");
@@ -564,6 +565,61 @@ export const uploadChecklistDocument = createServerFn({ method: "POST" })
       values (
         ${uid()}, ${data.leadId}, 'credit',
         ${`Uploaded ${data.fileName} for checklist: ${def.label}`},
+        ${me.id}, ${me.name}
+      )
+    `;
+    return { ok: true as const, id };
+  });
+
+/** Sales or credit attach any deal document (not tied to a checklist line). */
+export const uploadDealDocument = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: {
+      leadId: string;
+      kind: string;
+      fileName: string;
+      mimeType?: string;
+      fileData: string;
+    }) => data,
+  )
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    if (!["admin", "rep", "gsm", "credit_manager"].includes(me.role)) {
+      throw new Error("Not allowed");
+    }
+    const sql = await getSql();
+    const leads = await sql<{ id: string; assigned_to: string | null }>`
+      select id, assigned_to from leads where id = ${data.leadId} limit 1
+    `;
+    if (!leads[0]) throw new Error("Lead not found");
+    if (!canSeeCredit(me, leads[0].assigned_to)) {
+      throw new Error("You can only upload documents on your deals");
+    }
+    const allowed = new Set<string>([
+      ...STAFF_UPLOAD_DOC_TYPES.map((d) => d.key),
+      ...VEHICLE_CHECKLIST.filter((d) => d.needsUpload).map((d) => d.key),
+      ...CUSTOMER_CHECKLIST.filter((d) => d.needsUpload).map((d) => d.key),
+    ]);
+    const kind = data.kind.trim();
+    if (!allowed.has(kind)) throw new Error("Unknown document type");
+    if (data.fileData.length > 6_000_000) throw new Error("File too large (max ~4MB)");
+    const app = await getOrCreateApp(sql, data.leadId, me.id);
+    const id = uid();
+    await sql`
+      insert into credit_documents (
+        id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_by, uploaded_via
+      ) values (
+        ${id}, ${app.id}, ${data.leadId}, ${kind},
+        ${data.fileName}, ${data.mimeType || "application/octet-stream"}, ${data.fileData},
+        ${me.id}, 'crm'
+      )
+    `;
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
+      values (
+        ${uid()}, ${data.leadId}, 'credit',
+        ${`Uploaded ${data.fileName} (${lesseeDocLabel(kind)})`},
         ${me.id}, ${me.name}
       )
     `;
@@ -868,6 +924,13 @@ export const requestLesseeDocument = createServerFn({ method: "POST" })
       throw new Error("Not allowed");
     }
     const sql = await getSql();
+    const owner = await sql<{ assigned_to: string | null }>`
+      select assigned_to from leads where id = ${data.leadId} limit 1
+    `;
+    if (!owner[0]) throw new Error("Lead not found");
+    if (!canSeeCredit(me, owner[0].assigned_to)) {
+      throw new Error("You can only request documents on your deals");
+    }
     const app = await getOrCreateApp(sql, data.leadId, me.id);
     const validKeys = new Set<string>([
       ...LESSEE_DOC_TYPES.map((d) => d.key),

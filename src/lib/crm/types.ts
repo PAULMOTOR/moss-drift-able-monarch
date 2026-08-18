@@ -896,13 +896,28 @@ export const LESSEE_DOC_TYPES = [
 
 export type LesseeDocTypeKey = (typeof LESSEE_DOC_TYPES)[number]["key"];
 
+/** Extra kinds sales or credit can attach on a deal (not a lessee request). */
+export const STAFF_UPLOAD_DOC_TYPES = [
+  ...LESSEE_DOC_TYPES,
+  { key: "dl_front", label: "Driver's licence (front)" },
+  { key: "dl_back", label: "Driver's licence (back)" },
+  { key: "id_second", label: "Second ID" },
+  { key: "insurance", label: "Insurance" },
+  { key: "contract", label: "Contract / agreement" },
+  { key: "other", label: "Other" },
+] as const;
+
 export function checklistDef(section: "vehicle" | "customer", key: string): ChecklistDef | undefined {
   const list = section === "vehicle" ? VEHICLE_CHECKLIST : CUSTOMER_CHECKLIST;
   return list.find((i) => i.key === key);
 }
 
 export function lesseeDocLabel(key: string) {
-  return LESSEE_DOC_TYPES.find((d) => d.key === key)?.label ?? key.replace(/_/g, " ");
+  return (
+    STAFF_UPLOAD_DOC_TYPES.find((d) => d.key === key)?.label ??
+    LESSEE_DOC_TYPES.find((d) => d.key === key)?.label ??
+    key.replace(/_/g, " ")
+  );
 }
 
 /** Team calendar event types (domain derived). */
