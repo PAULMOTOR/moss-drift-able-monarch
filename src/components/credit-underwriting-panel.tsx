@@ -86,6 +86,8 @@ export function CreditUnderwritingPanel({
   const [docEmail, setDocEmail] = useState("");
   const [uwReports, setUwReports] = useState<UnderwriteReport[]>([]);
   const [uwBusy, setUwBusy] = useState(false);
+  const [uwError, setUwError] = useState("");
+  const uwCardRef = useRef<HTMLDivElement>(null);
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
   const [showAddGuar, setShowAddGuar] = useState(false);
   const [guarName, setGuarName] = useState("");
@@ -246,25 +248,34 @@ export function CreditUnderwritingPanel({
               disabled={busy || uwBusy}
               onClick={async () => {
                 setUwBusy(true);
+                setUwError("");
                 toast.message("Reading the file and documents — this can take a minute");
                 try {
                   const report = await runAiUnderwrite({ data: { leadId } });
                   setUwReports((prev) => [report, ...prev.filter((r) => r.id !== report.id)]);
                   toast.success("Underwrite ready — it read the file and the documents");
                 } catch (e) {
-                  const msg =
-                    e instanceof Error && e.message
-                      ? e.message
-                      : typeof e === "string" && e
-                        ? e
-                        : "Underwrite timed out or failed. Refresh this Credit tab and try again.";
+                  const msg = underwriteErr(e);
+                  setUwError(msg);
                   toast.error(msg);
-                  const reps = await listUnderwriteReports({ data: { leadId } }).catch(
-                    (): UnderwriteReport[] => [],
-                  );
-                  if (reps.length) setUwReports(reps);
+                  for (let i = 0; i < 8; i += 1) {
+                    await new Promise((r) => setTimeout(r, 8000));
+                    const reps = await listUnderwriteReports({ data: { leadId } }).catch(
+                      (): UnderwriteReport[] => [],
+                    );
+                    if (!reps.length) continue;
+                    setUwReports(reps);
+                    if (reps[0] && !/Reading the file/.test(reps[0].summary || "")) {
+                      setUwError("");
+                      toast.success("Underwrite ready");
+                      break;
+                    }
+                  }
                 } finally {
                   setUwBusy(false);
+                  requestAnimationFrame(() =>
+                    uwCardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }),
+                  );
                 }
               }}
             >
@@ -330,6 +341,20 @@ export function CreditUnderwritingPanel({
             </Button>
           ) : null}
         </div>
+      </div>
+
+      <div ref={uwCardRef} className="space-y-2">
+        {uwBusy ? (
+          <div className="rounded-sm border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+            Reading the file and documents — stay on this tab. The result appears here.
+          </div>
+        ) : null}
+        {uwError && !uwBusy ? (
+          <div className="rounded-sm border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-950">
+            {uwError}
+          </div>
+        ) : null}
+        {uwReports[0] ? <UnderwriteCard report={uwReports[0]} /> : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-sm border border-border bg-muted/30 px-2 py-2">
@@ -437,10 +462,6 @@ export function CreditUnderwritingPanel({
             existing file only.
           </p>
         </div>
-      ) : null}
-
-      {uwReports[0] ? (
-        <UnderwriteCard report={uwReports[0]} />
       ) : null}
 
       {primaryApp.approval_notes &&
@@ -1395,6 +1416,21 @@ export function CreditUnderwritingPanel({
   );
 }
 
+function underwriteErr(e: unknown): string {
+  if (e instanceof Error && e.message) return e.message;
+  if (typeof e === "string" && e.trim()) return e;
+  if (e && typeof e === "object") {
+    const o = e as { message?: unknown; data?: unknown };
+    if (typeof o.message === "string" && o.message.trim()) return o.message;
+    if (typeof o.data === "string" && o.data.trim()) return o.data;
+    if (o.data && typeof o.data === "object") {
+      const d = o.data as { message?: unknown };
+      if (typeof d.message === "string" && d.message.trim()) return d.message;
+    }
+  }
+  return "Underwrite timed out or failed. Stay on this tab — if a result was saved it will appear above. Otherwise click Run again.";
+}
+
 function recLabel(r: UnderwriteReport["recommendation"]) {
   if (r === "approve") return "Recommend approve";
   if (r === "approve_with_conditions") return "Approve with conditions";
@@ -1403,8 +1439,10 @@ function recLabel(r: UnderwriteReport["recommendation"]) {
 }
 
 function UnderwriteCard({ report }: { report: UnderwriteReport }) {
-  const tone =
-    report.recommendation === "approve"
+  const pending = report.model === "pending" || /Reading the file/.test(report.summary || "");
+  const tone = pending
+    ? "border-amber-300 bg-amber-50 text-amber-950"
+    : report.recommendation === "approve"
       ? "border-emerald-300 bg-emerald-50 text-emerald-950"
       : report.recommendation === "decline"
         ? "border-red-200 bg-red-50 text-red-950"
@@ -1415,7 +1453,7 @@ function UnderwriteCard({ report }: { report: UnderwriteReport }) {
     <div className={`space-y-2 rounded-sm border p-3 text-sm ${tone}`}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <p className="font-semibold">{recLabel(report.recommendation)}</p>
+          <p className="font-semibold">{pending ? "Reading the file…" : recLabel(report.recommendation)}</p>
           <p className="text-[11px] opacity-80">
             {report.ran_by_name || "GSM"} · {new Date(report.created_at).toLocaleString("en-CA")}
             {report.model ? ` · ${report.model}` : ""}

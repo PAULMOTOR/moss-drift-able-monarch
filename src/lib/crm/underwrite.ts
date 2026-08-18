@@ -230,7 +230,7 @@ async function callGrok(
       filesSent.push(f.name);
     };
     await Promise.all(
-      attachments.slice(0, 8).map((f) =>
+      attachments.slice(0, 4).map((f) =>
         uploadOne(f).catch(() => {
           filesSent.push(`${f.name} (upload error)`);
         }),
@@ -245,16 +245,6 @@ async function callGrok(
       "Conservative: large cash down to mitigate; decline anyone shady or criminal. Reply with JSON only.";
 
     const model = models[0] || "grok-4.6";
-    const fullContent: Array<Record<string, unknown>> = [
-      { type: "input_text", text: prompt },
-      ...fileParts,
-      ...imageParts,
-    ];
-    const compactContent: Array<Record<string, unknown>> = [
-      { type: "input_text", text: prompt },
-      ...fileParts.slice(0, 4),
-      ...imageParts.slice(0, 3),
-    ];
 
     const ask = async (content: Array<Record<string, unknown>>, ms: number) => {
       let resIn: Response;
@@ -268,6 +258,8 @@ async function callGrok(
           body: JSON.stringify({
             model,
             instructions: system,
+            store: false,
+            max_output_tokens: 2500,
             input: [{ role: "user", content }],
           }),
           signal: AbortSignal.timeout(ms),
@@ -289,13 +281,30 @@ async function callGrok(
       throw new Error(`Grok ${model} ${resIn.status}: ${resBody.slice(0, 240)}`);
     };
 
+    const fullContent: Array<Record<string, unknown>> = [
+      { type: "input_text", text: prompt },
+      ...fileParts,
+      ...imageParts,
+    ];
+
     try {
-      const text = await ask(fullContent, 80_000);
+      const text = await ask(fullContent, 50_000);
       return { text, model, filesSent };
     } catch (first) {
       const firstMsg = first instanceof Error ? first.message : String(first);
-      if (/ 400[:\s]/.test(firstMsg) && fileParts.length + imageParts.length > 4) {
-        const text = await ask(compactContent, 60_000);
+      if (fileParts.length + imageParts.length > 0) {
+        const text = await ask(
+          [
+            {
+              type: "input_text",
+              text:
+                `${prompt}\n\nNOTE: Attached documents could not be opened (${firstMsg.slice(0, 180)}). ` +
+                `Underwrite from the structured file, checklists, and staff notes.`,
+            },
+          ],
+          30_000,
+        );
+        filesSent.push(`(files not read: ${firstMsg.slice(0, 140)})`);
         return { text, model, filesSent };
       }
       throw new Error(firstMsg);
@@ -332,7 +341,11 @@ function extractResponseText(body: string): string {
       output?: Array<{
         type?: string;
         text?: string;
-        content?: Array<{ text?: string; type?: string; output_text?: string }>;
+        content?: Array<{
+          text?: string;
+          type?: string;
+          output_text?: string;
+        }>;
       }>;
     };
     if (json.output_text?.trim()) return json.output_text.trim();
@@ -340,8 +353,8 @@ function extractResponseText(body: string): string {
     for (const item of json.output || []) {
       if (typeof item.text === "string" && item.text.trim()) parts.push(item.text);
       for (const c of item.content || []) {
-        if (c.text) parts.push(c.text);
-        if (c.output_text) parts.push(c.output_text);
+        if (typeof c.text === "string" && c.text.trim()) parts.push(c.text);
+        if (typeof c.output_text === "string" && c.output_text.trim()) parts.push(c.output_text);
       }
     }
     return parts.join("\n").trim();
@@ -471,7 +484,7 @@ export const setBocPrime = createServerFn({ method: "POST" })
     return { prime };
   });
 
-export const listUnderwriteReports = createServerFn({ method: "GET" })
+export const listUnderwriteReports = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((data: { leadId: string }) => data)
   .handler(async ({ context, data }): Promise<UnderwriteReport[]> => {
@@ -508,6 +521,19 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
     );
     const lead = leadRows[0];
     if (!lead) throw new Error("Lead not found");
+
+    const pendingId = uid();
+    await sql`
+      insert into underwrite_reports (
+        id, lead_id, application_id, ran_by, ran_by_name,
+        recommendation, summary, conditions_json, red_flags_json,
+        policy_json, inputs_json, model
+      ) values (
+        ${pendingId}, ${data.leadId}, ${null}, ${me.id}, ${me.name},
+        ${"send_back"}, ${"Reading the file and documents — this can take a minute."},
+        ${"[]"}, ${"[]"}, ${"{}"}, ${"{}"}, ${"pending"}
+      )
+    `;
 
     const apps = await sql.query<Record<string, unknown>>(
       `select id, lead_id, status, party_type, payload, applicant_role, guarantor_slot,
@@ -572,7 +598,7 @@ export const runAiUnderwrite = createServerFn({ method: "POST" })
       };
       return rank(a.kind) - rank(b.kind);
     });
-    const keepIds = rankedMeta.slice(0, 8).map((d) => d.id);
+    const keepIds = rankedMeta.slice(0, 4).map((d) => d.id);
     const docs = keepIds.length
       ? await sql.query<{
           id: string;
@@ -744,8 +770,29 @@ Return JSON only:
   "carfax_claim": number or null
 }`;
 
-    const grok = await callGrok(prompt, attachments.slice(0, 8));
-    const ai = parseAiJson(grok.text);
+    let grok: { text: string; model: string; filesSent: string[] };
+    let ai: ReturnType<typeof parseAiJson>;
+    try {
+      grok = await callGrok(prompt, attachments.slice(0, 4));
+      ai = parseAiJson(grok.text);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      grok = { text: "", model: "policy-fallback", filesSent: [] };
+      ai = {
+        recommendation: "send_back",
+        summary:
+          `AI underwrite did not finish (${msg.slice(0, 280)}). ` +
+          `Policy gates below are from the structured file. Click Run AI underwrite again.`,
+        conditions: ["Re-run AI underwrite"],
+        red_flags: [msg.slice(0, 300)],
+        id_consistency: "",
+        suggested_cash_down: null,
+        credit_score: null,
+        citizenship: null,
+        market_value: null,
+        carfax_claim: null,
+      };
+    }
 
     const citizenship =
       ai.citizenship ||
@@ -797,18 +844,17 @@ Return JSON only:
       reviewerNotes: data.reviewerNotes || "",
     };
 
-    const id = uid();
+    const id = pendingId;
     await sql`
-      insert into underwrite_reports (
-        id, lead_id, application_id, ran_by, ran_by_name,
-        recommendation, summary, conditions_json, red_flags_json,
-        policy_json, inputs_json, model
-      ) values (
-        ${id}, ${data.leadId}, ${app?.id ? String(app.id) : null}, ${me.id}, ${me.name},
-        ${recommendation}, ${ai.summary},
-        ${JSON.stringify(conditions)}, ${JSON.stringify(ai.red_flags)},
-        ${JSON.stringify(policy)}, ${JSON.stringify(inputsSnap)}, ${grok.model}
-      )
+      update underwrite_reports set
+        recommendation = ${recommendation},
+        summary = ${ai.summary},
+        conditions_json = ${JSON.stringify(conditions)},
+        red_flags_json = ${JSON.stringify(ai.red_flags)},
+        policy_json = ${JSON.stringify(policy)},
+        inputs_json = ${JSON.stringify(inputsSnap)},
+        model = ${grok.model}
+      where id = ${pendingId}
     `;
     await sql`
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
