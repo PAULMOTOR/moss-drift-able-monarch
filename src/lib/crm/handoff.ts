@@ -110,56 +110,118 @@ export type PalmettoHandoffInput = {
   rate: number | null;
 };
 
+function dollarsOrCents(
+  dollar: unknown,
+  cents: unknown,
+): number | null {
+  const d = num(dollar);
+  if (d != null) return d;
+  const c = num(cents);
+  if (c == null) return null;
+  // Palmetto stores money in cents (359000000 = $3,590,000)
+  return Math.round(c) / 100;
+}
+
+function ratePercent(v: unknown): number | null {
+  const n = num(v);
+  if (n == null) return null;
+  return n > 0 && n < 1 ? Math.round(n * 10_000) / 100 : n;
+}
+
 export function parsePalmettoPayload(raw: unknown): PalmettoHandoffInput {
   const root = obj(raw);
-  const car = obj(pick(root, "car", "vehicle", "unit"));
+  const car = obj(pick(root, "car", "unit"));
   const dealer = obj(pick(root, "dealer", "partner", "sellingDealer"));
   const quote = obj(pick(root, "quote", "lease", "numbers"));
   const customer = obj(pick(root, "customer", "applicant", "lessee", "client"));
-  const addressObj = obj(pick(root, "address", "addr") ?? pick(customer, "address"));
+  const application = obj(pick(root, "application"));
+  const addressObj = obj(
+    pick(root, "address", "addr") ?? pick(customer, "address") ?? pick(application, "address"),
+  );
   const consent = obj(pick(root, "consent", "creditConsent"));
 
-  const firstName = str(pick(customer, "firstName", "first_name") ?? pick(root, "firstName", "first_name"));
-  const lastName = str(pick(customer, "lastName", "last_name") ?? pick(root, "lastName", "last_name"));
+  const firstName = str(
+    pick(customer, "firstName", "first_name") ?? pick(root, "firstName", "first_name"),
+  );
+  const lastName = str(
+    pick(customer, "lastName", "last_name") ?? pick(root, "lastName", "last_name"),
+  );
   const fullName =
-    str(pick(customer, "name", "fullName", "full_name") ?? pick(root, "name", "fullName", "full_name")) ||
-    [firstName, lastName].filter(Boolean).join(" ");
+    str(
+      pick(customer, "name", "fullName", "full_name", "customerName") ??
+        pick(root, "name", "fullName", "full_name", "customerName"),
+    ) || [firstName, lastName].filter(Boolean).join(" ");
 
   const addrLine =
     str(pick(addressObj, "line1", "street", "address")) ||
-    str(pick(customer, "address") ?? pick(root, "address"));
+    str(
+      pick(application, "address") ??
+        pick(customer, "address") ??
+        pick(root, "address"),
+    );
 
-  const dealerName =
-    str(pick(dealer, "name", "dealerName") ?? pick(root, "dealerName", "dealer", "partnerName"));
+  const dealerName = str(
+    pick(dealer, "name", "dealerName") ?? pick(root, "dealerName", "dealer", "partnerName"),
+  );
 
   const year = str(pick(car, "year") ?? pick(root, "year"));
   const make = str(pick(car, "make") ?? pick(root, "make"));
   const model = str(pick(car, "model") ?? pick(root, "model"));
   const trim = str(pick(car, "trim") ?? pick(root, "trim"));
   const vehicle =
-    str(pick(car, "label", "name", "description") ?? pick(root, "vehicle", "vehicleInterest")) ||
-    [year, make, model, trim].filter(Boolean).join(" ");
+    str(
+      pick(car, "label", "name", "description") ??
+        pick(root, "vehicle", "vehicleLabel", "vehicleInterest"),
+    ) || [year, make, model, trim].filter(Boolean).join(" ");
 
-  const consentRaw = pick(root, "creditConsent", "credit_consent", "consent") ?? pick(consent, "credit", "bureau");
+  const consentRaw =
+    pick(root, "creditConsent", "credit_consent", "consent") ??
+    pick(application, "consentCredit", "creditConsent") ??
+    pick(consent, "credit", "bureau");
   const creditConsent =
-    consentRaw === true ||
-    /^(true|1|yes|y|agreed|consent)$/i.test(str(consentRaw));
+    consentRaw === true || /^(true|1|yes|y|agreed|consent)$/i.test(str(consentRaw));
 
   return {
-    referenceId: str(pick(root, "referenceId", "reference_id", "ref", "id")),
+    referenceId: str(pick(root, "referenceId", "reference_id", "ref")),
     name: fullName,
     firstName: firstName || fullName.split(/\s+/)[0] || "",
     lastName: lastName || fullName.split(/\s+/).slice(1).join(" "),
-    email: str(pick(customer, "email") ?? pick(root, "email")).toLowerCase(),
-    phone: str(pick(customer, "phone", "mobile", "tel") ?? pick(root, "phone", "mobile")),
+    email: str(
+      pick(customer, "email", "customerEmail") ?? pick(root, "email", "customerEmail"),
+    ).toLowerCase(),
+    phone: str(
+      pick(customer, "phone", "mobile", "tel", "customerPhone") ??
+        pick(root, "phone", "mobile", "customerPhone"),
+    ),
     address: addrLine,
-    city: str(pick(addressObj, "city") ?? pick(customer, "city") ?? pick(root, "city")),
-    postal: str(pick(addressObj, "postal", "postalCode", "zip") ?? pick(customer, "postal") ?? pick(root, "postal")),
+    city: str(
+      pick(addressObj, "city") ??
+        pick(application, "city") ??
+        pick(customer, "city") ??
+        pick(root, "city"),
+    ),
+    postal: str(
+      pick(addressObj, "postal", "postalCode", "zip") ??
+        pick(application, "postalCode", "postal") ??
+        pick(customer, "postal") ??
+        pick(root, "postal", "postalCode"),
+    ),
     province: str(
-      pick(addressObj, "province", "state") ?? pick(customer, "province") ?? pick(root, "province"),
+      pick(addressObj, "province", "state") ??
+        pick(application, "province") ??
+        pick(customer, "province") ??
+        pick(root, "province"),
     ).toUpperCase(),
-    job: str(pick(customer, "job", "occupation", "employer", "employment") ?? pick(root, "job", "occupation", "employer")),
-    income: str(pick(customer, "income", "grossIncome", "gross_income") ?? pick(root, "income", "grossIncome")),
+    job: str(
+      pick(customer, "job", "occupation", "employer", "employment") ??
+        pick(application, "occupation", "employer") ??
+        pick(root, "job", "occupation", "employer"),
+    ),
+    income: str(
+      pick(customer, "income", "grossIncome", "gross_income", "annualIncome") ??
+        pick(application, "annualIncome", "income") ??
+        pick(root, "income", "grossIncome", "annualIncome"),
+    ),
     creditConsent,
     dealerName: typeof dealer === "object" && dealerName ? dealerName : str(dealerName || pick(root, "dealer")),
     dealerCity: str(pick(dealer, "city")),
@@ -172,12 +234,27 @@ export function parsePalmettoPayload(raw: unknown): PalmettoHandoffInput {
     trim,
     vin: str(pick(car, "vin") ?? pick(root, "vin")).toUpperCase(),
     stock: str(pick(car, "stock", "stockNumber", "stock_number") ?? pick(root, "stock")),
-    price: num(pick(quote, "price", "salePrice", "capCost") ?? pick(car, "price") ?? pick(root, "price")),
-    down: num(pick(quote, "down", "cashDown", "downPayment") ?? pick(root, "down", "cashDown")),
-    residual: num(pick(quote, "residual", "residualValue") ?? pick(root, "residual")),
-    term: num(pick(quote, "term", "termMonths", "months") ?? pick(root, "term")),
-    monthly: num(pick(quote, "monthly", "payment", "paymentMonthly") ?? pick(root, "monthly", "payment")),
-    rate: num(pick(quote, "rate", "ratePct", "apr") ?? pick(root, "rate")),
+    price: dollarsOrCents(
+      pick(quote, "price", "salePrice", "capCost") ?? pick(car, "price") ?? pick(root, "price"),
+      pick(quote, "priceCents") ?? pick(root, "priceCents"),
+    ),
+    down: dollarsOrCents(
+      pick(quote, "down", "cashDown", "downPayment") ?? pick(root, "down", "cashDown"),
+      pick(quote, "downPaymentCents") ?? pick(root, "downPaymentCents"),
+    ),
+    residual: dollarsOrCents(
+      pick(quote, "residual", "residualValue") ?? pick(root, "residual"),
+      pick(quote, "residualCents") ?? pick(root, "residualCents"),
+    ),
+    term: num(pick(quote, "term", "termMonths", "months") ?? pick(root, "term", "termMonths")),
+    monthly: dollarsOrCents(
+      pick(quote, "monthly", "payment", "paymentMonthly") ?? pick(root, "monthly", "payment"),
+      pick(quote, "monthlyPaymentCents") ?? pick(root, "monthlyPaymentCents"),
+    ),
+    rate: ratePercent(
+      pick(quote, "rate", "ratePct", "apr", "baseInterestRate") ??
+        pick(root, "rate", "baseInterestRate"),
+    ),
   };
 }
 
