@@ -317,6 +317,62 @@ function money(n: number | null): string {
   }).format(n);
 }
 
+export async function ensureHandoffSchema(sql: Sql): Promise<void> {
+  await sql`alter table leads add column if not exists external_ref text`;
+  await sql`
+    create unique index if not exists leads_external_ref_uidx
+    on leads (external_ref)
+    where external_ref is not null and btrim(external_ref) <> ''
+  `;
+  await sql`
+    create table if not exists handoff_attempts (
+      id text primary key,
+      created_at timestamptz not null default now(),
+      ok boolean not null,
+      status int not null,
+      reference_id text,
+      name text,
+      error text
+    )
+  `;
+}
+
+export async function logHandoffAttempt(
+  sql: Sql,
+  row: { ok: boolean; status: number; referenceId?: string; name?: string; error?: string },
+): Promise<void> {
+  try {
+    await ensureHandoffSchema(sql);
+    await sql`
+      insert into handoff_attempts (id, ok, status, reference_id, name, error)
+      values (
+        ${uid()}, ${row.ok}, ${row.status},
+        ${row.referenceId || null}, ${row.name || null}, ${row.error?.slice(0, 400) || null}
+      )
+    `;
+  } catch (e) {
+    console.error("[handoff] log failed", e);
+  }
+}
+
+export async function listHandoffAttempts(limit = 12) {
+  const sql = await getSql();
+  await ensureHandoffSchema(sql);
+  return sql<{
+    created_at: string;
+    ok: boolean;
+    status: number;
+    reference_id: string | null;
+    name: string | null;
+    error: string | null;
+  }>`
+    select created_at::text as created_at, ok, status, reference_id, name, error
+    from handoff_attempts
+    order by created_at desc
+    limit ${limit}
+  `;
+}
+
 function websiteQuoteLines(input: PalmettoHandoffInput): string[] {
   return [
     input.price != null ? `Price ${money(input.price)}` : "",
@@ -474,6 +530,7 @@ export async function ingestPalmettoLease(
   }
   const name = input.name || [input.firstName, input.lastName].filter(Boolean).join(" ") || "Palmetto applicant";
   const sql = await getSql();
+  await ensureHandoffSchema(sql);
 
   if (input.referenceId) {
     const prior = await sql<{ id: string }>`
