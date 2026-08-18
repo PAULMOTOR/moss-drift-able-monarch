@@ -347,6 +347,20 @@ function CapturePage() {
     return meId || "";
   }
 
+  function keepOrDefaultOwner(
+    source: string,
+    leadType: string,
+    currentAssigned: string,
+    lucasId?: string,
+    alexId?: string,
+    meId?: string,
+  ) {
+    const next = defaultOwner(source, leadType, lucasId, alexId, meId);
+    // If the salesperson already put the lead under their own name, do not flip it to Lucas.
+    if (currentAssigned && meId && currentAssigned === meId) return currentAssigned;
+    return next;
+  }
+
   function ownerIds() {
     const lucas = profiles.find(
       (x) => x.email?.toLowerCase() === "lucasl@paulmotorcompany.com" || /^lucas/i.test(x.name),
@@ -363,7 +377,7 @@ function CapturePage() {
     setForm((f) => ({
       ...f,
       source,
-      assigned_to: defaultOwner(source, f.lead_type, lucasId, alexId, meId),
+      assigned_to: keepOrDefaultOwner(source, f.lead_type, f.assigned_to, lucasId, alexId, meId),
     }));
   }
 
@@ -449,9 +463,10 @@ Message: Interested in a viewing this weekend.`}
                   lead_type: t.id,
                   source: t.id === "lease" && f.source === "phone" ? "broker" : f.source,
                   inventory_id: t.id === "lease" ? "" : f.inventory_id,
-                  assigned_to: defaultOwner(
+                  assigned_to: keepOrDefaultOwner(
                     t.id === "lease" && f.source === "phone" ? "broker" : f.source,
                     t.id,
+                    f.assigned_to,
                     lucasId,
                     alexId,
                     meId,
@@ -627,7 +642,7 @@ Message: Interested in a viewing this weekend.`}
                   setForm((f) => ({
                     ...f,
                     source: v,
-                    assigned_to: defaultOwner(v, f.lead_type, lucasId, alexId, meId),
+                    assigned_to: keepOrDefaultOwner(v, f.lead_type, f.assigned_to, lucasId, alexId, meId),
                   }));
                 }}
               >

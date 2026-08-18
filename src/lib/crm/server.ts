@@ -156,7 +156,7 @@ function isElevatedStaff(p: Profile): boolean {
 }
 
 
-/** Default owner for inventory leads: Lucas Legatos. */
+/** Default owner for *unassigned* inventory leads: Lucas Legatos. Never steals an existing owner. */
 export async function resolveLucasProfileId(
   sql: Awaited<ReturnType<typeof boot>>,
 ): Promise<string | null> {
@@ -1701,7 +1701,7 @@ export const getDataAnalysis = createServerFn({ method: "GET" })
     };
   });
 
-/** One-shot / admin: assign every inventory lead to Lucas. */
+/** One-shot / admin: assign *unassigned* inventory leads to Lucas. Never steals an existing owner. */
 export const sweepInventoryToLucas = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
@@ -1718,7 +1718,7 @@ export const sweepInventoryToLucas = createServerFn({ method: "POST" })
         update leads set assigned_to = ${lucasId}, updated_at = now()
         where lead_type = 'inventory'
           and coalesce(source, '') is distinct from 'marketplace'
-          and (assigned_to is distinct from ${lucasId})
+          and assigned_to is null
         returning id
       )
       select count(*)::int as n from u
@@ -1731,20 +1731,6 @@ export const getAdminMetrics = createServerFn({ method: "GET" })
   .handler(async ({ context }): Promise<AdminMetrics> => {
     await requireAdmin(context.userId);
     const sql = await boot();
-    // Keep inventory ownership aligned with Lucas as default owner
-    try {
-      const lucasId = await resolveLucasProfileId(sql);
-      if (lucasId) {
-        await sql`
-          update leads set assigned_to = ${lucasId}, updated_at = now()
-          where lead_type = 'inventory'
-            and coalesce(source, '') is distinct from 'marketplace'
-            and (assigned_to is distinct from ${lucasId})
-        `;
-      }
-    } catch {
-      /* non-fatal */
-    }
     const overall = await sql<{
       total: number;
       won: number;
