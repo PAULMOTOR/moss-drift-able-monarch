@@ -171,26 +171,28 @@ async function callGrok(
   if (!key) {
     throw new Error("XAI_API_KEY is not set. Add it in Vercel, then Redeploy.");
   }
-  const models = [process.env.XAI_MODEL?.trim(), "grok-4.6", "grok-4"].filter(
-    (m): m is string => Boolean(m),
-  );
+  const models = uniqueModels([process.env.XAI_MODEL?.trim(), "grok-4.6", "grok-4"]);
   const uploaded: string[] = [];
   const filesSent: string[] = [];
   try {
-    const fileParts: Array<Record<string, unknown>> = [];
-    const imageParts: Array<Record<string, unknown>> = [];
+    const fileParts: Array<{ type: "input_file"; file_id: string }> = [];
+    const imageParts: Array<{ type: "input_image"; image_url: string }> = [];
     for (const f of attachments.slice(0, 16)) {
       const parsed = parseDataUrl(f.dataUrl);
-      if (!parsed) continue;
+      if (!parsed) {
+        filesSent.push(`${f.name} (skipped — unreadable)`);
+        continue;
+      }
       if (parsed.buf.length > 12 * 1024 * 1024) {
         filesSent.push(`${f.name} (skipped — over 12MB)`);
         continue;
       }
-      const isImage = parsed.mime.startsWith("image/");
+      const mime = (parsed.mime || "").toLowerCase();
+      const isImage = /^image\/(jpeg|jpg|png|gif|webp)$/i.test(mime);
       if (isImage && parsed.buf.length < 4 * 1024 * 1024) {
         imageParts.push({
-          type: "image_url",
-          image_url: { url: `data:${parsed.mime};base64,${parsed.buf.toString("base64")}`, detail: "high" },
+          type: "input_image",
+          image_url: `data:${parsed.mime};base64,${parsed.buf.toString("base64")}`,
         });
         filesSent.push(f.name);
         continue;
@@ -199,7 +201,7 @@ async function callGrok(
       form.append(
         "file",
         new Blob([new Uint8Array(parsed.buf)], { type: parsed.mime || "application/pdf" }),
-        f.name,
+        safeFileName(f.name, mime),
       );
       form.append("purpose", "assistants");
       const up = await fetch("https://api.x.ai/v1/files", {
@@ -235,72 +237,83 @@ async function callGrok(
       "Conservative: large cash down to mitigate; decline anyone shady or criminal. Reply with JSON only.";
 
     let lastErr = "xAI request failed";
-    for (const model of models) {
-      // Responses API — PDFs as file_id
-      const resIn = await fetch("https://api.x.ai/v1/responses", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.15,
-          input: [
-            { role: "system", content: system },
-            {
-              role: "user",
-              content: [{ type: "input_text", text: prompt }, ...fileParts, ...imageParts.map((p) => ({
-                type: "input_image",
-                image_url: (p as { image_url: { url: string } }).image_url.url,
-              }))],
-            },
-          ],
-        }),
-      });
-      const resBody = await resIn.text();
-      if (resIn.ok) {
-        const text = extractResponseText(resBody);
-        if (text) return { text, model, filesSent };
-        lastErr = "xAI Responses returned empty text";
-      } else {
-        lastErr = `xAI Responses ${model} ${resIn.status}: ${resBody.slice(0, 220)}`;
-      }
+    const fullContent: Array<Record<string, unknown>> = [
+      { type: "input_text", text: prompt },
+      ...fileParts,
+      ...imageParts,
+    ];
+    const compactContent: Array<Record<string, unknown>> = [
+      { type: "input_text", text: prompt },
+      ...fileParts.slice(0, 6),
+      ...imageParts.slice(0, 4),
+    ];
+    const payloads =
+      fileParts.length + imageParts.length > 8 ? [fullContent, compactContent] : [fullContent];
 
-      // Chat Completions fallback (images + file_ids)
-      const chatContent: Array<Record<string, unknown>> = [
-        { type: "text", text: prompt },
-        ...imageParts,
-        ...fileParts.map((p) => ({ type: "file", file: { file_id: p.file_id } })),
-      ];
-      const chat = await fetch("https://api.x.ai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.15,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: chatContent },
-          ],
-        }),
-      });
-      const chatBody = await chat.text();
-      if (!chat.ok) {
-        lastErr = `xAI chat ${model} ${chat.status}: ${chatBody.slice(0, 220)}`;
-        continue;
+    for (const model of models) {
+      for (const content of payloads) {
+        const resIn = await fetch("https://api.x.ai/v1/responses", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${key}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            instructions: system,
+            input: [{ role: "user", content }],
+          }),
+        });
+        const resBody = await resIn.text();
+        if (resIn.ok) {
+          const text = extractResponseText(resBody);
+          if (text) return { text, model, filesSent };
+          lastErr = `xAI Responses ${model} returned no readable text`;
+          continue;
+        }
+        lastErr = `xAI Responses ${model} ${resIn.status}: ${resBody.slice(0, 280)}`;
       }
-      try {
-        const json = JSON.parse(chatBody) as {
-          choices?: Array<{ message?: { content?: string } }>;
-        };
-        const text = json.choices?.[0]?.message?.content?.trim() || "";
-        if (text) return { text, model, filesSent };
-      } catch {
-        lastErr = "xAI chat returned unreadable JSON";
+    }
+
+    // Chat completions cannot accept PDFs / file_ids. Images + text only.
+    if (fileParts.length === 0) {
+      for (const model of models) {
+        const chatContent: Array<Record<string, unknown>> = [
+          { type: "text", text: prompt },
+          ...imageParts.map((p) => ({
+            type: "image_url",
+            image_url: { url: p.image_url, detail: "high" },
+          })),
+        ];
+        const chat = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${key}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0.15,
+            messages: [
+              { role: "system", content: system },
+              { role: "user", content: chatContent },
+            ],
+          }),
+        });
+        const chatBody = await chat.text();
+        if (!chat.ok) {
+          lastErr = `xAI chat ${model} ${chat.status}: ${chatBody.slice(0, 220)}`;
+          continue;
+        }
+        try {
+          const json = JSON.parse(chatBody) as {
+            choices?: Array<{ message?: { content?: string } }>;
+          };
+          const text = json.choices?.[0]?.message?.content?.trim() || "";
+          if (text) return { text, model, filesSent };
+        } catch {
+          lastErr = "xAI chat returned unreadable JSON";
+        }
       }
     }
     throw new Error(lastErr);
@@ -333,19 +346,46 @@ function extractResponseText(body: string): string {
   try {
     const json = JSON.parse(body) as {
       output_text?: string;
-      output?: Array<{ content?: Array<{ text?: string; type?: string }> }>;
+      output?: Array<{
+        type?: string;
+        text?: string;
+        content?: Array<{ text?: string; type?: string; output_text?: string }>;
+      }>;
     };
     if (json.output_text?.trim()) return json.output_text.trim();
     const parts: string[] = [];
     for (const item of json.output || []) {
+      if (typeof item.text === "string" && item.text.trim()) parts.push(item.text);
       for (const c of item.content || []) {
         if (c.text) parts.push(c.text);
+        if (c.output_text) parts.push(c.output_text);
       }
     }
     return parts.join("\n").trim();
   } catch {
     return "";
   }
+}
+
+function uniqueModels(names: Array<string | null | undefined>): string[] {
+  const out: string[] = [];
+  for (const n of names) {
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+function safeFileName(name: string, mime: string): string {
+  const cleaned = String(name || "document")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  const base = cleaned || "document";
+  if (/\.(pdf|txt|csv|json|md|png|jpe?g|webp|gif)$/i.test(base)) return base;
+  if (mime.includes("pdf")) return `${base}.pdf`;
+  if (mime.startsWith("image/")) return `${base}.jpg`;
+  if (mime.startsWith("text/")) return `${base}.txt`;
+  return `${base}.pdf`;
 }
 
 function parseAiJson(text: string): {

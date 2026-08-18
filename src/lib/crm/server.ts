@@ -72,6 +72,12 @@ function bool(v: unknown): boolean {
   return v === true || v === "t" || v === "true" || v === 1;
 }
 
+function realGuarantorLabel(v: unknown): string | null {
+  const s = String(v || "").trim();
+  if (!s || /^n\/?a$/i.test(s) || s === "-") return null;
+  return s;
+}
+
 /** Normalize Date/string for Postgres timestamptz — never use Date#toString(). */
 function toIsoTs(v: unknown): string | null {
   if (v == null || v === "") return null;
@@ -2278,7 +2284,7 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
             quote_sent = true,
             quote_sent_at = coalesce(quote_sent_at, now()),
             quote_notes = ${`Lease quote shared · payment ${primary ? primary.totalPayment : ""}`},
-            guarantor = ${data.client.guarantor || null},
+            guarantor = coalesce(${realGuarantorLabel(data.client.guarantor)}, guarantor),
             stage = case when stage in ('new','contacted','paused') then 'quote_sent' else stage end,
             stage_entered_at = case when stage in ('new','contacted','paused') then now() else stage_entered_at end,
             updated_at = now()
@@ -2295,7 +2301,7 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
       } else {
         await sql`
           update leads set
-            guarantor = ${data.client.guarantor || null},
+            guarantor = coalesce(${realGuarantorLabel(data.client.guarantor)}, guarantor),
             updated_at = now()
           where id = ${data.leadId}
         `;
