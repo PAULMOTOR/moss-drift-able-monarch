@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +43,21 @@ function kindLabel(key: string) {
   return known?.label || lesseeDocLabel(key);
 }
 
+function kindAliases(key: string): string[] {
+  if (key === "bank_statement" || key === "personal_bank_statements") {
+    return ["bank_statement", "personal_bank_statements", "bank_statements"];
+  }
+  if (key === "noa_payslip" || key === "noas") {
+    return ["noa_payslip", "noas", "noa"];
+  }
+  return [key];
+}
+
+function isKindUploaded(key: string, uploaded: string[]): boolean {
+  const aliases = kindAliases(key);
+  return uploaded.some((u) => aliases.includes(u) || u === key);
+}
+
 function PublicDocUploadPage() {
   const { token } = Route.useParams();
   const urlKinds = useMemo(() => parseKindsFromSearch(), []);
@@ -50,6 +66,7 @@ function PublicDocUploadPage() {
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState(0);
   const [pendingKinds, setPendingKinds] = useState<string[]>(urlKinds);
+  const [uploadedKinds, setUploadedKinds] = useState<string[]>([]);
   const [selectedKind, setSelectedKind] = useState<string>(urlKinds[0] || "");
 
   useEffect(() => {
@@ -59,11 +76,21 @@ function PublicDocUploadPage() {
         const fromServer = r.pendingKinds?.length ? r.pendingKinds : urlKinds;
         if (fromServer.length) {
           setPendingKinds(fromServer);
-          setSelectedKind((prev) => prev || fromServer[0] || "");
         }
+        const already = r.uploadedKinds || [];
+        setUploadedKinds(already);
+        const remaining = fromServer.filter((k) => !isKindUploaded(k, already));
+        setSelectedKind((prev) => {
+          if (prev && !isKindUploaded(prev, already)) return prev;
+          return remaining[0] || fromServer[0] || prev || "";
+        });
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Invalid link"));
   }, [token, urlKinds]);
+
+  const remainingKinds = pendingKinds.filter((k) => !isKindUploaded(k, uploadedKinds));
+  const dropdownKinds = remainingKinds.length > 0 ? remainingKinds : pendingKinds.length > 0 ? pendingKinds : LESSEE_DOC_TYPES.map((d) => d.key);
+  const allRequestedDone = pendingKinds.length > 0 && remainingKinds.length === 0;
 
   async function onUpload(file: File | null) {
     if (!file) return;
@@ -79,7 +106,7 @@ function PublicDocUploadPage() {
         r.onerror = () => reject(new Error("Read failed"));
         r.readAsDataURL(file);
       });
-      await uploadPublicCreditDoc({
+      const res = await uploadPublicCreditDoc({
         data: {
           token,
           kind: selectedKind,
@@ -89,8 +116,16 @@ function PublicDocUploadPage() {
           via: "doc",
         },
       });
+      const nextUploaded = [...uploadedKinds, res.uploadedKind || selectedKind];
+      setUploadedKinds(nextUploaded);
       setCount((c) => c + 1);
-      toast.success("Document uploaded — you can add more or close this window");
+      const nextLeft = pendingKinds.filter((k) => !isKindUploaded(k, nextUploaded));
+      setSelectedKind(nextLeft[0] || selectedKind);
+      toast.success(
+        nextLeft.length
+          ? `${kindLabel(selectedKind)} received — ${nextLeft.length} still needed`
+          : "All requested documents received",
+      );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Upload failed");
     } finally {
@@ -106,11 +141,6 @@ function PublicDocUploadPage() {
     );
   }
 
-  const kinds =
-    pendingKinds.length > 0
-      ? pendingKinds
-      : LESSEE_DOC_TYPES.map((d) => d.key);
-
   return (
     <div className="min-h-dvh bg-[#f3f2f1]">
       <header className="border-b bg-[#008272] px-4 py-4 text-white">
@@ -124,20 +154,48 @@ function PublicDocUploadPage() {
         <div className="rounded-sm border bg-white p-5 shadow-sm">
           <h2 className="font-semibold text-[#008272]">Requested documents</h2>
           {pendingKinds.length > 0 ? (
-            <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm text-muted-foreground">
-              {pendingKinds.map((k) => (
-                <li key={k}>{kindLabel(k)}</li>
-              ))}
+            <ul className="mt-2 space-y-1.5 text-sm">
+              {pendingKinds.map((k) => {
+                const done = isKindUploaded(k, uploadedKinds);
+                return (
+                  <li
+                    key={k}
+                    className={`flex items-center gap-2 ${
+                      done ? "text-emerald-800" : "text-foreground"
+                    }`}
+                  >
+                    {done ? (
+                      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white">
+                        <Check className="size-3.5" strokeWidth={3} />
+                      </span>
+                    ) : (
+                      <span className="size-5 shrink-0 rounded-full border border-border" />
+                    )}
+                    <span className={done ? "text-emerald-800/80 line-through" : ""}>
+                      {kindLabel(k)}
+                    </span>
+                    {done ? (
+                      <span className="text-xs font-medium text-emerald-700">Uploaded</span>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <p className="mt-2 text-sm text-muted-foreground">
               Upload the documents your credit team requested.
             </p>
           )}
-          <p className="mt-2 text-sm text-muted-foreground">
-            Upload one document at a time. You can reopen this link later if you don't have
-            everything now.
-          </p>
+          {allRequestedDone ? (
+            <p className="mt-3 text-sm font-medium text-emerald-700">
+              All requested documents are in. You can close this window, or add another file below.
+            </p>
+          ) : (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Upload one document at a time. You can reopen this link later if you don't have
+              everything now.
+            </p>
+          )}
           <div className="mt-4 space-y-1.5">
             <Label>Document type</Label>
             <Select value={selectedKind || undefined} onValueChange={setSelectedKind}>
@@ -145,9 +203,10 @@ function PublicDocUploadPage() {
                 <SelectValue placeholder="Select type…" />
               </SelectTrigger>
               <SelectContent>
-                {kinds.map((k) => (
+                {dropdownKinds.map((k) => (
                   <SelectItem key={k} value={k}>
                     {kindLabel(k)}
+                    {isKindUploaded(k, uploadedKinds) ? " (add another)" : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -158,9 +217,12 @@ function PublicDocUploadPage() {
             accept="image/*,application/pdf"
             className="mt-4"
             disabled={busy || !selectedKind}
-            onChange={(e) => void onUpload(e.target.files?.[0] || null)}
+            onChange={(e) => {
+              void onUpload(e.target.files?.[0] || null);
+              e.target.value = "";
+            }}
           />
-          {count > 0 ? (
+          {count > 0 && !allRequestedDone ? (
             <p className="mt-3 text-sm text-emerald-700">
               {count} file(s) received. You may close this window or upload another.
             </p>

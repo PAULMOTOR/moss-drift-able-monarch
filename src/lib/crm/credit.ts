@@ -1444,7 +1444,7 @@ export const uploadPublicCreditDoc = createServerFn({ method: "POST" })
         });
       }
     }
-    return { ok: true as const };
+    return { ok: true as const, uploadedKind: kind };
   });
 
 export const getPublicDocRequest = createServerFn({ method: "GET" })
@@ -1461,13 +1461,17 @@ export const getPublicDocRequest = createServerFn({ method: "GET" })
     let pending: string[] = [];
     try {
       const raw = rows[0].pending_doc_kinds;
-      if (typeof raw === "string" && raw.trim()) {
+      if (Array.isArray(raw)) pending = raw.map(String);
+      else if (typeof raw === "string" && raw.trim()) {
         const parsed = JSON.parse(raw) as unknown;
         if (Array.isArray(parsed)) pending = parsed.map(String);
       }
     } catch {
       pending = [];
     }
+    const docs = await sql<{ kind: string }>`
+      select distinct kind from credit_documents where application_id = ${String(rows[0].id)}
+    `;
     const isGuar = String(rows[0].applicant_role || "") === "guarantor";
     const partyName = isGuar
       ? String(rows[0].applicant_name || rows[0].name)
@@ -1476,6 +1480,7 @@ export const getPublicDocRequest = createServerFn({ method: "GET" })
       leadName: partyName,
       applicationId: String(rows[0].id),
       pendingKinds: pending,
+      uploadedKinds: docs.map((d) => String(d.kind)),
     };
   });
 
