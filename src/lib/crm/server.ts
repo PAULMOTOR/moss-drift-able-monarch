@@ -2787,6 +2787,8 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         dl_front: "ID-DL-Front",
         dl_back: "ID-DL-Back",
         id_second: "ID-Second",
+        pay_stub: "Credit-Pay-Stub",
+        employment_confirmation: "Credit-Employment",
         noa_payslip: "Credit-NOA-Payslip",
         bank_statement: "Credit-Bank-Statement",
         equifax: "Credit-Equifax",

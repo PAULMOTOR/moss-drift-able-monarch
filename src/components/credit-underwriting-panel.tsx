@@ -1219,7 +1219,21 @@ export function CreditUnderwritingPanel({
             />
           </div>
           <ul className="max-h-64 space-y-2 overflow-y-auto rounded-sm border border-border p-3">
-            {LESSEE_DOC_TYPES.map((t) => (
+            <li>
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={docKinds.includes("dl_front") && docKinds.includes("dl_back")}
+                  onCheckedChange={(c) => {
+                    setDocKinds((prev) => {
+                      const without = prev.filter((k) => k !== "dl_front" && k !== "dl_back");
+                      return c === true ? [...without, "dl_front", "dl_back"] : without;
+                    });
+                  }}
+                />
+                Driver's licence (front & back)
+              </label>
+            </li>
+            {LESSEE_DOC_TYPES.filter((t) => t.key !== "dl_front" && t.key !== "dl_back").map((t) => (
               <li key={t.key}>
                 <label className="flex items-center gap-2 text-sm">
                   <Checkbox

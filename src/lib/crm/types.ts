@@ -888,6 +888,11 @@ export const CUSTOMER_CHECKLIST: ChecklistDef[] = [
 
 /** Docs the Credit Manager can request from the lessee (generic request dialog). */
 export const LESSEE_DOC_TYPES = [
+  { key: "dl_front", label: "Driver's licence (front)" },
+  { key: "dl_back", label: "Driver's licence (back)" },
+  { key: "id_second", label: "Second ID (passport, health card, etc.)" },
+  { key: "pay_stub", label: "Pay stub" },
+  { key: "employment_confirmation", label: "Employment confirmation" },
   { key: "personal_bank_statements", label: "Personal bank statements" },
   { key: "business_bank_statements", label: "Business bank statements" },
   { key: "articles_of_incorporation", label: "Articles of incorporation" },
@@ -905,9 +910,6 @@ export type LesseeDocTypeKey = (typeof LESSEE_DOC_TYPES)[number]["key"];
 /** Extra kinds sales or credit can attach on a deal (not a lessee request). */
 export const STAFF_UPLOAD_DOC_TYPES = [
   ...LESSEE_DOC_TYPES,
-  { key: "dl_front", label: "Driver's licence (front)" },
-  { key: "dl_back", label: "Driver's licence (back)" },
-  { key: "id_second", label: "Second ID" },
   { key: "insurance", label: "Insurance" },
   { key: "contract", label: "Contract / agreement" },
   { key: "other", label: "Other" },
