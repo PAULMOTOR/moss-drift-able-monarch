@@ -6,7 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 import { getSql, type Sql } from "@/lib/db";
 import { sendCrmEmail } from "./mail";
 import { publicAppUrl } from "./public-url";
-import { CUSTOMER_CHECKLIST, VEHICLE_CHECKLIST } from "./types";
+import { CUSTOMER_CHECKLIST, HERO_SHOT_KIND, VEHICLE_CHECKLIST } from "./types";
 import {
   buildRetailQuoteHtml,
   calcLeaseOption,
@@ -125,6 +125,7 @@ export type PalmettoHandoffInput = {
   term: number | null;
   monthly: number | null;
   rate: number | null;
+  photoUrl: string;
 };
 
 function dollarsOrCents(
@@ -252,9 +253,9 @@ export function parsePalmettoPayload(raw: unknown): PalmettoHandoffInput {
     vin: str(pick(car, "vin") ?? pick(root, "vin")).toUpperCase(),
     stock: str(pick(car, "stock", "stockNumber", "stock_number") ?? pick(root, "stock")),
     image: httpUrl(
-      pick(root, "image", "imageUrl", "thumbnailUrl", "tileUrl") ??
-        pick(car, "image", "imageUrl", "thumbnail", "thumbnailUrl"),
-    ),
+      pick(root, "image", "imageUrl", "thumbnailUrl", "tileUrl", "photoUrl", "photo_url", "heroImageUrl") ??
+        pick(car, "image", "imageUrl", "thumbnail", "thumbnailUrl", "photoUrl", "photo", "src"),
+    ) || pickPhotoUrl(root, car),
     price: dollarsOrCents(
       pick(quote, "price", "salePrice", "capCost") ?? pick(car, "price") ?? pick(root, "price"),
       pick(quote, "priceCents") ?? pick(root, "priceCents"),
@@ -276,7 +277,112 @@ export function parsePalmettoPayload(raw: unknown): PalmettoHandoffInput {
       pick(quote, "rate", "ratePct", "apr", "baseInterestRate") ??
         pick(root, "rate", "baseInterestRate"),
     ),
+    photoUrl: pickPhotoUrl(root, car),
   };
+}
+
+function firstUrlFromList(v: unknown): string {
+  if (!Array.isArray(v) || !v.length) return "";
+  const first = v[0];
+  if (typeof first === "string") return first.trim();
+  if (first && typeof first === "object") {
+    return str(pick(first as Record<string, unknown>, "url", "src", "href", "photoUrl", "imageUrl"));
+  }
+  return "";
+}
+
+function pickPhotoUrl(root: Record<string, unknown>, car: Record<string, unknown>): string {
+  const direct = str(
+    pick(root, "photoUrl", "photo_url", "imageUrl", "image_url", "heroImageUrl", "hero_image_url", "heroUrl") ??
+      pick(car, "photoUrl", "photo_url", "imageUrl", "image_url", "heroImageUrl", "heroUrl", "photo", "image", "src"),
+  );
+  if (direct.startsWith("http")) return direct;
+  const fromList =
+    firstUrlFromList(root.photos) ||
+    firstUrlFromList(root.images) ||
+    firstUrlFromList(car.photos) ||
+    firstUrlFromList(car.images);
+  return fromList.startsWith("http") ? fromList : "";
+}
+
+function isSafeImageUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+    const host = u.hostname.toLowerCase();
+    if (host === "localhost" || host.endsWith(".local") || host === "127.0.0.1" || host === "::1") {
+      return false;
+    }
+    if (/^(10\.|192\.168\.|169\.254\.)/.test(host)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchHeroImage(
+  url: string,
+): Promise<{ dataUrl: string; mime: string; name: string } | null> {
+  if (!isSafeImageUrl(url)) return null;
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(15_000),
+      headers: { Accept: "image/*" },
+    });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 80 || buf.length > 2_500_000) return null;
+    let mime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    if (!/^image\/(jpeg|jpg|png|webp|gif)$/.test(mime)) {
+      if (buf[0] === 0xff && buf[1] === 0xd8) mime = "image/jpeg";
+      else if (buf[0] === 0x89 && buf[1] === 0x50) mime = "image/png";
+      else if (buf.slice(0, 4).toString("ascii") === "RIFF") mime = "image/webp";
+      else return null;
+    }
+    const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "jpg";
+    return {
+      dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
+      mime,
+      name: `hero-shot.${ext}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function attachHeroShot(
+  sql: Sql,
+  leadId: string,
+  applicationId: string,
+  photoUrl: string,
+): Promise<boolean> {
+  if (!photoUrl) return false;
+  const existing = await sql<{ id: string }>`
+    select id from credit_documents
+    where lead_id = ${leadId} and kind = ${HERO_SHOT_KIND}
+    limit 1
+  `;
+  if (existing[0]) return false;
+  const img = await fetchHeroImage(photoUrl);
+  if (!img) return false;
+  await sql`
+    insert into credit_documents (
+      id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
+    ) values (
+      ${uid()}, ${applicationId}, ${leadId}, ${HERO_SHOT_KIND},
+      ${img.name}, ${img.mime}, ${img.dataUrl}, ${"palmetto"}
+    )
+  `;
+  await sql`
+    insert into lead_activities (id, lead_id, kind, body, created_by_name)
+    values (
+      ${uid()}, ${leadId}, 'credit',
+      ${"Hero Shot attached from Palmetto"},
+      ${"Palmetto"}
+    )
+  `;
+  return true;
 }
 
 async function findOrCreateDealer(sql: Sql, input: PalmettoHandoffInput): Promise<string | null> {
@@ -423,7 +529,7 @@ async function attachPalmettoTile(
       insert into credit_documents (
         id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
       ) values (
-        ${uid()}, ${appId}, ${leadId}, 'listing_pics',
+        ${uid()}, ${appId}, ${leadId}, ${HERO_SHOT_KIND},
         ${`palmetto-tile.${ext}`}, ${mime}, ${data}, 'palmetto'
       )
     `;
@@ -586,7 +692,18 @@ export async function ingestPalmettoLease(
     const prior = await sql<{ id: string }>`
       select id from leads where external_ref = ${input.referenceId} limit 1
     `;
-    if (prior[0]) return { ok: true, id: prior[0].id, duplicate: true };
+    if (prior[0]) {
+      const app = await sql<{ id: string }>`
+        select id from credit_applications
+        where lead_id = ${prior[0].id}
+        order by case when coalesce(applicant_role,'primary') = 'primary' then 0 else 1 end
+        limit 1
+      `;
+      if (app[0] && (input.photoUrl || input.image)) {
+        await attachHeroShot(sql, prior[0].id, app[0].id, input.photoUrl || input.image).catch(() => false);
+      }
+      return { ok: true, id: prior[0].id, duplicate: true };
+    }
   }
 
   const partnerId = await findOrCreateDealer(sql, input);
@@ -672,8 +789,12 @@ export async function ingestPalmettoLease(
   await sql`update leads set credit_app_id = ${appId}, updated_at = now() where id = ${leadId}`;
   await seedChecklist(sql, appId);
 
-  const tileAttached = input.image
-    ? await attachPalmettoTile(sql, leadId, appId, input.image).catch(() => false)
+  const heroUrl = input.photoUrl || input.image;
+  const heroOk = heroUrl
+    ? await attachHeroShot(sql, leadId, appId, heroUrl).catch((e) => {
+        console.error("[palmetto-handoff] hero shot failed", e);
+        return false;
+      })
     : false;
 
   const savedQuote = await savePalmettoQuote(sql, leadId, input, name).catch((e) => {
@@ -685,7 +806,7 @@ export async function ingestPalmettoLease(
     insert into lead_activities (id, lead_id, kind, body, created_by_name)
     values (
       ${uid()}, ${leadId}, ${savedQuote ? "quote" : "system"},
-      ${`Palmetto Apply${input.referenceId ? ` · ${input.referenceId}` : ""}${input.dealerName ? ` · ${input.dealerName}` : ""}${savedQuote ? ` · quote saved ${money(savedQuote.monthly)}/mo` : ""}${tileAttached ? " · tile attached" : ""}${input.image && !tileAttached ? ` · tile ${input.image}` : ""} · unassigned`},
+      ${`Palmetto Apply${input.referenceId ? ` · ${input.referenceId}` : ""}${input.dealerName ? ` · ${input.dealerName}` : ""}${savedQuote ? ` · quote saved ${money(savedQuote.monthly)}/mo` : ""}${heroOk ? " · hero shot attached" : ""} · unassigned`},
       ${"Palmetto"}
     )
   `;

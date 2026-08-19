@@ -88,6 +88,11 @@ function extractTileUrl(...texts: Array<string | null | undefined>): string | nu
   return null;
 }
 
+function realGuarantorLine(v: string | null | undefined): string | null {
+  const s = String(v || "").trim();
+  if (!s || /^(n\/?a|none|no|-+)$/i.test(s)) return null;
+  return `Guarantor: ${s}`;
+}
 
 /** Open HTML or PDF data URLs in a new tab (Blob URLs — browsers block huge data: PDFs as about:blank). */
 function openFileDataUrl(dataUrl: string, fileName = "quote.pdf") {

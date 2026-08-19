@@ -27,6 +27,7 @@ import {
 } from "@/lib/crm/contracts";
 import { emailFirstInvoice } from "@/lib/crm/server";
 import {
+  HERO_SHOT_KIND,
   LESSEE_DOC_TYPES,
   STAFF_UPLOAD_DOC_TYPES,
   checklistDef,
@@ -660,6 +661,35 @@ export function CreditUnderwritingPanel({
           </a>
         </p>
       ) : null}
+
+      <HeroShotSection
+        documents={documents}
+        canUpload={canUpload}
+        canDeleteDocs={canDeleteDocs}
+        busy={busy}
+        setBusy={setBusy}
+        onView={(name, dataUrl) => setViewDoc({ name, data: dataUrl })}
+        onUpload={async (file) => {
+          const fileData = await readFile(file);
+          await uploadDealDocument({
+            data: {
+              leadId,
+              applicationId: app.id,
+              kind: HERO_SHOT_KIND,
+              fileName: file.name,
+              mimeType: file.type || "image/jpeg",
+              fileData,
+            },
+          });
+          toast.success("Hero Shot uploaded");
+          await load();
+        }}
+        onDeleteDoc={async (documentId) => {
+          await deleteCreditDocument({ data: { documentId, leadId } });
+          toast.success("Hero Shot removed");
+          await load();
+        }}
+      />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <ChecklistSection
@@ -1508,6 +1538,105 @@ function UnderwriteCard({ report }: { report: UnderwriteReport }) {
               <li key={f}>{f}</li>
             ))}
           </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function HeroShotSection({
+  documents,
+  canUpload,
+  canDeleteDocs,
+  busy,
+  setBusy,
+  onView,
+  onUpload,
+  onDeleteDoc,
+}: {
+  documents: { id: string; kind: string; file_name: string; file_data: string }[];
+  canUpload: boolean;
+  canDeleteDocs: boolean;
+  busy: boolean;
+  setBusy: (v: boolean) => void;
+  onView: (name: string, data: string) => void;
+  onUpload: (file: File) => Promise<void>;
+  onDeleteDoc: (documentId: string) => Promise<void>;
+}) {
+  const hero = documents.find((d) => d.kind === HERO_SHOT_KIND);
+  const preview =
+    hero?.file_data &&
+    (/^data:image\//i.test(hero.file_data) || /\.(jpe?g|png|webp|gif)$/i.test(hero.file_name))
+      ? hero.file_data
+      : null;
+  return (
+    <div className="rounded-sm border border-border p-3">
+      <h4 className="mb-2 text-sm font-semibold">Hero Shot</h4>
+      <p className="mb-2 text-xs text-muted-foreground">
+        Cover photo for this deal. Palmetto Apply fills this automatically. Listing pictures stay
+        separate below.
+      </p>
+      {hero && preview ? (
+        <button
+          type="button"
+          className="mb-2 block overflow-hidden rounded-sm border border-border"
+          onClick={() => onView(hero.file_name, hero.file_data)}
+        >
+          <img src={preview} alt="Hero Shot" className="max-h-56 w-full object-cover" />
+        </button>
+      ) : hero ? (
+        <button
+          type="button"
+          className="mb-2 text-xs text-primary underline"
+          onClick={() => onView(hero.file_name, hero.file_data)}
+        >
+          {hero.file_name}
+        </button>
+      ) : (
+        <p className="mb-2 text-xs text-muted-foreground">No hero shot yet.</p>
+      )}
+      {canUpload ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            type="file"
+            accept="image/*"
+            className="h-8 max-w-xs text-xs"
+            disabled={busy}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              setBusy(true);
+              try {
+                await onUpload(file);
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "Upload failed");
+              } finally {
+                setBusy(false);
+                e.target.value = "";
+              }
+            }}
+          />
+          {hero && canDeleteDocs ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={async () => {
+                if (!window.confirm("Remove this Hero Shot?")) return;
+                setBusy(true);
+                try {
+                  await onDeleteDoc(hero.id);
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : "Delete failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Remove
+            </Button>
+          ) : null}
         </div>
       ) : null}
     </div>

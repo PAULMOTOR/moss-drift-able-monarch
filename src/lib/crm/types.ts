@@ -907,9 +907,12 @@ export const LESSEE_DOC_TYPES = [
 
 export type LesseeDocTypeKey = (typeof LESSEE_DOC_TYPES)[number]["key"];
 
+export const HERO_SHOT_KIND = "hero_shot";
+
 /** Extra kinds sales or credit can attach on a deal (not a lessee request). */
 export const STAFF_UPLOAD_DOC_TYPES = [
   ...LESSEE_DOC_TYPES,
+  { key: "hero_shot", label: "Hero Shot" },
   { key: "insurance", label: "Insurance" },
   { key: "contract", label: "Contract / agreement" },
   { key: "other", label: "Other" },

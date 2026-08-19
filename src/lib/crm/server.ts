@@ -2784,6 +2784,7 @@ export const readyForBusinessCentral = createServerFn({ method: "POST" })
         order by created_at asc
       `;
       const kindLabel: Record<string, string> = {
+        hero_shot: "Hero-Shot",
         dl_front: "ID-DL-Front",
         dl_back: "ID-DL-Back",
         id_second: "ID-Second",
