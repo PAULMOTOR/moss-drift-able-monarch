@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getPublicDocRequest, uploadPublicCreditDoc } from "@/lib/crm/credit";
+import { getPublicDocRequest, uploadPublicCreditDoc, finishPublicDocUpload } from "@/lib/crm/credit";
 import { LESSEE_DOC_TYPES, lesseeDocLabel } from "@/lib/crm/types";
 
 export const Route = createFileRoute("/credit-docs/$token")({
@@ -68,6 +68,7 @@ function PublicDocUploadPage() {
   const [pendingKinds, setPendingKinds] = useState<string[]>(urlKinds);
   const [uploadedKinds, setUploadedKinds] = useState<string[]>([]);
   const [selectedKind, setSelectedKind] = useState<string>(urlKinds[0] || "");
+  const [notified, setNotified] = useState(false);
 
   useEffect(() => {
     void getPublicDocRequest({ data: { token } })
@@ -122,10 +123,13 @@ function PublicDocUploadPage() {
       const nextLeft = pendingKinds.filter((k) => !isKindUploaded(k, nextUploaded));
       setSelectedKind(nextLeft[0] || selectedKind);
       toast.success(
-        nextLeft.length
-          ? `${kindLabel(selectedKind)} received — ${nextLeft.length} still needed`
-          : "All requested documents received",
+        res.notified
+          ? "All requested documents received — credit has been notified"
+          : nextLeft.length
+            ? `${kindLabel(selectedKind)} received — ${nextLeft.length} still needed`
+            : "All requested documents received",
       );
+      if (res.notified) setNotified(true);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Upload failed");
     } finally {
@@ -227,9 +231,37 @@ function PublicDocUploadPage() {
               {count} file(s) received. You may close this window or upload another.
             </p>
           ) : null}
-          <Button className="mt-4" variant="outline" onClick={() => window.close()}>
-            Close
-          </Button>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button
+              disabled={busy || notified || (count === 0 && uploadedKinds.length === 0)}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const res = await finishPublicDocUpload({ data: { token } });
+                  setNotified(true);
+                  toast.success(
+                    res.complete
+                      ? "Credit has been notified — you can close this window"
+                      : "Credit has been notified. You can still add missing files later.",
+                  );
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Could not notify credit");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {notified ? "Credit notified" : "I'm finished"}
+            </Button>
+            <Button variant="outline" onClick={() => window.close()}>
+              Close
+            </Button>
+          </div>
+          {notified ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Paul Motor Leasing credit has this package.
+            </p>
+          ) : null}
         </div>
       </main>
     </div>

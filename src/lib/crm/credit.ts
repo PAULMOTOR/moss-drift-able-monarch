@@ -1373,6 +1373,123 @@ export const savePublicCreditApp = createServerFn({ method: "POST" })
     return { ok: true as const, status };
   });
 
+function parseRequestedDocKinds(raw: unknown): string[] {
+  try {
+    if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+    if (typeof raw === "string" && raw.trim()) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+    }
+  } catch {
+    /* ignore */
+  }
+  return [];
+}
+
+function docKindAliases(key: string): string[] {
+  if (key === "bank_statement" || key === "personal_bank_statements") {
+    return ["bank_statement", "personal_bank_statements", "bank_statements"];
+  }
+  if (key === "noa_payslip" || key === "noas") {
+    return ["noa_payslip", "noas", "noa"];
+  }
+  return [key];
+}
+
+function requestedDocsComplete(requested: string[], uploaded: Iterable<string>): boolean {
+  if (!requested.length) return false;
+  const have = new Set(uploaded);
+  return requested.every((k) => docKindAliases(k).some((a) => have.has(a)));
+}
+
+function labelDocKind(key: string): string {
+  if (key === "noa_payslip") return "NOA / payslips";
+  if (key === "bank_statement") return "Bank / financial statements";
+  return lesseeDocLabel(key);
+}
+
+async function notifyCreditManagerDocsReceived(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  opts: {
+    leadId: string;
+    applicationId: string;
+    partyName: string;
+    requested: string[];
+    uploaded: string[];
+    complete: boolean;
+    force?: boolean;
+  },
+): Promise<boolean> {
+  const marker = `doc-package:${opts.applicationId}`;
+  const prior = await sql<{ id: string; body: string }>`
+    select id, body from lead_activities
+    where lead_id = ${opts.leadId}
+      and body like ${"%" + marker + "%"}
+      and created_at > now() - interval '14 days'
+    order by created_at desc
+    limit 5
+  `;
+  const alreadyComplete = prior.some((p) => /\(complete\)/.test(p.body || ""));
+  if (opts.complete && alreadyComplete) return false;
+  if (!opts.complete && prior.length && !opts.force) return false;
+
+  let recips = await sql<{ email: string; name: string }>`
+    select email, name from profiles
+    where active = true and role = 'credit_manager'
+  `;
+  if (!recips.length) {
+    recips = await sql<{ email: string; name: string }>`
+      select email, name from profiles
+      where active = true and role = 'admin'
+    `;
+  }
+  if (!recips.length) return false;
+
+  const lead = await sql<{ name: string }>`select name from leads where id = ${opts.leadId}`;
+  const dealName = lead[0]?.name || opts.partyName || "Deal";
+  const link = `${appBaseUrl()}/leads/${opts.leadId}?tab=credit`;
+  const received = opts.uploaded.map((k) => `• ${labelDocKind(k)}`).join("\n") || "• (see deal)";
+  const missing = opts.requested.filter(
+    (k) => !docKindAliases(k).some((a) => opts.uploaded.includes(a)),
+  );
+  const missingText = missing.length
+    ? `\nStill missing:\n${missing.map((k) => `• ${labelDocKind(k)}`).join("\n")}`
+    : "";
+  const subject = opts.complete
+    ? `Documents received — ${dealName}`
+    : `Documents uploaded (incomplete) — ${dealName}`;
+  const text =
+    `${opts.partyName || "The client"} uploaded documents for ${dealName}.\n\n` +
+    `Received:\n${received}${missingText}\n\nOpen: ${link}`;
+  const html =
+    `<p><strong>${(opts.partyName || "The client").replace(/</g, "")}</strong> uploaded documents for <strong>${dealName.replace(/</g, "")}</strong>.</p>` +
+    `<p>Received:</p><ul>${opts.uploaded.map((k) => `<li>${labelDocKind(k)}</li>`).join("")}</ul>` +
+    (missing.length
+      ? `<p>Still missing:</p><ul>${missing.map((k) => `<li>${labelDocKind(k)}</li>`).join("")}</ul>`
+      : `<p><strong>Requested package is complete.</strong></p>`) +
+    `<p><a href="${link}">Open deal in CRM</a></p>`;
+
+  for (const r of recips) {
+    await sendCrmEmail(sql, {
+      to: r.email,
+      subject,
+      kind: "lessee_docs_received",
+      leadId: opts.leadId,
+      text,
+      html,
+    });
+  }
+  await sql`
+    insert into lead_activities (id, lead_id, kind, body, created_by_name)
+    values (
+      ${uid()}, ${opts.leadId}, 'credit',
+      ${`Lessee documents received (${opts.complete ? "complete" : "partial"}) · ${opts.uploaded.map(labelDocKind).join(", ")}\n${marker}`},
+      'Document upload'
+    )
+  `;
+  return true;
+}
+
 export const uploadPublicCreditDoc = createServerFn({ method: "POST" })
   .validator(
     (data: {
@@ -1444,7 +1561,23 @@ export const uploadPublicCreditDoc = createServerFn({ method: "POST" })
         });
       }
     }
-    return { ok: true as const, uploadedKind: kind };
+    let notified = false;
+    if (data.via === "doc") {
+      const requested = parseRequestedDocKinds(rows[0].pending_doc_kinds);
+      const uploaded = [...set];
+      if (requestedDocsComplete(requested, uploaded)) {
+        const partyName = app.applicant_name || "";
+        notified = await notifyCreditManagerDocsReceived(sql, {
+          leadId: app.lead_id,
+          applicationId: app.id,
+          partyName: partyName || "The client",
+          requested,
+          uploaded,
+          complete: true,
+        });
+      }
+    }
+    return { ok: true as const, uploadedKind: kind, notified };
   });
 
 export const getPublicDocRequest = createServerFn({ method: "GET" })
@@ -1482,6 +1615,42 @@ export const getPublicDocRequest = createServerFn({ method: "GET" })
       pendingKinds: pending,
       uploadedKinds: docs.map((d) => String(d.kind)),
     };
+  });
+
+export const finishPublicDocUpload = createServerFn({ method: "POST" })
+  .validator((data: { token: string }) => data)
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const rows = await sql.query<Record<string, unknown>>(
+      `select a.id, a.lead_id, a.pending_doc_kinds, a.applicant_role, a.applicant_name, l.name
+       from credit_applications a
+       join leads l on l.id = a.lead_id
+       where a.doc_request_token = $1 limit 1`,
+      [data.token],
+    );
+    if (!rows[0]) throw new Error("Invalid or expired document link");
+    const requested = parseRequestedDocKinds(rows[0].pending_doc_kinds);
+    const docs = await sql<{ kind: string }>`
+      select distinct kind from credit_documents where application_id = ${String(rows[0].id)}
+    `;
+    const uploaded = docs.map((d) => String(d.kind));
+    if (!uploaded.length) {
+      throw new Error("Upload at least one document first");
+    }
+    const complete = requestedDocsComplete(requested, uploaded);
+    const isGuar = String(rows[0].applicant_role || "") === "guarantor";
+    const partyName = isGuar
+      ? String(rows[0].applicant_name || rows[0].name)
+      : String(rows[0].name);
+    const notified = await notifyCreditManagerDocsReceived(sql, {
+      leadId: String(rows[0].lead_id),
+      applicationId: String(rows[0].id),
+      partyName,
+      requested,
+      uploaded,
+      complete,
+    });
+    return { ok: true as const, notified, complete };
   });
 
 export const addGuarantor = createServerFn({ method: "POST" })
