@@ -199,6 +199,8 @@ export function parsePalmettoPayload(raw: unknown): PalmettoHandoffInput {
   const creditConsent =
     consentRaw === true || /^(true|1|yes|y|agreed|consent)$/i.test(str(consentRaw));
 
+  const image = extractPalmettoImageRef(raw);
+
   return {
     referenceId: str(pick(root, "referenceId", "reference_id", "ref")),
     name: fullName,
@@ -252,10 +254,7 @@ export function parsePalmettoPayload(raw: unknown): PalmettoHandoffInput {
     trim,
     vin: str(pick(car, "vin") ?? pick(root, "vin")).toUpperCase(),
     stock: str(pick(car, "stock", "stockNumber", "stock_number") ?? pick(root, "stock")),
-    image: httpUrl(
-      pick(root, "image", "imageUrl", "thumbnailUrl", "tileUrl", "photoUrl", "photo_url", "heroImageUrl") ??
-        pick(car, "image", "imageUrl", "thumbnail", "thumbnailUrl", "photoUrl", "photo", "src"),
-    ) || pickPhotoUrl(root, car),
+    image,
     price: dollarsOrCents(
       pick(quote, "price", "salePrice", "capCost") ?? pick(car, "price") ?? pick(root, "price"),
       pick(quote, "priceCents") ?? pick(root, "priceCents"),
@@ -277,7 +276,7 @@ export function parsePalmettoPayload(raw: unknown): PalmettoHandoffInput {
       pick(quote, "rate", "ratePct", "apr", "baseInterestRate") ??
         pick(root, "rate", "baseInterestRate"),
     ),
-    photoUrl: pickPhotoUrl(root, car),
+    photoUrl: image,
   };
 }
 
@@ -291,98 +290,204 @@ function firstUrlFromList(v: unknown): string {
   return "";
 }
 
-function pickPhotoUrl(root: Record<string, unknown>, car: Record<string, unknown>): string {
-  const direct = str(
-    pick(root, "photoUrl", "photo_url", "imageUrl", "image_url", "heroImageUrl", "hero_image_url", "heroUrl") ??
-      pick(car, "photoUrl", "photo_url", "imageUrl", "image_url", "heroImageUrl", "heroUrl", "photo", "image", "src"),
-  );
-  if (direct.startsWith("http")) return direct;
-  const fromList =
-    firstUrlFromList(root.photos) ||
-    firstUrlFromList(root.images) ||
-    firstUrlFromList(car.photos) ||
-    firstUrlFromList(car.images);
-  return fromList.startsWith("http") ? fromList : "";
+function unwrapUrl(v: unknown): string {
+  if (typeof v === "string") return v.trim();
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    return str(
+      pick(v as Record<string, unknown>, "url", "src", "href", "photoUrl", "imageUrl", "image", "path"),
+    );
+  }
+  return "";
 }
 
-function isSafeImageUrl(raw: string): boolean {
-  try {
-    const u = new URL(raw);
-    if (u.protocol !== "https:" && u.protocol !== "http:") return false;
-    const host = u.hostname.toLowerCase();
-    if (host === "localhost" || host.endsWith(".local") || host === "127.0.0.1" || host === "::1") {
-      return false;
-    }
-    if (/^(10\.|192\.168\.|169\.254\.)/.test(host)) return false;
+function palmettoOrigins(): string[] {
+  const env = str(process.env.PALMETTO_PUBLIC_URL || process.env.PALMETTO_SITE_URL).replace(/\/$/, "");
+  return [
+    env,
+    "https://www.palmettoleasing.com",
+    "https://palmettoleasing.com",
+    "https://palmetto.paulmotorcompany.com",
+  ].filter(Boolean);
+}
+
+function looksLikeImageRef(s: string): boolean {
+  if (!s) return false;
+  if (/^data:image\//i.test(s)) return true;
+  if (/^\/api\/thumb\//i.test(s)) return true;
+  if (/\/api\/thumb\//i.test(s)) return true;
+  if (/\.(jpe?g|png|webp|gif|avif|heic)(\?|$)/i.test(s)) return true;
+  if (/^https?:\/\//i.test(s) && /image|img|thumb|photo|tile|hero|cdn|blob|storage/i.test(s)) {
     return true;
-  } catch {
-    return false;
   }
+  return false;
+}
+
+function resolveImageRef(raw: string): string[] {
+  const s = raw.trim();
+  if (!s) return [];
+  if (/^data:image\//i.test(s)) return [s];
+  if (/^\/\//.test(s)) return [`https:${s}`];
+  if (/^https?:\/\//i.test(s)) return [s];
+  if (s.startsWith("/")) {
+    return palmettoOrigins().map((o) => `${o}${s}`);
+  }
+  return [];
+}
+
+/** Walk Apply JSON for any photo Palmetto may have sent. */
+export function extractPalmettoImageRef(raw: unknown): string {
+  const root = obj(raw);
+  const car = obj(pick(root, "car", "unit", "vehicle"));
+  const quote = obj(pick(root, "quote", "lease"));
+  const named = [
+    unwrapUrl(pick(root, "image", "imageUrl", "image_url", "photoUrl", "photo_url", "heroImageUrl", "hero_image_url", "thumbnailUrl", "tileUrl", "photo", "thumbnail")),
+    unwrapUrl(pick(car, "image", "imageUrl", "photoUrl", "thumbnail", "thumbnailUrl", "photo", "src", "url")),
+    unwrapUrl(pick(quote, "image", "imageUrl", "photoUrl", "thumbnailUrl")),
+    firstUrlFromList(root.photos),
+    firstUrlFromList(root.images),
+    firstUrlFromList(car.photos),
+    firstUrlFromList(car.images),
+  ].map((s) => s.trim()).filter(Boolean);
+  for (const s of named) {
+    if (looksLikeImageRef(s) || /^https?:\/\//i.test(s) || s.startsWith("/")) return s;
+  }
+  const walk = (v: unknown, depth: number): string => {
+    if (depth > 5 || v == null) return "";
+    if (typeof v === "string") return looksLikeImageRef(v) ? v.trim() : "";
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        const hit = walk(item, depth + 1);
+        if (hit) return hit;
+      }
+      return "";
+    }
+    if (typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      for (const k of Object.keys(o)) {
+        if (!/image|photo|thumb|tile|hero|src|url/i.test(k)) continue;
+        const hit = walk(o[k], depth + 1);
+        if (hit) return hit;
+      }
+    }
+    return "";
+  };
+  return walk(raw, 0);
+}
+
+function pickPhotoUrl(root: Record<string, unknown>, car: Record<string, unknown>): string {
+  return extractPalmettoImageRef({ ...root, car });
+}
+
+function sniffImageMime(buf: Buffer, hinted: string): string | null {
+  const hint = (hinted || "").split(";")[0].trim().toLowerCase();
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
+  if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png";
+  if (buf.slice(0, 4).toString("ascii") === "RIFF") return "image/webp";
+  if (buf.slice(4, 8).toString("ascii") === "ftyp") return "image/avif";
+  if (buf[0] === 0x47 && buf[1] === 0x49) return "image/gif";
+  if (hint.startsWith("image/") && hint !== "image/svg+xml") return hint;
+  return null;
 }
 
 async function fetchHeroImage(
-  url: string,
+  ref: string,
 ): Promise<{ dataUrl: string; mime: string; name: string } | null> {
-  if (!isSafeImageUrl(url)) return null;
-  try {
-    const res = await fetch(url, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(15_000),
-      headers: { Accept: "image/*" },
-    });
-    if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 80 || buf.length > 2_500_000) return null;
-    let mime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    if (!/^image\/(jpeg|jpg|png|webp|gif)$/.test(mime)) {
-      if (buf[0] === 0xff && buf[1] === 0xd8) mime = "image/jpeg";
-      else if (buf[0] === 0x89 && buf[1] === 0x50) mime = "image/png";
-      else if (buf.slice(0, 4).toString("ascii") === "RIFF") mime = "image/webp";
-      else return null;
-    }
-    const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "jpg";
-    return {
-      dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
-      mime,
-      name: `hero-shot.${ext}`,
-    };
-  } catch {
-    return null;
+  if (/^data:image\//i.test(ref)) {
+    if (ref.length < 80 || ref.length > 5_500_000) return null;
+    const mime = ref.slice(5, ref.indexOf(";")) || "image/jpeg";
+    const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+    return { dataUrl: ref, mime, name: `hero-shot.${ext}` };
   }
+  const candidates = resolveImageRef(ref);
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(18_000),
+        headers: {
+          Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+          "User-Agent":
+            "Mozilla/5.0 (compatible; PaulMotorCRM/1.0; +https://crm.paulmotorcompany.com)",
+        },
+      });
+      if (!res.ok) continue;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 60 || buf.length > 3_500_000) continue;
+      const mime = sniffImageMime(buf, res.headers.get("content-type") || "");
+      if (!mime) continue;
+      const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("avif") ? "avif" : "jpg";
+      const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+      if (dataUrl.length > 5_500_000) continue;
+      return { dataUrl, mime, name: `hero-shot.${ext}` };
+    } catch {
+      /* try next origin */
+    }
+  }
+  return null;
 }
 
 async function attachHeroShot(
   sql: Sql,
   leadId: string,
   applicationId: string,
-  photoUrl: string,
+  photoRef: string,
 ): Promise<boolean> {
-  if (!photoUrl) return false;
+  if (!photoRef) return false;
   const existing = await sql<{ id: string }>`
     select id from credit_documents
     where lead_id = ${leadId} and kind = ${HERO_SHOT_KIND}
     limit 1
   `;
-  if (existing[0]) return false;
-  const img = await fetchHeroImage(photoUrl);
-  if (!img) return false;
-  await sql`
-    insert into credit_documents (
-      id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
-    ) values (
-      ${uid()}, ${applicationId}, ${leadId}, ${HERO_SHOT_KIND},
-      ${img.name}, ${img.mime}, ${img.dataUrl}, ${"palmetto"}
-    )
-  `;
+  if (existing[0]) return true;
+  const img = await fetchHeroImage(photoRef);
+  if (img) {
+    await sql`
+      insert into credit_documents (
+        id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
+      ) values (
+        ${uid()}, ${applicationId}, ${leadId}, ${HERO_SHOT_KIND},
+        ${img.name}, ${img.mime}, ${img.dataUrl}, ${"palmetto"}
+      )
+    `;
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by_name)
+      values (
+        ${uid()}, ${leadId}, 'credit',
+        ${"Hero Shot attached from Palmetto"},
+        ${"Palmetto"}
+      )
+    `;
+    return true;
+  }
+  const hotlink = resolveImageRef(photoRef).find((u) => /^https?:\/\//i.test(u));
+  if (hotlink) {
+    await sql`
+      insert into credit_documents (
+        id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
+      ) values (
+        ${uid()}, ${applicationId}, ${leadId}, ${HERO_SHOT_KIND},
+        ${"hero-shot.jpg"}, ${"image/jpeg"}, ${hotlink}, ${"palmetto"}
+      )
+    `;
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by_name)
+      values (
+        ${uid()}, ${leadId}, 'credit',
+        ${`Hero Shot linked from Palmetto (live URL)\n${hotlink}`},
+        ${"Palmetto"}
+      )
+    `;
+    return true;
+  }
   await sql`
     insert into lead_activities (id, lead_id, kind, body, created_by_name)
     values (
       ${uid()}, ${leadId}, 'credit',
-      ${"Hero Shot attached from Palmetto"},
+      ${`Hero Shot missing — Palmetto sent: ${photoRef.slice(0, 240)}`},
       ${"Palmetto"}
     )
   `;
-  return true;
+  return false;
 }
 
 async function findOrCreateDealer(sql: Sql, input: PalmettoHandoffInput): Promise<string | null> {
@@ -796,6 +901,16 @@ export async function ingestPalmettoLease(
         return false;
       })
     : false;
+  if (!heroUrl) {
+    await sql`
+      insert into lead_activities (id, lead_id, kind, body, created_by_name)
+      values (
+        ${uid()}, ${leadId}, 'credit',
+        ${"Hero Shot missing — Palmetto Apply had no image URL"},
+        ${"Palmetto"}
+      )
+    `;
+  }
 
   const savedQuote = await savePalmettoQuote(sql, leadId, input, name).catch((e) => {
     console.error("[palmetto-handoff] lease quote persist failed", e);

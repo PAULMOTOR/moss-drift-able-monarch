@@ -1566,7 +1566,9 @@ function HeroShotSection({
   const hero = documents.find((d) => d.kind === HERO_SHOT_KIND);
   const preview =
     hero?.file_data &&
-    (/^data:image\//i.test(hero.file_data) || /\.(jpe?g|png|webp|gif)$/i.test(hero.file_name))
+    (/^data:image\//i.test(hero.file_data) ||
+      /^https?:\/\//i.test(hero.file_data) ||
+      /\.(jpe?g|png|webp|gif|avif)$/i.test(hero.file_name))
       ? hero.file_data
       : null;
   return (
