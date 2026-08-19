@@ -233,6 +233,63 @@ async function findDuplicateLead(
   return null;
 }
 
+async function findSamePersonVehicleLead(
+  sql: Sql,
+  opts: {
+    name: string;
+    stock: string | null;
+    vehicle: string | null;
+  },
+): Promise<{ id: string; name: string } | null> {
+  const nameKey = opts.name
+    .toLowerCase()
+    .replace(/[^a-z0-9à-ÿ\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const parts = nameKey.split(" ").filter((t) => t.length > 1);
+  if (parts.length < 2) return null;
+  const wantStock = opts.stock;
+  const wantVeh = opts.vehicle;
+  if (!wantStock && !wantVeh) return null;
+
+  const candidates = await sql.query<{
+    id: string;
+    name: string;
+    vehicle_interest: string | null;
+    stock_number: string | null;
+  }>(
+    `select l.id, l.name, l.vehicle_interest, i.stock_number
+     from leads l
+     left join inventory i on i.id = l.inventory_id
+     where l.stage not in ('won', 'lost')
+       and l.created_at > now() - interval '90 days'
+     order by l.updated_at desc
+     limit 120`,
+  );
+
+  for (const c of candidates) {
+    const cName = (c.name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9à-ÿ\s]/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!cName || cName !== nameKey) continue;
+    const cStock = stockKey(c.stock_number);
+    if (wantStock && cStock && wantStock === cStock) {
+      return { id: c.id, name: c.name };
+    }
+    const cVeh = vehicleKey(c.vehicle_interest);
+    if (wantVeh && cVeh) {
+      const a = new Set(wantVeh.split(" ").filter((t) => t.length > 2));
+      const b = new Set(cVeh.split(" ").filter((t) => t.length > 2));
+      let hit = 0;
+      for (const t of a) if (b.has(t)) hit += 1;
+      if (hit >= 2) return { id: c.id, name: c.name };
+    }
+  }
+  return null;
+}
+
 /** TAdvantage / website lease application forms — never open a new lead. */
 function isWebsiteLeaseApplication(
   leadType: LeadType,
@@ -461,14 +518,21 @@ async function processMessage(
     ? websiteMatch?.kind === "hit"
       ? { id: websiteMatch.id, name: websiteMatch.name }
       : null
-    : await findDuplicateLead(sql, {
+    : (await findDuplicateLead(sql, {
         email: customerEmail,
         phone: customerPhone,
         stock,
         vehicle: vehicleKey(vehicle),
         lead_type: leadType,
         personOnly: false,
-      });
+      })) ||
+      (portal === "autotrader" || portal === "cargurus"
+        ? await findSamePersonVehicleLead(sql, {
+            name,
+            stock,
+            vehicle: vehicleKey(vehicle),
+          })
+        : null);
 
   const notesParts = [
     `Auto-imported from ${portal} · ${classified.rule}`,
@@ -727,7 +791,7 @@ export async function runEmailImport(
   }
 
   const newerThanDays = opts?.newerThanDays ?? 14;
-  const maxResults = opts?.maxResults ?? 40;
+  const maxResults = opts?.maxResults ?? 80;
 
   let messages: GmailMessage[] = [];
   try {

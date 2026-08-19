@@ -572,6 +572,12 @@ function parseAutoTraderLead(text: string): {
   }
 
   if (!out.phone) {
+    const lone = scan.match(/(?:^|\n)\s*(\d{10})\s*(?:\n|$)/);
+    if (lone && !banned.has(lone[1]) && !/^1000\d{6}$/.test(lone[1])) {
+      out.phone = lone[1];
+    }
+  }
+  if (!out.phone) {
     const ph = extractPhone(text);
     if (ph) out.phone = ph;
   }

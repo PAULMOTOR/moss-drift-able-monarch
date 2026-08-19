@@ -131,6 +131,10 @@ function htmlToText(html: string): string {
  * List inbox messages. Default: last 14 days.
  * Pass newerThanDays: 25 for historical backfill.
  * Paginates until maxResults or no more pages.
+ *
+ * AutoTrader leads often land in Promotions (Unsubscribe + branded HTML).
+ * Inbox query still skips Promotions; a second query always pulls known
+ * lead senders regardless of Gmail category.
  */
 export async function fetchRecentLeadEmails(opts?: {
   maxResults?: number;
@@ -140,34 +144,40 @@ export async function fetchRecentLeadEmails(opts?: {
   const auth = getAuth();
   const gmail = google.gmail({ version: "v1", auth });
   const userId = env("GMAIL_USER") || "me";
-  const maxResults = opts?.maxResults ?? 40;
+  const maxResults = opts?.maxResults ?? 60;
   const days = opts?.newerThanDays ?? 14;
 
-  const queryParts = [
-    "in:inbox",
-    "-category:promotions",
-    `newer_than:${days}d`,
-  ];
-  if (opts?.afterEpochSec) {
-    queryParts.push(`after:${opts.afterEpochSec}`);
-  }
+  const after = opts?.afterEpochSec ? ` after:${opts.afterEpochSec}` : "";
+  const inboxQ = `in:inbox -category:promotions newer_than:${days}d${after}`;
+  const portalQ =
+    `(from:dealerleads.trader.ca OR from:1-source@dealerleads.trader.ca ` +
+    `OR from:messages.cargurus.com OR from:dealer-leads@messages.cargurus.com ` +
+    `OR from:tadvantage.ca OR from:noreply@tadvantage.ca OR from:autotrader.ca) ` +
+    `newer_than:${days}d -in:trash -in:spam${after}`;
 
   const messageIds: string[] = [];
-  let pageToken: string | undefined;
-  while (messageIds.length < maxResults) {
-    const pageSize = Math.min(100, maxResults - messageIds.length);
-    const list = await gmail.users.messages.list({
-      userId,
-      q: queryParts.join(" "),
-      maxResults: pageSize,
-      pageToken,
-    });
-    for (const m of list.data.messages || []) {
-      if (m.id) messageIds.push(m.id);
+  const seen = new Set<string>();
+  async function collect(q: string, cap: number) {
+    let pageToken: string | undefined;
+    while (messageIds.length < cap) {
+      const pageSize = Math.min(100, cap - messageIds.length);
+      const list = await gmail.users.messages.list({
+        userId,
+        q,
+        maxResults: pageSize,
+        pageToken,
+      });
+      for (const m of list.data.messages || []) {
+        if (!m.id || seen.has(m.id)) continue;
+        seen.add(m.id);
+        messageIds.push(m.id);
+      }
+      pageToken = list.data.nextPageToken || undefined;
+      if (!pageToken) break;
     }
-    pageToken = list.data.nextPageToken || undefined;
-    if (!pageToken) break;
   }
+  await collect(inboxQ, maxResults);
+  await collect(portalQ, maxResults + 40);
 
   const out: GmailMessage[] = [];
   for (const id of messageIds) {
