@@ -30,6 +30,13 @@ function str(v: unknown): string {
   return "";
 }
 
+function httpUrl(v: unknown): string {
+  const s = str(v);
+  if (!/^https?:\/\//i.test(s)) return "";
+  if (/^data:/i.test(s)) return "";
+  return s.slice(0, 500);
+}
+
 function num(v: unknown): number | null {
   if (v == null || v === "") return null;
   const n = typeof v === "number" ? v : Number(String(v).replace(/[^0-9.-]/g, ""));
@@ -110,6 +117,8 @@ export type PalmettoHandoffInput = {
   trim: string;
   vin: string;
   stock: string;
+  /** Public HTTPS URL of the Palmetto inventory tile. */
+  image: string;
   price: number | null;
   down: number | null;
   residual: number | null;
@@ -242,6 +251,10 @@ export function parsePalmettoPayload(raw: unknown): PalmettoHandoffInput {
     trim,
     vin: str(pick(car, "vin") ?? pick(root, "vin")).toUpperCase(),
     stock: str(pick(car, "stock", "stockNumber", "stock_number") ?? pick(root, "stock")),
+    image: httpUrl(
+      pick(root, "image", "imageUrl", "thumbnailUrl", "tileUrl") ??
+        pick(car, "image", "imageUrl", "thumbnail", "thumbnailUrl"),
+    ),
     price: dollarsOrCents(
       pick(quote, "price", "salePrice", "capCost") ?? pick(car, "price") ?? pick(root, "price"),
       pick(quote, "priceCents") ?? pick(root, "priceCents"),
@@ -381,7 +394,44 @@ function websiteQuoteLines(input: PalmettoHandoffInput): string[] {
     input.term != null ? `Term ${input.term} mo` : "",
     input.monthly != null ? `Monthly ${money(input.monthly)}` : "",
     input.rate != null ? `Rate ${input.rate}%` : "",
+    input.image ? `Tile ${input.image}` : "",
   ].filter(Boolean);
+}
+
+async function attachPalmettoTile(
+  sql: Sql,
+  leadId: string,
+  appId: string,
+  imageUrl: string,
+): Promise<boolean> {
+  if (!/^https?:\/\//i.test(imageUrl)) return false;
+  try {
+    const res = await fetch(imageUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(20_000),
+      headers: { accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8" },
+    });
+    if (!res.ok) return false;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 400 || buf.length > 3_500_000) return false;
+    let mime = (res.headers.get("content-type") || "image/jpeg").split(";")[0]!.trim();
+    if (!mime.startsWith("image/")) mime = "image/jpeg";
+    const data = `data:${mime};base64,${buf.toString("base64")}`;
+    if (data.length > 5_500_000) return false;
+    const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+    await sql`
+      insert into credit_documents (
+        id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
+      ) values (
+        ${uid()}, ${appId}, ${leadId}, 'listing_pics',
+        ${`palmetto-tile.${ext}`}, ${mime}, ${data}, 'palmetto'
+      )
+    `;
+    return true;
+  } catch (e) {
+    console.error("[palmetto-handoff] tile attach failed", e);
+    return false;
+  }
 }
 
 /** Persist Palmetto numbers as a real CRM lease quote (Lease quote button). */
@@ -548,6 +598,7 @@ export async function ingestPalmettoLease(
     input.dealerName ? `Dealer: ${input.dealerName}` : "",
     input.vin ? `VIN: ${input.vin}` : "",
     input.stock ? `Stock: ${input.stock}` : "",
+    input.image ? `Tile: ${input.image}` : "",
     input.creditConsent ? "Credit consent: yes" : "Credit consent: not marked",
     quoteLines.length ? `Quote:\n${quoteLines.join("\n")}` : "",
   ]
@@ -608,6 +659,7 @@ export async function ingestPalmettoLease(
     quote_term: input.term != null ? String(input.term) : "",
     quote_monthly: input.monthly != null ? String(input.monthly) : "",
     quote_rate: input.rate != null ? String(input.rate) : "",
+    vehicle_image: input.image,
   };
   await sql`
     insert into credit_applications (
@@ -620,6 +672,10 @@ export async function ingestPalmettoLease(
   await sql`update leads set credit_app_id = ${appId}, updated_at = now() where id = ${leadId}`;
   await seedChecklist(sql, appId);
 
+  const tileAttached = input.image
+    ? await attachPalmettoTile(sql, leadId, appId, input.image).catch(() => false)
+    : false;
+
   const savedQuote = await savePalmettoQuote(sql, leadId, input, name).catch((e) => {
     console.error("[palmetto-handoff] lease quote persist failed", e);
     return null;
@@ -629,7 +685,7 @@ export async function ingestPalmettoLease(
     insert into lead_activities (id, lead_id, kind, body, created_by_name)
     values (
       ${uid()}, ${leadId}, ${savedQuote ? "quote" : "system"},
-      ${`Palmetto Apply${input.referenceId ? ` · ${input.referenceId}` : ""}${input.dealerName ? ` · ${input.dealerName}` : ""}${savedQuote ? ` · quote saved ${money(savedQuote.monthly)}/mo` : ""} · unassigned`},
+      ${`Palmetto Apply${input.referenceId ? ` · ${input.referenceId}` : ""}${input.dealerName ? ` · ${input.dealerName}` : ""}${savedQuote ? ` · quote saved ${money(savedQuote.monthly)}/mo` : ""}${tileAttached ? " · tile attached" : ""}${input.image && !tileAttached ? ` · tile ${input.image}` : ""} · unassigned`},
       ${"Palmetto"}
     )
   `;

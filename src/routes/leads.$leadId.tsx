@@ -78,10 +78,14 @@ function displayActivityBody(kind: string, body: string): string {
   return body || "";
 }
 
-function realGuarantorLine(value: string | null | undefined): string | null {
-  const s = (value || "").trim();
-  if (!s || /^n\/?a$/i.test(s) || s === "-") return null;
-  return `Guarantor: ${s}`;
+function extractTileUrl(...texts: Array<string | null | undefined>): string | null {
+  for (const text of texts) {
+    const m = String(text || "").match(
+      /https?:\/\/[^\s]+(?:\/api\/thumb\/[^\s]+|\.(?:jpe?g|png|webp)(?:\?[^\s]*)?)/i,
+    );
+    if (m?.[0]) return m[0].replace(/[),.;]+$/, "");
+  }
+  return null;
 }
 
 
@@ -652,6 +656,13 @@ function LeadDetail() {
                 <CardTitle className="font-display text-xl">Website quote</CardTitle>
               </CardHeader>
               <CardContent>
+                {extractTileUrl(lead.notes, lead.quote_notes) ? (
+                  <img
+                    src={extractTileUrl(lead.notes, lead.quote_notes) || ""}
+                    alt={lead.vehicle_interest || "Inventory tile"}
+                    className="mb-3 aspect-square w-full max-w-[240px] rounded-lg border border-border bg-white object-cover"
+                  />
+                ) : null}
                 <p className="whitespace-pre-wrap text-sm tabular-nums leading-relaxed">
                   {lead.quote_notes}
                 </p>
