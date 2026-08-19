@@ -1437,12 +1437,30 @@ async function notifyCreditManagerDocsReceived(
     select email, name from profiles
     where active = true and role = 'credit_manager'
   `;
+  const assigned = await sql<{ email: string; name: string }>`
+    select p.email, p.name
+    from leads l
+    join profiles p on p.id = l.assigned_to
+    where l.id = ${opts.leadId}
+      and p.active = true
+      and p.email is not null
+      and trim(p.email) <> ''
+    limit 1
+  `;
+  if (assigned[0]) recips = [...recips, assigned[0]];
   if (!recips.length) {
     recips = await sql<{ email: string; name: string }>`
       select email, name from profiles
       where active = true and role = 'admin'
     `;
   }
+  const seen = new Set<string>();
+  recips = recips.filter((r) => {
+    const e = r.email.trim().toLowerCase();
+    if (!e || seen.has(e)) return false;
+    seen.add(e);
+    return true;
+  });
   if (!recips.length) return false;
 
   const lead = await sql<{ name: string }>`select name from leads where id = ${opts.leadId}`;
