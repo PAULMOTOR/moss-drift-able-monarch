@@ -24,6 +24,7 @@ import {
 } from "./types";
 
 import { publicAppUrl } from "./public-url";
+import { ensureHeroShotForLead } from "./handoff";
 
 function uid() {
   return crypto.randomUUID();
@@ -354,6 +355,7 @@ export const getCreditPackage = createServerFn({ method: "GET" })
     const parties = allApps.map(mapApp);
     const guarantors = parties.filter((a) => a.applicant_role === "guarantor");
     const primary = parties.find((a) => a.applicant_role === "primary") || app;
+    await ensureHeroShotForLead(sql, data.leadId).catch(() => false);
     const docs = await sql<CreditDocument>`
       select id, application_id, lead_id, kind, file_name, mime_type, file_data,
              uploaded_by, uploaded_via, created_at::text as created_at

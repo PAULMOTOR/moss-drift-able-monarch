@@ -322,16 +322,33 @@ function looksLikeImageRef(s: string): boolean {
   return false;
 }
 
+function forceWwwPalmetto(url: string): string {
+  return url.replace(
+    /^https?:\/\/palmettoleasing\.com(?=[:/?#]|$)/i,
+    "https://www.palmettoleasing.com",
+  );
+}
+
 function resolveImageRef(raw: string): string[] {
   const s = raw.trim();
   if (!s) return [];
   if (/^data:image\//i.test(s)) return [s];
-  if (/^\/\//.test(s)) return [`https:${s}`];
-  if (/^https?:\/\//i.test(s)) return [s];
+  if (/^\/\//.test(s)) return [forceWwwPalmetto(`https:${s}`)];
+  if (/^https?:\/\//i.test(s)) return [forceWwwPalmetto(s)];
   if (s.startsWith("/")) {
-    return palmettoOrigins().map((o) => `${o}${s}`);
+    return palmettoOrigins().map((o) => forceWwwPalmetto(`${o}${s}`));
   }
   return [];
+}
+
+export function extractTileUrlFromText(...texts: Array<string | null | undefined>): string {
+  for (const text of texts) {
+    const m = String(text || "").match(
+      /https?:\/\/[^\s<>"']+(?:\/api\/thumb\/[^\s<>"']+|\.(?:jpe?g|png|webp|gif|avif)(?:\?[^\s<>"']*)?)/i,
+    );
+    if (m?.[0]) return forceWwwPalmetto(m[0].replace(/[),.;]+$/, ""));
+  }
+  return "";
 }
 
 /** Walk Apply JSON for any photo Palmetto may have sent. */
@@ -389,6 +406,40 @@ function sniffImageMime(buf: Buffer, hinted: string): string | null {
   return null;
 }
 
+async function fetchOneImage(
+  url: string,
+  hops = 0,
+): Promise<{ dataUrl: string; mime: string; name: string } | null> {
+  if (hops > 5) return null;
+  const target = forceWwwPalmetto(url);
+  const res = await fetch(target, {
+    redirect: "manual",
+    signal: AbortSignal.timeout(18_000),
+    headers: {
+      Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+      "User-Agent":
+        "Mozilla/5.0 (compatible; PaulMotorCRM/1.0; +https://crm.paulmotorcompany.com)",
+    },
+  });
+  if (res.status >= 300 && res.status < 400) {
+    const loc = res.headers.get("location");
+    if (!loc) return null;
+    const next = loc.startsWith("http")
+      ? forceWwwPalmetto(loc)
+      : forceWwwPalmetto(new URL(loc, target).href);
+    return fetchOneImage(next, hops + 1);
+  }
+  if (!res.ok) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < 60 || buf.length > 3_500_000) return null;
+  const mime = sniffImageMime(buf, res.headers.get("content-type") || "") || "image/jpeg";
+  if (!mime.startsWith("image/")) return null;
+  const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("avif") ? "avif" : "jpg";
+  const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+  if (dataUrl.length > 5_500_000) return null;
+  return { dataUrl, mime, name: `hero-shot.${ext}` };
+}
+
 async function fetchHeroImage(
   ref: string,
 ): Promise<{ dataUrl: string; mime: string; name: string } | null> {
@@ -398,29 +449,12 @@ async function fetchHeroImage(
     const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
     return { dataUrl: ref, mime, name: `hero-shot.${ext}` };
   }
-  const candidates = resolveImageRef(ref);
-  for (const url of candidates) {
+  for (const url of resolveImageRef(ref)) {
     try {
-      const res = await fetch(url, {
-        redirect: "follow",
-        signal: AbortSignal.timeout(18_000),
-        headers: {
-          Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-          "User-Agent":
-            "Mozilla/5.0 (compatible; PaulMotorCRM/1.0; +https://crm.paulmotorcompany.com)",
-        },
-      });
-      if (!res.ok) continue;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 60 || buf.length > 3_500_000) continue;
-      const mime = sniffImageMime(buf, res.headers.get("content-type") || "");
-      if (!mime) continue;
-      const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("avif") ? "avif" : "jpg";
-      const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
-      if (dataUrl.length > 5_500_000) continue;
-      return { dataUrl, mime, name: `hero-shot.${ext}` };
+      const img = await fetchOneImage(url);
+      if (img) return img;
     } catch {
-      /* try next origin */
+      /* try next */
     }
   }
   return null;
@@ -459,7 +493,9 @@ async function attachHeroShot(
     `;
     return true;
   }
-  const hotlink = resolveImageRef(photoRef).find((u) => /^https?:\/\//i.test(u));
+  const hotlink = resolveImageRef(photoRef)
+    .map(forceWwwPalmetto)
+    .find((u) => /^https?:\/\//i.test(u));
   if (hotlink) {
     await sql`
       insert into credit_documents (
@@ -488,6 +524,53 @@ async function attachHeroShot(
     )
   `;
   return false;
+}
+
+export async function ensureHeroShotForLead(
+  sql: Sql,
+  leadId: string,
+): Promise<boolean> {
+  const existing = await sql<{ id: string }>`
+    select id from credit_documents
+    where lead_id = ${leadId} and kind = ${HERO_SHOT_KIND}
+    limit 1
+  `;
+  if (existing[0]) return true;
+  const lead = await sql<{
+    notes: string | null;
+    quote_notes: string | null;
+  }>`
+    select notes, quote_notes from leads where id = ${leadId} limit 1
+  `;
+  const apps = await sql<{ id: string; payload: unknown }>`
+    select id, payload from credit_applications
+    where lead_id = ${leadId}
+    order by case when coalesce(applicant_role,'primary') = 'primary' then 0 else 1 end
+    limit 1
+  `;
+  if (!apps[0]) return false;
+  const rawPayload = apps[0].payload;
+  let payload: Record<string, unknown> = {};
+  try {
+    payload =
+      typeof rawPayload === "string"
+        ? obj(JSON.parse(rawPayload) as unknown)
+        : obj(rawPayload);
+  } catch {
+    payload = {};
+  }
+  const ref =
+    extractPalmettoImageRef(payload) ||
+    extractTileUrlFromText(
+      lead[0]?.notes,
+      lead[0]?.quote_notes,
+      str(payload.vehicle_image),
+      str(payload.image),
+      str(payload.photoUrl),
+      str(payload.heroImageUrl),
+    );
+  if (!ref) return false;
+  return attachHeroShot(sql, leadId, apps[0].id, ref);
 }
 
 async function findOrCreateDealer(sql: Sql, input: PalmettoHandoffInput): Promise<string | null> {
