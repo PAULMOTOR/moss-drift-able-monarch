@@ -340,6 +340,7 @@ export type Lead = {
   updated_at: string;
   assigned_name?: string | null;
   inventory_label?: string | null;
+  hero_image?: string | null;
 };
 
 export type LeadActivity = {

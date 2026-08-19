@@ -480,7 +480,7 @@ async function attachHeroShot(
         id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
       ) values (
         ${uid()}, ${applicationId}, ${leadId}, ${HERO_SHOT_KIND},
-        ${img.name}, ${img.mime}, ${img.dataUrl}, ${"palmetto"}
+        ${img.name}, ${img.mime}, ${img.dataUrl}, ${"crm"}
       )
     `;
     await sql`
@@ -495,14 +495,14 @@ async function attachHeroShot(
   }
   const hotlink = resolveImageRef(photoRef)
     .map(forceWwwPalmetto)
-    .find((u) => /^https?:\/\//i.test(u));
+    .find((u) => /^https?:\/\//i.test(u) && !/\/api\/thumb\//i.test(u));
   if (hotlink) {
     await sql`
       insert into credit_documents (
         id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
       ) values (
         ${uid()}, ${applicationId}, ${leadId}, ${HERO_SHOT_KIND},
-        ${"hero-shot.jpg"}, ${"image/jpeg"}, ${hotlink}, ${"palmetto"}
+        ${"hero-shot.jpg"}, ${"image/jpeg"}, ${hotlink}, ${"crm"}
       )
     `;
     await sql`
@@ -718,7 +718,7 @@ async function attachPalmettoTile(
         id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
       ) values (
         ${uid()}, ${appId}, ${leadId}, ${HERO_SHOT_KIND},
-        ${`palmetto-tile.${ext}`}, ${mime}, ${data}, 'palmetto'
+        ${`palmetto-tile.${ext}`}, ${mime}, ${data}, 'crm'
       )
     `;
     return true;

@@ -1567,8 +1567,7 @@ function HeroShotSection({
   const preview =
     hero?.file_data &&
     (/^data:image\//i.test(hero.file_data) ||
-      /^https?:\/\//i.test(hero.file_data) ||
-      /\.(jpe?g|png|webp|gif|avif)$/i.test(hero.file_name))
+      (/^https?:\/\//i.test(hero.file_data) && !/\/api\/thumb\//i.test(hero.file_data)))
       ? hero.file_data
       : null;
   return (

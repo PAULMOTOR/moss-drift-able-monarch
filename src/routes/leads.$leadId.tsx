@@ -661,10 +661,10 @@ function LeadDetail() {
                 <CardTitle className="font-display text-xl">Website quote</CardTitle>
               </CardHeader>
               <CardContent>
-                {extractTileUrl(lead.notes, lead.quote_notes) ? (
+                {lead.hero_image ? (
                   <img
-                    src={extractTileUrl(lead.notes, lead.quote_notes) || ""}
-                    alt={lead.vehicle_interest || "Inventory tile"}
+                    src={lead.hero_image}
+                    alt={lead.vehicle_interest || "Vehicle"}
                     className="mb-3 aspect-square w-full max-w-[240px] rounded-lg border border-border bg-white object-cover"
                   />
                 ) : null}

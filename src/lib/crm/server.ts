@@ -12,6 +12,7 @@ import { attachUnmatchedLeaseApp, listUnmatchedLeaseApps } from "./lease-app-imp
 import { applyAcceptedOption } from "./quote-accept";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import { publicAppUrl } from "./public-url";
+import { ensureHeroShotForLead } from "./handoff";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
   buildFirstInvoiceHtml,
@@ -42,6 +43,7 @@ import {
   isLeadType,
   isStageId,
   vehicleLabel,
+  HERO_SHOT_KIND,
 } from "./types";
 
 function id() {
@@ -243,6 +245,7 @@ function mapLead(r: Record<string, unknown>): Lead {
     updated_at: String(r.updated_at),
     assigned_name: (r.assigned_name as string) ?? null,
     inventory_label: (r.inventory_label as string) ?? null,
+    hero_image: (r.hero_image as string) ?? null,
     destination: (r.destination as string) ?? null,
     partner_id: (r.partner_id as string) ?? null,
     partner_name: (r.partner_name as string) ?? null,
@@ -743,7 +746,22 @@ export const getLead = createServerFn({ method: "GET" })
       } catch {
         appointments = [];
       }
-      return { lead: mapLead(rows[0]), activities, drives, appointments };
+      await ensureHeroShotForLead(sql, leadId).catch(() => false);
+      const hero = await sql<{ file_data: string }>`
+        select file_data from credit_documents
+        where lead_id = ${leadId} and kind = ${HERO_SHOT_KIND}
+        order by created_at desc
+        limit 1
+      `.catch(() => [] as { file_data: string }[]);
+      const heroRaw = hero[0]?.file_data || "";
+      const heroImage =
+        /^data:image\//i.test(heroRaw) ||
+        (/^https:\/\/www\.palmettoleasing\.com\//i.test(heroRaw) && !/\/api\/thumb\//i.test(heroRaw))
+          ? heroRaw
+          : null;
+      const mapped = mapLead(rows[0]);
+      mapped.hero_image = heroImage;
+      return { lead: mapped, activities, drives, appointments };
     },
   );
 
