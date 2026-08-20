@@ -1,8 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { getPublicQuoteAccept, submitPublicQuoteAccept } from "@/lib/crm/quote-accept";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  getPublicQuoteAccept,
+  submitPublicQuoteAccept,
+  submitPublicQuoteQuestion,
+} from "@/lib/crm/quote-accept";
 import { formatMoney } from "@/lib/crm/lease-quote";
 
 export const Route = createFileRoute("/quote-accept/$token")({
@@ -18,8 +23,20 @@ function QuoteAcceptPage() {
   const [data, setData] = useState<Awaited<ReturnType<typeof getPublicQuoteAccept>> | null>(
     null,
   );
+  const [askOpen, setAskOpen] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [askBusy, setAskBusy] = useState(false);
+  const [askSent, setAskSent] = useState(false);
+  const askRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    try {
+      if (new URLSearchParams(window.location.search).get("ask") === "1") {
+        setAskOpen(true);
+      }
+    } catch {
+      /* ignore */
+    }
     void getPublicQuoteAccept({ data: { token } })
       .then((res) => {
         setData(res);
@@ -31,6 +48,10 @@ function QuoteAcceptPage() {
         setLoading(false);
       });
   }, [token]);
+
+  useEffect(() => {
+    if (askOpen) askRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [askOpen]);
 
   async function accept() {
     if (!data) return;
@@ -45,6 +66,25 @@ function QuoteAcceptPage() {
       toast.error(e instanceof Error ? e.message : "Could not accept");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function sendQuestion() {
+    const body = question.trim();
+    if (body.length < 4) {
+      toast.error("Please type your question first");
+      return;
+    }
+    setAskBusy(true);
+    try {
+      await submitPublicQuoteQuestion({ data: { token, question: body } });
+      setAskSent(true);
+      setQuestion("");
+      toast.success("Question sent");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not send");
+    } finally {
+      setAskBusy(false);
     }
   }
 
@@ -162,6 +202,58 @@ function QuoteAcceptPage() {
             </Button>
           </section>
         )}
+
+        <section ref={askRef} className="rounded-sm border border-border bg-white p-5 shadow-sm">
+          {askSent ? (
+            <p className="text-sm text-[#008272]">
+              Your question was sent to your Paul Motor Leasing advisor. They will follow up
+              with you.
+            </p>
+          ) : askOpen ? (
+            <div className="space-y-3">
+              <h2 className="text-sm font-semibold text-[#008272]">I still have questions</h2>
+              <p className="text-xs text-muted-foreground">
+                Type your question below. We add it to the deal and email your advisor.
+              </p>
+              <Textarea
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Type your question…"
+                rows={5}
+                maxLength={4000}
+                className="min-h-[120px] bg-white"
+                autoFocus
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  className="flex-1"
+                  disabled={askBusy || question.trim().length < 4}
+                  onClick={() => void sendQuestion()}
+                >
+                  {askBusy ? "Sending…" : "Send question"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={askBusy}
+                  onClick={() => setAskOpen(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center">
+              <button
+                type="button"
+                className="text-sm font-semibold text-[#008272] underline-offset-2 hover:underline"
+                onClick={() => setAskOpen(true)}
+              >
+                I still have questions
+              </button>
+            </div>
+          )}
+        </section>
       </main>
     </div>
   );
