@@ -14,7 +14,7 @@ import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import { publicAppUrl } from "./public-url";
 import { ensureHeroShotForLead } from "./handoff";
 import { loadHeroShotForLead } from "./hero-shot";
-import { ensureInventoryListingAndHero, kickInventoryHero } from "./palmetto-tile";
+import { ensureInventoryListingAndHero, attachInventoryListingThenKickHero } from "./palmetto-tile";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
   buildFirstInvoiceHtml,
@@ -719,6 +719,9 @@ export const getLead = createServerFn({ method: "GET" })
           }
         }
       }
+      if (rows[0].inventory_id) {
+        await attachInventoryListingThenKickHero(sql, leadId);
+      }
       const activities = await sql<LeadActivity>`
         select id, lead_id, kind, body, created_by, created_by_name,
                created_at::text as created_at
@@ -1007,7 +1010,9 @@ export const captureLead = createServerFn({ method: "POST" })
        where l.id = $1`,
       [leadId],
     );
-    if (data.inventory_id) kickInventoryHero(sql, leadId);
+    if (data.inventory_id) {
+      await attachInventoryListingThenKickHero(sql, leadId);
+    }
     return mapLead(rows[0]!);
   });
 
@@ -1201,7 +1206,7 @@ export const updateLead = createServerFn({ method: "POST" })
         ? data.inventory_id || null
         : (prev.inventory_id as string | null);
     if (nextInv && nextInv !== ((prev.inventory_id as string | null) || null)) {
-      kickInventoryHero(sql, data.id);
+      await attachInventoryListingThenKickHero(sql, data.id);
     }
 
     if (stageChanged) {

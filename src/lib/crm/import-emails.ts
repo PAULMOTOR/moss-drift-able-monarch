@@ -16,7 +16,7 @@ import {
 } from "./gmail";
 import type { LeadType } from "./types";
 import { compactEmailBody } from "./email-text";
-import { kickInventoryHero } from "./palmetto-tile";
+import { attachInventoryListingThenKickHero } from "./palmetto-tile";
 import {
   applyWebsiteLeaseAppToLead,
   findWebsiteLeaseDeal,
@@ -661,7 +661,7 @@ async function processMessage(
       )
       on conflict (gmail_message_id) do nothing
     `;
-    if (inv?.id) kickInventoryHero(sql, dup.id);
+    if (inv?.id) await attachInventoryListingThenKickHero(sql, dup.id);
     return {
       status: "merged",
       reason: `Merged into existing lead for ${dup.name}`,
@@ -762,7 +762,7 @@ async function processMessage(
     )
     on conflict (gmail_message_id) do nothing
   `;
-  if (inv?.id) kickInventoryHero(sql, leadId);
+  if (inv?.id) await attachInventoryListingThenKickHero(sql, leadId);
 
   return {
     status: "created",

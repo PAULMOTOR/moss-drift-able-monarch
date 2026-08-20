@@ -7,6 +7,7 @@ import path from "node:path";
 import type { Sql } from "@/lib/db";
 import { HERO_SHOT_KIND, VEHICLE_CHECKLIST, CUSTOMER_CHECKLIST } from "./types";
 import { loadHeroShotForLead } from "./hero-shot";
+import { fetchImageAsDataUrl, resolveInventoryPhotoUrl } from "./inventory-photos";
 
 const STYLE_LOCK_URL = "https://www.palmettoleasing.com/vehicles/palmetto-style-lock.jpg";
 const IMAGINE_MODEL = "grok-imagine-image-quality";
@@ -129,12 +130,6 @@ Create a photorealistic luxury dealership inventory thumbnail of this exact car:
 DUAL-IMAGE RULES: Image 0 is the studio TEMPLATE (full car, elevated FRONT-TOP, nose DOWN / front at bottom, dead-centered, straight wheels, white to the edges) — camera and layout only, different car, discard its orange/copper paint. Image 1 is the SUBJECT car identity only (paint, body, badges). Discard every overlay, caption, and watermark on Image 1. Output MUST match Image 0 for CAMERA HEIGHT and ANGLE (headlights large at the bottom — not a roof-only drone shot), nose-DOWN orientation, straight unturned wheels, perfect centering, #FFFFFF filling the square with equal width and height, soft shadow. NEVER copy Image 1's camera, crop, gray backdrop, or portrait framing — dealer photos of older Ferraris are often nadir and must be discarded. Final check: output is the Image 1 car (correct color, e.g. white if the listing is white); headlights and grille readable near the BOTTOM; roof visible; rear at TOP; wheels straight; no text; white to all four edges; NOT the orange template vehicle.`;
 }
 
-function palmettoTextPrompt(v: VehicleBits): string {
-  const ident = [v.year, v.make, v.model].filter(Boolean).join(" ");
-  const color = v.color || "as photographed";
-  return `Photoreal luxury inventory thumbnail of a complete ${ident} in ${color}. ENTIRE car nose-to-tail. Perfectly dead-centered. ORIENTATION: nose DOWN — front bumper at BOTTOM, rear at TOP. CAMERA: elevated front-top (grille AND roof both visible). NOT a straight-down overhead. Wheels steered STRAIGHT, hidden in the arches. Pure #FFFFFF fills the square edge to edge. Soft under-car shadow. No text, no gray inset, no 3/4 hero.`;
-}
-
 async function loadStyleLockDataUri(): Promise<string> {
   if (styleLockDataUri) return styleLockDataUri;
   try {
@@ -205,43 +200,36 @@ export async function generatePalmettoTileImage(opts: {
   vehicle: VehicleBits;
   listingDataUrl: string | null;
 }): Promise<{ dataUrl: string; via: "edit" | "generate" }> {
-  if (opts.listingDataUrl) {
-    const style = await loadStyleLockDataUri();
-    const prompt = palmettoEditPrompt(opts.vehicle);
-    const img0Url = { url: STYLE_LOCK_URL, type: "image_url" };
-    const img0Data = { url: style, type: "image_url" };
-    const img1 = { url: opts.listingDataUrl, type: "image_url" };
-    const attempts: Record<string, unknown>[] = [
-      { image: [img0Url, img1] },
-      { images: [img0Url, img1] },
-      { image: [img0Data, img1] },
-      { images: [img0Data, img1] },
-    ];
-    const errors: string[] = [];
-    for (const extra of attempts) {
-      const edited = await imagineJson("images/edits", {
-        model: IMAGINE_MODEL,
-        prompt,
-        aspect_ratio: "1:1",
-        response_format: "b64_json",
-        ...extra,
-      });
-      if ("b64" in edited) return { dataUrl: b64ToDataUrl(edited.b64), via: "edit" };
-      errors.push(edited.error);
-      console.error("[palmetto-tile] dual-image edit failed", edited.error);
-    }
-    throw new Error(
-      `Could not build a Palmetto tile from the listing photo (${errors[0] || "Imagine error"}). Original listing kept.`,
-    );
+  if (!opts.listingDataUrl) {
+    throw new Error("Need a listing photo before generating the Palmetto tile.");
   }
-  const generated = await imagineJson("images/generations", {
-    model: IMAGINE_MODEL,
-    prompt: palmettoTextPrompt(opts.vehicle),
-    aspect_ratio: "1:1",
-    response_format: "b64_json",
-  });
-  if ("b64" in generated) return { dataUrl: b64ToDataUrl(generated.b64), via: "generate" };
-  throw new Error(generated.error || "Palmetto tile generate failed");
+  const style = await loadStyleLockDataUri();
+  const prompt = palmettoEditPrompt(opts.vehicle);
+  const img0Url = { url: STYLE_LOCK_URL, type: "image_url" };
+  const img0Data = { url: style, type: "image_url" };
+  const img1 = { url: opts.listingDataUrl, type: "image_url" };
+  const attempts: Record<string, unknown>[] = [
+    { image: [img0Url, img1] },
+    { images: [img0Url, img1] },
+    { image: [img0Data, img1] },
+    { images: [img0Data, img1] },
+  ];
+  const errors: string[] = [];
+  for (const extra of attempts) {
+    const edited = await imagineJson("images/edits", {
+      model: IMAGINE_MODEL,
+      prompt,
+      aspect_ratio: "1:1",
+      response_format: "b64_json",
+      ...extra,
+    });
+    if ("b64" in edited) return { dataUrl: b64ToDataUrl(edited.b64), via: "edit" };
+    errors.push(edited.error);
+    console.error("[palmetto-tile] dual-image edit failed", edited.error);
+  }
+  throw new Error(
+    `Could not build a Palmetto tile from the listing photo (${errors[0] || "Imagine error"}). Original listing kept.`,
+  );
 }
 
 export async function saveHeroShot(
@@ -275,36 +263,6 @@ export async function saveHeroShot(
     )
   `;
   return id;
-}
-
-function forceWwwPalmetto(url: string): string {
-  return url.replace(/^https?:\/\/palmettoleasing\.com/i, "https://www.palmettoleasing.com");
-}
-
-async function fetchImageAsDataUrl(
-  url: string,
-): Promise<{ dataUrl: string; mime: string; name: string } | null> {
-  if (!/^https?:\/\//i.test(url)) return null;
-  try {
-    const res = await fetch(forceWwwPalmetto(url), {
-      redirect: "follow",
-      signal: AbortSignal.timeout(12_000),
-      headers: { Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8" },
-    });
-    if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 400 || buf.length > 3_500_000) return null;
-    let mime = (res.headers.get("content-type") || "image/jpeg").split(";")[0]!.trim();
-    if (!mime.startsWith("image/")) mime = "image/jpeg";
-    const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
-    return {
-      dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
-      mime,
-      name: `inventory-listing.${ext}`,
-    };
-  } catch {
-    return null;
-  }
 }
 
 async function ensurePrimaryApp(sql: Sql, leadId: string): Promise<string> {
@@ -351,6 +309,7 @@ async function seedAppChecklist(sql: Sql, appId: string) {
 
 /**
  * For inventory leads: copy the stock photo into Listing Photo, then build the Palmetto tile.
+ * Never invent a tile without a real listing photo.
  */
 export async function ensureInventoryListingAndHero(
   sql: Sql,
@@ -366,6 +325,7 @@ export async function ensureInventoryListingAndHero(
   if (!leads[0]?.inventory_id) return loadHeroShotForLead(sql, leadId);
 
   const existingHero = await loadHeroShotForLead(sql, leadId);
+  const invId = leads[0].inventory_id;
   const inv = await sql<{
     year: number | null;
     make: string | null;
@@ -373,9 +333,11 @@ export async function ensureInventoryListingAndHero(
     trim: string | null;
     exterior_color: string | null;
     image_url: string | null;
+    external_url: string | null;
+    stock_number: string | null;
   }>`
-    select year, make, model, trim, exterior_color, image_url
-    from inventory where id = ${leads[0].inventory_id} limit 1
+    select year, make, model, trim, exterior_color, image_url, external_url, stock_number
+    from inventory where id = ${invId} limit 1
   `;
   if (!inv[0]) return existingHero;
 
@@ -385,29 +347,57 @@ export async function ensureInventoryListingAndHero(
     where lead_id = ${leadId} and kind = 'listing_pics'
     limit 1
   `;
-  if (!pics[0] && inv[0].image_url) {
-    const fetched = await fetchImageAsDataUrl(inv[0].image_url);
-    if (fetched) {
-      await sql`
-        insert into credit_documents (
-          id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
-        ) values (
-          ${uid()}, ${appId}, ${leadId}, ${"listing_pics"},
-          ${fetched.name}, ${fetched.mime}, ${fetched.dataUrl}, ${"crm"}
-        )
-      `;
-      await sql`
-        update credit_checklist set done = true, filled_at = now()
-        where application_id = ${appId} and item_key = 'listing_pics'
-      `;
-      await sql`
-        insert into lead_activities (id, lead_id, kind, body, created_by_name)
-        values (
-          ${uid()}, ${leadId}, 'credit',
-          ${"Inventory photo attached as Listing Picture"},
-          ${"CRM"}
-        )
-      `;
+
+  if (!pics[0]) {
+    const photoUrl = await resolveInventoryPhotoUrl({
+      year: inv[0].year,
+      make: inv[0].make,
+      model: inv[0].model,
+      stock: inv[0].stock_number,
+      image_url: inv[0].image_url,
+      external_url: inv[0].external_url,
+    });
+    if (photoUrl) {
+      if (photoUrl !== inv[0].image_url) {
+        await sql`
+          update inventory set image_url = ${photoUrl}, updated_at = now()
+          where id = ${invId}
+        `;
+      }
+      const fetched = await fetchImageAsDataUrl(photoUrl);
+      if (fetched) {
+        const already = await sql<{ id: string }>`
+          select id from credit_documents
+          where lead_id = ${leadId} and kind = 'listing_pics'
+          limit 1
+        `;
+        if (!already[0]) {
+          await sql`
+            insert into credit_documents (
+              id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
+            )
+            select
+              ${uid()}, ${appId}, ${leadId}, ${"listing_pics"},
+              ${fetched.name}, ${fetched.mime}, ${fetched.dataUrl}, ${"crm"}
+            where not exists (
+              select 1 from credit_documents
+              where lead_id = ${leadId} and kind = 'listing_pics'
+            )
+          `;
+          await sql`
+            update credit_checklist set done = true, filled_at = now()
+            where application_id = ${appId} and item_key = 'listing_pics'
+          `;
+          await sql`
+            insert into lead_activities (id, lead_id, kind, body, created_by_name)
+            values (
+              ${uid()}, ${leadId}, 'credit',
+              ${"Inventory photo attached as Listing Picture"},
+              ${"CRM"}
+            )
+          `;
+        }
+      }
     }
   }
 
@@ -422,7 +412,7 @@ export async function ensureInventoryListingAndHero(
   const picked = pickListingPhoto(listing);
   const listingDataUrl =
     picked?.file_data && /^data:image\//i.test(picked.file_data) ? picked.file_data : null;
-  if (!listingDataUrl && !inv[0].image_url) return null;
+  if (!listingDataUrl) return null;
 
   const vehicle = parseVehicleBits(leads[0].vehicle_interest || "", {
     year: inv[0].year,
@@ -444,8 +434,26 @@ export async function ensureInventoryListingAndHero(
   return result.dataUrl;
 }
 
-export function kickInventoryHero(sql: Sql, leadId: string) {
-  void ensureInventoryListingAndHero(sql, leadId, { generate: true }).catch((e) => {
-    console.error("[inventory-hero]", e);
-  });
+/** Await listing photo (fast), then kick Palmetto tile in the background. */
+export async function attachInventoryListingThenKickHero(sql: Sql, leadId: string) {
+  try {
+    await ensureInventoryListingAndHero(sql, leadId, { generate: false });
+  } catch (e) {
+    console.error("[inventory-listing]", e);
+  }
+  kickInventoryHero(sql, leadId);
 }
+
+export function kickInventoryHero(sql: Sql, leadId: string) {
+  if (heroJobs.has(leadId)) return;
+  heroJobs.add(leadId);
+  void ensureInventoryListingAndHero(sql, leadId, { generate: true })
+    .catch((e) => {
+      console.error("[inventory-hero]", e);
+    })
+    .finally(() => {
+      heroJobs.delete(leadId);
+    });
+}
+
+const heroJobs = new Set<string>();

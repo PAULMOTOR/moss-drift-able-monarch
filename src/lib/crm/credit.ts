@@ -27,6 +27,8 @@ import { publicAppUrl } from "./public-url";
 import { ensureHeroShotForLead } from "./handoff";
 import { loadHeroShotForLead, publicHeroUrl } from "./hero-shot";
 import {
+  attachInventoryListingThenKickHero,
+  ensureInventoryListingAndHero,
   generatePalmettoTileImage,
   parseVehicleBits,
   pickListingPhoto,
@@ -363,6 +365,7 @@ export const getCreditPackage = createServerFn({ method: "GET" })
     const guarantors = parties.filter((a) => a.applicant_role === "guarantor");
     const primary = parties.find((a) => a.applicant_role === "primary") || app;
     await ensureHeroShotForLead(sql, data.leadId).catch(() => false);
+    await attachInventoryListingThenKickHero(sql, data.leadId);
     const docs = await sql<CreditDocument>`
       select id, application_id, lead_id, kind, file_name, mime_type, file_data,
              uploaded_by, uploaded_via, created_at::text as created_at
@@ -762,6 +765,11 @@ export const generatePalmettoHeroTile = createServerFn({ method: "POST" })
     if (!canSeeCredit(me, leads[0].assigned_to)) {
       throw new Error("You can only generate a tile on your deals");
     }
+    if (leads[0].inventory_id) {
+      await ensureInventoryListingAndHero(sql, data.leadId, { generate: false }).catch((e) =>
+        console.error("[inventory-listing]", e),
+      );
+    }
     const pics = await sql<{
       file_name: string;
       mime_type: string;
@@ -798,6 +806,9 @@ export const generatePalmettoHeroTile = createServerFn({ method: "POST" })
     const vehicle = parseVehicleBits(leads[0].vehicle_interest || "", inv);
     const listingDataUrl =
       picked?.file_data && /^data:image\//i.test(picked.file_data) ? picked.file_data : null;
+    if (!listingDataUrl) {
+      throw new Error("Add a listing photo of the vehicle first.");
+    }
     const result = await generatePalmettoTileImage({
       vehicle,
       listingDataUrl,
