@@ -30,7 +30,7 @@ function xaiKey(): string {
 export function cleanVehicleLabel(raw: string): string {
   return raw
     .replace(
-      /\b(warranty!?|full ppf!?|highly optioned!?|must see!?|loaded!?|rare!?|stunning!?|beautiful!?|mint!?|low kms?|no accidents?|certified|one owner|don't miss|dont miss)\b/gi,
+      /\b(warranty!?|full ppf!?|highly optioned!?|must see!?|loaded!?|rare!?|stunning!?|beautiful!?|mint!?|low kms?|no accidents?|certified|one owner|don't miss|dont miss|deal pending|pending)\b/gi,
       " ",
     )
     .replace(/[!]+/g, " ")
@@ -120,10 +120,12 @@ export function pickListingPhoto<T extends { file_name: string; mime_type?: stri
 
 function palmettoEditPrompt(v: VehicleBits): string {
   const ident = [v.year, v.make, v.model, v.trim].filter(Boolean).join(" ");
-  const color = v.color || "as photographed";
-  return `Create a photorealistic luxury dealership inventory thumbnail of this exact car: ${ident}. Exact paint from references: ${color}. Use the references only for the car's identity (shape, paint, badges). Ignore any text, banners, prices, watermarks, or photo overlays in the references. SHOW THE ENTIRE CAR — nose to tail, complete silhouette. Do not crop to front half only. Mirrors, roof, rear bumper, and any rear wing must all be inside the frame. CENTERING (mandatory): the car is perfectly dead-centered in the square on both axes. The car's longitudinal centerline is the exact vertical midline of the image — equal white space left and right, pixel-perfect. The hood badge / front emblem sits on that vertical centerline. Do not shift the car left, right, up, or down. ORIENTATION LOCK: the nose of the car points DOWN. Front bumper, headlights, and grille are at the BOTTOM of the image. The rear of the car (tail lights, rear bumper, rear wing/spoiler) is at the TOP of the image. Think: the car is driving toward the bottom edge of the square. NEVER put the nose at the top. NEVER put the rear wing at the bottom. That is upside down and rejected. CAMERA (mandatory): copy the TEMPLATE camera. Elevated FRONT-TOP — camera sits above AND in front of the windshield, looking down the hood. The FRONT FACE of the car (grille, headlights, bumper) must fill much of the BOTTOM third of the square, as large and readable as the roof. The windshield is a wide trapezoid, not a thin slit. You are looking slightly down the nose, not straight down at the roof. FORBIDDEN — drone / satellite / nadir / plan view (roof-only, headlights tiny or hidden). Classic cars like Testarossa are often listed as top-down photos — NEVER copy that angle. FORBIDDEN — eye-level 3/4 hero, side profile, rear 3/4, low front shot. Tilt ~40–50° from vertical, same as the template. Body axis vertical in the frame. WHEELS (mandatory): steering is locked STRAIGHT at 0°. Front wheels point exactly toward the bottom of the frame, parallel to the car's centerline. Do NOT turn, steer, or angle the wheels left or right. No opposite lock. No toe-out. Both fronts match. From this camera the tires sit in the arches — do not render visible turned tire sidewalls or wheel faces kicking out to the sides. CANVAS: output a SQUARE (width in pixels == height). The photo fills that square EDGE TO EDGE. Background is pure #FFFFFF (RGB 255,255,255) to every pixel — never gray, never off-white, never a gray studio plate floating inside a white tile. No inset picture, no letterbox bars, no portrait crop, no landscape crop, no border, no frame. SCALE: whole car ~70% of frame height with even white margin (~8–12%) on all four sides. Nothing clipped. BACKGROUND: pure seamless #FFFFFF only. SHADOW: soft short contact shadow under the car, centered with the car. LIGHTING: soft-box studio, even, realistic paint and glass. Photoreal — not CGI plastic. NO TEXT of any kind — no letters, numbers, prices, slogans, "Warranty", "PPF", license-plate words, watermarks, logos, people, or props. Output one 1:1 square image that bleeds to the edges.
+  const color = v.color && v.color !== "as photographed" ? v.color : "EXACT paint as shown on the listing car in Image 1 (never the template car's color)";
+  return `IDENTITY LOCK (read first): Image 0 is a COMPOSITION TEMPLATE of a DIFFERENT vehicle (often an orange/copper car). Copy ONLY its camera, centering, nose-down orientation, straight wheels, white canvas, and shadow. Do NOT copy Image 0's paint, make, model, badges, or body. Image 1 is the ONLY identity — the listed ${ident}. If Image 1 is a website screenshot or collage, use the real photos of that listed car (largest shot / same car in every thumbnail). Ignore headers, logos, prices, Carfax, flags, and other inventory. If Image 1 is white, silver, or any color other than the template, the output MUST be that color. NEVER render the orange/copper template car.
 
-DUAL-IMAGE RULES: Image 0 is the studio TEMPLATE (full car, elevated FRONT-TOP, nose DOWN / front at bottom, dead-centered, straight wheels, white to the edges). Image 1 is the SUBJECT car identity only (paint, body, badges). Discard every overlay, caption, and watermark on Image 1. Output MUST match Image 0 for CAMERA HEIGHT and ANGLE (headlights large at the bottom — not a roof-only drone shot), nose-DOWN orientation, straight unturned wheels, perfect centering, #FFFFFF filling the square with equal width and height, soft shadow. NEVER copy Image 1's camera, crop, gray backdrop, or portrait framing — dealer photos of older Ferraris are often nadir and must be discarded. Final check: car dead-center; headlights and grille readable near the BOTTOM; roof visible; rear at TOP; wheels straight; no text; white to all four edges.`;
+Create a photorealistic luxury dealership inventory thumbnail of this exact car: ${ident}. Exact paint from references: ${color}. Use the references only for the car's identity (shape, paint, badges). Ignore any text, banners, prices, watermarks, or photo overlays in the references. SHOW THE ENTIRE CAR — nose to tail, complete silhouette. Do not crop to front half only. Mirrors, roof, rear bumper, and any rear wing must all be inside the frame. CENTERING (mandatory): the car is perfectly dead-centered in the square on both axes. The car's longitudinal centerline is the exact vertical midline of the image — equal white space left and right, pixel-perfect. The hood badge / front emblem sits on that vertical centerline. Do not shift the car left, right, up, or down. ORIENTATION LOCK: the nose of the car points DOWN. Front bumper, headlights, and grille are at the BOTTOM of the image. The rear of the car (tail lights, rear bumper, rear wing/spoiler) is at the TOP of the image. Think: the car is driving toward the bottom edge of the square. NEVER put the nose at the top. NEVER put the rear wing at the bottom. That is upside down and rejected. CAMERA (mandatory): copy the TEMPLATE camera. Elevated FRONT-TOP — camera sits above AND in front of the windshield, looking down the hood. The FRONT FACE of the car (grille, headlights, bumper) must fill much of the BOTTOM third of the square, as large and readable as the roof. The windshield is a wide trapezoid, not a thin slit. You are looking slightly down the nose, not straight down at the roof. FORBIDDEN — drone / satellite / nadir / plan view (roof-only, headlights tiny or hidden). Classic cars like Testarossa are often listed as top-down photos — NEVER copy that angle. FORBIDDEN — eye-level 3/4 hero, side profile, rear 3/4, low front shot. Tilt ~40–50° from vertical, same as the template. Body axis vertical in the frame. WHEELS (mandatory): steering is locked STRAIGHT at 0°. Front wheels point exactly toward the bottom of the frame, parallel to the car's centerline. Do NOT turn, steer, or angle the wheels left or right. No opposite lock. No toe-out. Both fronts match. From this camera the tires sit in the arches — do not render visible turned tire sidewalls or wheel faces kicking out to the sides. CANVAS: output a SQUARE (width in pixels == height). The photo fills that square EDGE TO EDGE. Background is pure #FFFFFF (RGB 255,255,255) to every pixel — never gray, never off-white, never a gray studio plate floating inside a white tile. No inset picture, no letterbox bars, no portrait crop, no landscape crop, no border, no frame. SCALE: whole car ~70% of frame height with even white margin (~8–12%) on all four sides. Nothing clipped. BACKGROUND: pure seamless #FFFFFF only. SHADOW: soft short contact shadow under the car, centered with the car. LIGHTING: soft-box studio, even, realistic paint and glass. Photoreal — not CGI plastic. NO TEXT of any kind — no letters, numbers, prices, slogans, "Warranty", "PPF", license-plate words, watermarks, logos, people, or props. Output one 1:1 square image that bleeds to the edges.
+
+DUAL-IMAGE RULES: Image 0 is the studio TEMPLATE (full car, elevated FRONT-TOP, nose DOWN / front at bottom, dead-centered, straight wheels, white to the edges) — camera and layout only, different car, discard its orange/copper paint. Image 1 is the SUBJECT car identity only (paint, body, badges). Discard every overlay, caption, and watermark on Image 1. Output MUST match Image 0 for CAMERA HEIGHT and ANGLE (headlights large at the bottom — not a roof-only drone shot), nose-DOWN orientation, straight unturned wheels, perfect centering, #FFFFFF filling the square with equal width and height, soft shadow. NEVER copy Image 1's camera, crop, gray backdrop, or portrait framing — dealer photos of older Ferraris are often nadir and must be discarded. Final check: output is the Image 1 car (correct color, e.g. white if the listing is white); headlights and grille readable near the BOTTOM; roof visible; rear at TOP; wheels straight; no text; white to all four edges; NOT the orange template vehicle.`;
 }
 
 function palmettoTextPrompt(v: VehicleBits): string {
@@ -204,18 +206,32 @@ export async function generatePalmettoTileImage(opts: {
 }): Promise<{ dataUrl: string; via: "edit" | "generate" }> {
   if (opts.listingDataUrl) {
     const style = await loadStyleLockDataUri();
-    const edited = await imagineJson("images/edits", {
-      model: IMAGINE_MODEL,
-      prompt: palmettoEditPrompt(opts.vehicle),
-      aspect_ratio: "1:1",
-      response_format: "b64_json",
-      image: [
-        { url: style, type: "image_url" },
-        { url: opts.listingDataUrl, type: "image_url" },
-      ],
-    });
-    if ("b64" in edited) return { dataUrl: b64ToDataUrl(edited.b64), via: "edit" };
-    console.error("[palmetto-tile] dual-image edit failed", edited.error);
+    const prompt = palmettoEditPrompt(opts.vehicle);
+    const img0Url = { url: STYLE_LOCK_URL, type: "image_url" };
+    const img0Data = { url: style, type: "image_url" };
+    const img1 = { url: opts.listingDataUrl, type: "image_url" };
+    const attempts: Record<string, unknown>[] = [
+      { image: [img0Url, img1] },
+      { images: [img0Url, img1] },
+      { image: [img0Data, img1] },
+      { images: [img0Data, img1] },
+    ];
+    const errors: string[] = [];
+    for (const extra of attempts) {
+      const edited = await imagineJson("images/edits", {
+        model: IMAGINE_MODEL,
+        prompt,
+        aspect_ratio: "1:1",
+        response_format: "b64_json",
+        ...extra,
+      });
+      if ("b64" in edited) return { dataUrl: b64ToDataUrl(edited.b64), via: "edit" };
+      errors.push(edited.error);
+      console.error("[palmetto-tile] dual-image edit failed", edited.error);
+    }
+    throw new Error(
+      `Could not build a Palmetto tile from the listing photo (${errors[0] || "Imagine error"}). Original listing kept.`,
+    );
   }
   const generated = await imagineJson("images/generations", {
     model: IMAGINE_MODEL,
