@@ -68,9 +68,16 @@ function QuoteAcceptPage() {
   return (
     <div className="min-h-svh bg-[#f4f1ea] px-4 py-10 text-[#1a1a1a]">
       <main className="mx-auto max-w-lg space-y-4">
-        <p className="text-center text-xs font-semibold uppercase tracking-[0.18em] text-[#008272]">
-          Paul Motor Leasing
-        </p>
+        <div className="text-center">
+          <img
+            src="/palmetto.png"
+            alt="Paul Motor Leasing"
+            className="mx-auto h-16 w-16 object-contain"
+          />
+          <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#008272]">
+            Paul Motor Leasing
+          </p>
+        </div>
         <h1 className="text-center font-display text-2xl font-semibold">
           {done ? "Quote accepted" : `Accept Option ${data.optionNumber}`}
         </h1>
@@ -79,26 +86,52 @@ function QuoteAcceptPage() {
           {data.vehicle ? ` · ${data.vehicle}` : ""}
         </p>
 
-        <section className="rounded-sm border border-border bg-white p-5 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold text-[#008272]">
-            Exact terms you are accepting
-          </h2>
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted-foreground">Option</dt>
-            <dd className="font-medium">{data.optionNumber}</dd>
-            <dt className="text-muted-foreground">Term</dt>
-            <dd className="font-medium">{s.termMonths} months</dd>
-            <dt className="text-muted-foreground">Monthly payment</dt>
-            <dd className="font-semibold">{formatMoney(s.totalPayment)} taxes in</dd>
-            <dt className="text-muted-foreground">Cash down</dt>
-            <dd className="font-medium">{formatMoney(s.cashDown)}</dd>
-            <dt className="text-muted-foreground">Security deposit</dt>
-            <dd className="font-medium">{formatMoney(s.securityDeposit)}</dd>
-            <dt className="text-muted-foreground">Rate</dt>
-            <dd className="font-medium">{Number(s.ratePct).toFixed(2)}%</dd>
-            <dt className="text-muted-foreground">Due on delivery</dt>
-            <dd className="font-medium">{formatMoney(s.dueTotal)}</dd>
-          </dl>
+        <section className="overflow-hidden rounded-sm border border-border bg-white shadow-sm">
+          {data.heroImage ? (
+            <div className="flex justify-center border-b border-border/60 bg-white px-5 pt-5 pb-4">
+              <img
+                src={data.heroImage}
+                alt={data.vehicle || "Vehicle"}
+                className="h-52 w-52 object-contain"
+              />
+            </div>
+          ) : null}
+          <div className="p-5">
+            <h2 className="mb-3 text-sm font-semibold text-[#008272]">
+              Exact terms you are accepting
+            </h2>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+              <dt className="text-muted-foreground">Option</dt>
+              <dd className="font-medium">{data.optionNumber}</dd>
+              <dt className="text-muted-foreground">Term</dt>
+              <dd className="font-medium">{s.termMonths} months</dd>
+              <dt className="text-muted-foreground">Monthly payment</dt>
+              <dd className="font-semibold">{formatMoney(s.totalPayment)} taxes in</dd>
+              <dt className="text-muted-foreground">Cash down</dt>
+              <dd className="font-medium">
+                {formatMoney(s.cashDown)}
+                <span className="mt-0.5 block text-[11px] font-normal leading-snug text-muted-foreground">
+                  Before tax — {data.provinceName} {data.taxCaption} is added at delivery
+                </span>
+              </dd>
+              <dt className="text-muted-foreground">Security deposit</dt>
+              <dd className="font-medium">
+                {formatMoney(s.securityDeposit)}
+                <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">
+                  Refundable, not taxed
+                </span>
+              </dd>
+              <dt className="text-muted-foreground">Rate</dt>
+              <dd className="font-medium">{Number(s.ratePct).toFixed(2)}%</dd>
+              <dt className="text-muted-foreground">Due on delivery</dt>
+              <dd className="font-medium">{formatMoney(s.dueTotal)}</dd>
+            </dl>
+            <p className="mt-4 rounded-sm bg-[#f4f1ea] px-3 py-2 text-[11px] leading-snug text-muted-foreground">
+              Taxes calculated for <strong className="text-[#1a1a1a]">{data.provinceName}</strong>
+              {data.province ? ` (${data.province})` : ""} — {data.taxCaption}. Monthly payment is
+              taxes in.
+            </p>
+          </div>
         </section>
 
         {done ? (

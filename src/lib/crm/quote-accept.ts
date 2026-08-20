@@ -13,6 +13,7 @@ import {
   defaultContractBody,
   formatMoney,
   renderContractTemplate,
+  resolveLeaseTaxRates,
   taxRateForProvince,
   wrapPrintable,
   type ClientQuoteInfo,
@@ -54,6 +55,44 @@ function requestMeta(): { ip: string; ua: string } {
 
 function vehicleLine(c: ClientQuoteInfo): string {
   return [c.year, c.make, c.model, c.trim].filter(Boolean).join(" ") || "Vehicle";
+}
+
+const PROVINCE_NAMES: Record<string, string> = {
+  QC: "Quebec",
+  ON: "Ontario",
+  BC: "British Columbia",
+  AB: "Alberta",
+  MB: "Manitoba",
+  SK: "Saskatchewan",
+  NS: "Nova Scotia",
+  NB: "New Brunswick",
+  NL: "Newfoundland and Labrador",
+  PE: "Prince Edward Island",
+  NT: "Northwest Territories",
+  NU: "Nunavut",
+  YT: "Yukon",
+};
+
+export function provinceTaxCopy(client: ClientQuoteInfo, opt: LeaseOptionResult): {
+  province: string;
+  provinceName: string;
+  taxCaption: string;
+} {
+  const code = (client.province || "QC").trim().toUpperCase() || "QC";
+  const rates = resolveLeaseTaxRates(code, opt.salePrice || opt.cost || 0, opt.pstRate);
+  const name = PROVINCE_NAMES[rates.province] || rates.province;
+  let taxCaption = `${(rates.combinedRate * 100).toFixed(rates.province === "QC" ? 3 : 0)}%`;
+  if (rates.province === "QC") taxCaption = "GST 5% + QST 9.975%";
+  else if (rates.province === "BC") {
+    taxCaption = `GST 5% + PST ${(rates.pstRate * 100).toFixed(0)}%`;
+  } else if (rates.pstRate > 0) {
+    taxCaption = `GST ${(rates.gstRate * 100).toFixed(0)}% + PST ${(rates.pstRate * 100).toFixed(0)}%`;
+  } else if (rates.combinedRate > 0.05) {
+    taxCaption = `HST ${(rates.combinedRate * 100).toFixed(0)}%`;
+  } else {
+    taxCaption = `GST ${(rates.gstRate * 100).toFixed(0)}%`;
+  }
+  return { province: rates.province, provinceName: name, taxCaption };
 }
 
 export function optionSnapshot(opt: LeaseOptionResult, client: ClientQuoteInfo) {
@@ -350,6 +389,7 @@ export const getPublicQuoteAccept = createServerFn({ method: "GET" })
     const sql = await getSql();
     const rows = await sql<{
       id: string;
+      lead_id: string | null;
       payload: string;
       accept_option_invited: number | null;
       accepted_option: number | null;
@@ -357,7 +397,7 @@ export const getPublicQuoteAccept = createServerFn({ method: "GET" })
       accepted_at: string | null;
       client_name: string;
     }>`
-      select id, payload::text as payload, accept_option_invited, accepted_option, status,
+      select id, lead_id, payload::text as payload, accept_option_invited, accepted_option, status,
              accepted_at::text as accepted_at, client_name
       from lease_quotes where accept_token = ${data.token} limit 1
     `;
@@ -372,6 +412,10 @@ export const getPublicQuoteAccept = createServerFn({ method: "GET" })
     const opt = payload.options[n - 1];
     if (!opt) throw new Error("Option missing on this quote");
     const already = rows[0].status === "accepted" && rows[0].accepted_option === n;
+    const tax = provinceTaxCopy(payload.client, opt);
+    const heroImage = rows[0].lead_id
+      ? await loadHeroShotForLead(sql, rows[0].lead_id)
+      : null;
     return {
       quoteId: rows[0].id,
       optionNumber: n,
@@ -381,6 +425,10 @@ export const getPublicQuoteAccept = createServerFn({ method: "GET" })
       vehicle: vehicleLine(payload.client),
       stock: payload.client.stock || null,
       snapshot: optionSnapshot(opt, payload.client),
+      province: tax.province,
+      provinceName: tax.provinceName,
+      taxCaption: tax.taxCaption,
+      heroImage,
     };
   });
 
