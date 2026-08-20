@@ -5,7 +5,7 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type { ClientQuoteInfo, LeaseOptionResult } from "./lease-quote";
 import { formatMoney } from "./lease-quote";
-import { palmettoLogoJpegBytes } from "./palmetto-logo-bytes";
+import { palmettoLogoPngBytes } from "./palmetto-logo-bytes";
 
 function money(n: number) {
   return formatMoney(n);
@@ -71,8 +71,8 @@ export async function buildRetailQuotePdf(
   // Logo top-left (embedded asset — works on Vercel)
   let textX = margin;
   try {
-    const logoBytes = palmettoLogoJpegBytes();
-    const img = await doc.embedJpg(logoBytes);
+    const logoBytes = palmettoLogoPngBytes();
+    const img = await doc.embedPng(logoBytes);
     const logoH = 48;
     const logoW = (img.width / img.height) * logoH;
     page.drawImage(img, {

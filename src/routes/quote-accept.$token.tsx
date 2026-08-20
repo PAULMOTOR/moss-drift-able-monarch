@@ -98,7 +98,7 @@ function QuoteAcceptPage() {
           ) : null}
           <div className="p-5">
             <h2 className="mb-3 text-sm font-semibold text-[#008272]">
-              Exact terms you are accepting
+              Proposed Lease Terms
             </h2>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
               <dt className="text-muted-foreground">Option</dt>

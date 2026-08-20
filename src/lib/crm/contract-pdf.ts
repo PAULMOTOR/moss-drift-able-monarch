@@ -4,7 +4,7 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type { ClientQuoteInfo, LeaseOptionResult } from "./lease-quote";
 import { formatMoney } from "./lease-quote";
-import { palmettoLogoJpegBytes } from "./palmetto-logo-bytes";
+import { palmettoLogoPngBytes } from "./palmetto-logo-bytes";
 
 function line(
   page: ReturnType<PDFDocument["addPage"]>,
@@ -43,8 +43,8 @@ export async function buildLeaseContractPdf(
   };
 
   try {
-    const logoBytes = palmettoLogoJpegBytes();
-    const img = await doc.embedJpg(logoBytes);
+    const logoBytes = palmettoLogoPngBytes();
+    const img = await doc.embedPng(logoBytes);
     const logoH = 40;
     const logoW = (img.width / img.height) * logoH;
     page.drawImage(img, { x: margin, y: y - logoH, width: logoW, height: logoH });
