@@ -719,7 +719,7 @@ export function buildRetailQuoteHtml(
   .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; border-bottom: 2px solid #008272; padding-bottom: 12px; }
   .brand { display: flex; align-items: flex-start; gap: 16px; min-width: 0; }
   .header img.logo { width: 64px; height: 64px; object-fit: contain; background: #008272; border-radius: 4px; padding: 6px; }
-  .hero-tile { width: 112px; height: 112px; object-fit: contain; background: #fff; border: 1px solid #d2d0ce; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.08); flex-shrink: 0; }
+  .hero-tile { width: 200px; height: 200px; object-fit: contain; background: #fff; border: 1px solid #d2d0ce; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.1); flex-shrink: 0; }
   .header h1 { color: #008272; font-size: 22px; margin: 0 0 4px; font-weight: 700; letter-spacing: 0.02em; }
   .sub { color: #605e5c; font-size: 12px; margin: 0; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; font-size: 13px; margin-bottom: 22px; }

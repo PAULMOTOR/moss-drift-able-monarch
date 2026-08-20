@@ -116,13 +116,15 @@ export async function buildRetailQuotePdf(
       const img = hm[1].toLowerCase().includes("png")
         ? await doc.embedPng(bytes)
         : await doc.embedJpg(bytes);
-      const size = 72;
+      const size = 148;
       const scale = Math.min(size / img.width, size / img.height);
       const w = img.width * scale;
       const h = img.height * scale;
+      const heroX = pageW - margin - size;
+      const heroY = 750 - size + 8;
       page.drawRectangle({
-        x: pageW - margin - size,
-        y: 750 - size,
+        x: heroX,
+        y: heroY,
         width: size,
         height: size,
         color: rgb(1, 1, 1),
@@ -130,11 +132,12 @@ export async function buildRetailQuotePdf(
         borderWidth: 0.6,
       });
       page.drawImage(img, {
-        x: pageW - margin - size + (size - w) / 2,
-        y: 750 - size + (size - h) / 2,
+        x: heroX + (size - w) / 2,
+        y: heroY + (size - h) / 2,
         width: w,
         height: h,
       });
+      y = Math.min(y, heroY - 12);
     }
   } catch (e) {
     console.error("[quote-pdf] hero embed failed", e);

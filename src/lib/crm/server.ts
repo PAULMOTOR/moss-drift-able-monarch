@@ -14,6 +14,7 @@ import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import { publicAppUrl } from "./public-url";
 import { ensureHeroShotForLead } from "./handoff";
 import { loadHeroShotForLead } from "./hero-shot";
+import { ensureInventoryListingAndHero, kickInventoryHero } from "./palmetto-tile";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
   buildFirstInvoiceHtml,
@@ -1006,6 +1007,7 @@ export const captureLead = createServerFn({ method: "POST" })
        where l.id = $1`,
       [leadId],
     );
+    if (data.inventory_id) kickInventoryHero(sql, leadId);
     return mapLead(rows[0]!);
   });
 
@@ -1193,6 +1195,14 @@ export const updateLead = createServerFn({ method: "POST" })
         updated_at = now()
       where id = ${data.id}
     `;
+
+    const nextInv =
+      data.inventory_id !== undefined
+        ? data.inventory_id || null
+        : (prev.inventory_id as string | null);
+    if (nextInv && nextInv !== ((prev.inventory_id as string | null) || null)) {
+      kickInventoryHero(sql, data.id);
+    }
 
     if (stageChanged) {
       await sql`
@@ -2224,6 +2234,11 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
     const me = await requireProfile(context.userId);
     const sql = await boot();
     const taxRate = taxRateForProvince(data.client.province || "QC");
+    if (data.leadId) {
+      await ensureInventoryListingAndHero(sql, data.leadId, { generate: true }).catch((e) =>
+        console.error("[quote-hero]", e),
+      );
+    }
     const heroDataUrl = await loadHeroShotForLead(sql, data.leadId);
     const html = buildRetailQuoteHtml(data.client, data.options, taxRate, { heroDataUrl });
     const quoteId = data.existingId || id();

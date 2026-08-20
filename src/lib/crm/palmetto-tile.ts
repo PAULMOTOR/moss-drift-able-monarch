@@ -5,7 +5,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Sql } from "@/lib/db";
-import { HERO_SHOT_KIND } from "./types";
+import { HERO_SHOT_KIND, VEHICLE_CHECKLIST, CUSTOMER_CHECKLIST } from "./types";
+import { loadHeroShotForLead } from "./hero-shot";
 
 const STYLE_LOCK_URL = "https://www.palmettoleasing.com/vehicles/palmetto-style-lock.jpg";
 const IMAGINE_MODEL = "grok-imagine-image-quality";
@@ -274,4 +275,177 @@ export async function saveHeroShot(
     )
   `;
   return id;
+}
+
+function forceWwwPalmetto(url: string): string {
+  return url.replace(/^https?:\/\/palmettoleasing\.com/i, "https://www.palmettoleasing.com");
+}
+
+async function fetchImageAsDataUrl(
+  url: string,
+): Promise<{ dataUrl: string; mime: string; name: string } | null> {
+  if (!/^https?:\/\//i.test(url)) return null;
+  try {
+    const res = await fetch(forceWwwPalmetto(url), {
+      redirect: "follow",
+      signal: AbortSignal.timeout(12_000),
+      headers: { Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8" },
+    });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 400 || buf.length > 3_500_000) return null;
+    let mime = (res.headers.get("content-type") || "image/jpeg").split(";")[0]!.trim();
+    if (!mime.startsWith("image/")) mime = "image/jpeg";
+    const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+    return {
+      dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
+      mime,
+      name: `inventory-listing.${ext}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function ensurePrimaryApp(sql: Sql, leadId: string): Promise<string> {
+  const existing = await sql<{ id: string }>`
+    select id from credit_applications
+    where lead_id = ${leadId} and coalesce(applicant_role, 'primary') = 'primary'
+    order by created_at asc
+    limit 1
+  `;
+  if (existing[0]) {
+    await seedAppChecklist(sql, existing[0].id);
+    return existing[0].id;
+  }
+  const appId = uid();
+  const pub = uid().replace(/-/g, "") + uid().replace(/-/g, "").slice(0, 16);
+  await sql`
+    insert into credit_applications (
+      id, lead_id, status, party_type, public_token, applicant_role
+    ) values (
+      ${appId}, ${leadId}, 'draft', 'individual', ${pub}, 'primary'
+    )
+  `;
+  await seedAppChecklist(sql, appId);
+  await sql`update leads set credit_app_id = ${appId}, updated_at = now() where id = ${leadId}`;
+  return appId;
+}
+
+async function seedAppChecklist(sql: Sql, appId: string) {
+  for (const item of VEHICLE_CHECKLIST) {
+    await sql`
+      insert into credit_checklist (id, application_id, section, item_key, label, notes, done)
+      values (${uid()}, ${appId}, 'vehicle', ${item.key}, ${item.label}, '', false)
+      on conflict (application_id, item_key) do nothing
+    `;
+  }
+  for (const item of CUSTOMER_CHECKLIST) {
+    await sql`
+      insert into credit_checklist (id, application_id, section, item_key, label, notes, done)
+      values (${uid()}, ${appId}, 'customer', ${item.key}, ${item.label}, '', false)
+      on conflict (application_id, item_key) do nothing
+    `;
+  }
+}
+
+/**
+ * For inventory leads: copy the stock photo into Listing Photo, then build the Palmetto tile.
+ */
+export async function ensureInventoryListingAndHero(
+  sql: Sql,
+  leadId: string,
+  opts?: { generate?: boolean },
+): Promise<string | null> {
+  const leads = await sql<{
+    inventory_id: string | null;
+    vehicle_interest: string | null;
+  }>`
+    select inventory_id, vehicle_interest from leads where id = ${leadId} limit 1
+  `;
+  if (!leads[0]?.inventory_id) return loadHeroShotForLead(sql, leadId);
+
+  const existingHero = await loadHeroShotForLead(sql, leadId);
+  const inv = await sql<{
+    year: number | null;
+    make: string | null;
+    model: string | null;
+    trim: string | null;
+    exterior_color: string | null;
+    image_url: string | null;
+  }>`
+    select year, make, model, trim, exterior_color, image_url
+    from inventory where id = ${leads[0].inventory_id} limit 1
+  `;
+  if (!inv[0]) return existingHero;
+
+  const appId = await ensurePrimaryApp(sql, leadId);
+  const pics = await sql<{ id: string }>`
+    select id from credit_documents
+    where lead_id = ${leadId} and kind = 'listing_pics'
+    limit 1
+  `;
+  if (!pics[0] && inv[0].image_url) {
+    const fetched = await fetchImageAsDataUrl(inv[0].image_url);
+    if (fetched) {
+      await sql`
+        insert into credit_documents (
+          id, application_id, lead_id, kind, file_name, mime_type, file_data, uploaded_via
+        ) values (
+          ${uid()}, ${appId}, ${leadId}, ${"listing_pics"},
+          ${fetched.name}, ${fetched.mime}, ${fetched.dataUrl}, ${"crm"}
+        )
+      `;
+      await sql`
+        update credit_checklist set done = true, filled_at = now()
+        where application_id = ${appId} and item_key = 'listing_pics'
+      `;
+      await sql`
+        insert into lead_activities (id, lead_id, kind, body, created_by_name)
+        values (
+          ${uid()}, ${leadId}, 'credit',
+          ${"Inventory photo attached as Listing Picture"},
+          ${"CRM"}
+        )
+      `;
+    }
+  }
+
+  if (existingHero) return existingHero;
+  if (opts?.generate === false) return null;
+
+  const listing = await sql<{ file_name: string; mime_type: string; file_data: string }>`
+    select file_name, mime_type, file_data from credit_documents
+    where lead_id = ${leadId} and kind = 'listing_pics'
+    order by created_at asc
+  `;
+  const picked = pickListingPhoto(listing);
+  const listingDataUrl =
+    picked?.file_data && /^data:image\//i.test(picked.file_data) ? picked.file_data : null;
+  if (!listingDataUrl && !inv[0].image_url) return null;
+
+  const vehicle = parseVehicleBits(leads[0].vehicle_interest || "", {
+    year: inv[0].year,
+    make: inv[0].make,
+    model: inv[0].model,
+    trim: inv[0].trim,
+    color: inv[0].exterior_color,
+  });
+  const result = await generatePalmettoTileImage({
+    vehicle,
+    listingDataUrl,
+  });
+  await saveHeroShot(sql, {
+    leadId,
+    applicationId: appId,
+    dataUrl: result.dataUrl,
+    via: `${result.via} · inventory`,
+  });
+  return result.dataUrl;
+}
+
+export function kickInventoryHero(sql: Sql, leadId: string) {
+  void ensureInventoryListingAndHero(sql, leadId, { generate: true }).catch((e) => {
+    console.error("[inventory-hero]", e);
+  });
 }
