@@ -45,7 +45,7 @@ export async function buildRetailQuotePdf(
   client: ClientQuoteInfo,
   options: LeaseOptionResult[],
   _taxRate: number,
-  opts?: { acceptedOption?: number | null; titleSuffix?: string },
+  opts?: { acceptedOption?: number | null; titleSuffix?: string; heroDataUrl?: string | null },
 ): Promise<Buffer> {
   const acceptedOption = opts?.acceptedOption ?? null;
   const drawOptions =
@@ -108,6 +108,37 @@ export async function buildRetailQuotePdf(
   );
 
   y -= 56;
+  try {
+    const hero = opts?.heroDataUrl || "";
+    const hm = hero.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/i);
+    if (hm) {
+      const bytes = Buffer.from(hm[2].replace(/\s/g, ""), "base64");
+      const img = hm[1].toLowerCase().includes("png")
+        ? await doc.embedPng(bytes)
+        : await doc.embedJpg(bytes);
+      const size = 72;
+      const scale = Math.min(size / img.width, size / img.height);
+      const w = img.width * scale;
+      const h = img.height * scale;
+      page.drawRectangle({
+        x: pageW - margin - size,
+        y: 750 - size,
+        width: size,
+        height: size,
+        color: rgb(1, 1, 1),
+        borderColor: rgb(0.82, 0.81, 0.8),
+        borderWidth: 0.6,
+      });
+      page.drawImage(img, {
+        x: pageW - margin - size + (size - w) / 2,
+        y: 750 - size + (size - h) / 2,
+        width: w,
+        height: h,
+      });
+    }
+  } catch (e) {
+    console.error("[quote-pdf] hero embed failed", e);
+  }
   page.drawLine({
     start: { x: margin, y },
     end: { x: pageW - margin, y },

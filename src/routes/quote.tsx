@@ -105,6 +105,7 @@ function QuotePage() {
     }>
   >([]);
   const [leadId, setLeadId] = useState(search.leadId || "");
+  const [heroImage, setHeroImage] = useState<string | null>(null);
   const [quoteId, setQuoteId] = useState<string | null>(search.quoteId || null);
   const [salesman, setSalesman] = useState("");
   const openedQuoteRef = useRef<string | null>(search.quoteId || null);
@@ -209,6 +210,7 @@ function QuotePage() {
       .then((res) => {
         const lead = res?.lead;
         if (!lead) return;
+        setHeroImage(lead.hero_image || null);
         // A saved quote owns the form — don't overwrite with a generic lead template
         if (openedQuoteRef.current) return;
         setClient((c) => ({
@@ -763,7 +765,7 @@ function QuotePage() {
 
   function onPrint() {
     void import("@/lib/crm/lease-quote").then(({ buildRetailQuoteHtml }) => {
-      openHtml(buildRetailQuoteHtml(client, calculated, taxRate));
+      openHtml(buildRetailQuoteHtml(client, calculated, taxRate, { heroDataUrl: heroImage }));
       // user uses browser print → PDF
     });
   }

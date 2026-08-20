@@ -25,6 +25,7 @@ import {
 
 import { publicAppUrl } from "./public-url";
 import { ensureHeroShotForLead } from "./handoff";
+import { loadHeroShotForLead, publicHeroUrl } from "./hero-shot";
 import {
   generatePalmettoTileImage,
   parseVehicleBits,
@@ -1117,20 +1118,42 @@ export const approveDealGsm = createServerFn({ method: "POST" })
       const nextBlock = nextStep
         ? `What's next: ${nextStep}`
         : "Next steps will come from the Paul Motor team.";
+      const heroExists = Boolean(await loadHeroShotForLead(sql, data.leadId));
+      let lesseeHeroUrl: string | null = null;
+      if (heroExists) {
+        let tok = app.public_token || app.doc_request_token;
+        if (!tok) {
+          tok = token();
+          await sql`update credit_applications set public_token = ${tok}, updated_at = now() where id = ${app.id}`;
+        }
+        lesseeHeroUrl = publicHeroUrl(appBaseUrl(), tok);
+      }
       for (const r of recips) {
         const isLessee = r.role === "Lessee";
+        const first = r.name.split(" ")[0].replace(/</g, "") || "there";
         await sendCrmEmail(sql, {
           to: r.email,
           subject: isLessee
-            ? `Your Paul Motor lease was approved — ${clientName}`
+            ? `Congratulations — your Paul Motor lease is approved`
             : `Lease approved — ${clientName}`,
           kind: "deal_approved",
           leadId: data.leadId,
           text: isLessee
-            ? `Hi ${r.name.split(" ")[0]},\n\nGood news — your lease has been approved by Paul Motor Leasing.\n\n${nextBlock}\n\nIf you have questions about the vehicle, speak with your dealer or broker. Questions about the lease or payments come to us.\n\n— ${me.name}\nPaul Motor Leasing`
+            ? `Congratulations ${first}!\n\nYour lease with Paul Motor Leasing has been approved.\n\n${nextBlock}\n\nIf you have questions about the vehicle, speak with your dealer or broker. Questions about the lease or payments come to us.\n\n— ${me.name}\nPaul Motor Leasing`
             : `${me.name} approved ${clientName}.\n\n${nextBlock}\n\nYour role: ${r.role}\nOpen: ${link}`,
           html: isLessee
-            ? `<p>Hi ${r.name.split(" ")[0].replace(/</g, "")},</p><p>Good news — your lease has been <strong>approved</strong> by Paul Motor Leasing.</p><p>${nextBlock.replace(/</g, "")}</p><p style="font-size:13px;color:#555">Car questions: your dealer or broker. Lease / payment questions: us.</p><p>— ${me.name.replace(/</g, "")}<br/>Paul Motor Leasing</p>`
+            ? `<div style="font-family:Helvetica,Arial,sans-serif;color:#1a1a1a;max-width:560px">
+<p style="font-size:22px;color:#008272;font-weight:700;margin:0 0 8px">Congratulations${first ? `, ${first}` : ""}!</p>
+<p>Your lease with <strong>Paul Motor Leasing</strong> has been approved.</p>
+${
+  lesseeHeroUrl
+    ? `<img src="${lesseeHeroUrl}" alt="Your vehicle" width="240" height="240" style="display:block;margin:16px 0;width:240px;height:240px;object-fit:contain;background:#fff;border:1px solid #e5e4e2;border-radius:10px"/>`
+    : ""
+}
+<p>${nextBlock.replace(/</g, "")}</p>
+<p style="font-size:13px;color:#555">Car questions: your dealer or broker. Lease / payment questions: us.</p>
+<p>— ${me.name.replace(/</g, "")}<br/>Paul Motor Leasing</p>
+</div>`
             : `<p><strong>${me.name.replace(/</g, "")}</strong> approved <strong>${clientName.replace(/</g, "")}</strong>.</p><p>${nextBlock.replace(/</g, "")}</p><p style="font-size:13px;color:#555">You: ${r.role}</p><p><a href="${link}">Open deal in CRM</a></p>`,
         });
         sentTo.push(`${r.role} <${r.email}>`);
@@ -1328,6 +1351,7 @@ export const getPublicCreditApp = createServerFn({ method: "GET" })
         partner_kind: (rows[0].partner_kind as string) || null,
       },
       uploadedKinds: docs.map((d) => d.kind),
+      heroImage: await loadHeroShotForLead(sql, app.lead_id),
     };
   });
 
@@ -1710,6 +1734,7 @@ export const getPublicDocRequest = createServerFn({ method: "GET" })
       applicationId: String(rows[0].id),
       pendingKinds: pending,
       uploadedKinds: docs.map((d) => String(d.kind)),
+      heroImage: await loadHeroShotForLead(sql, String(rows[0].lead_id)),
     };
   });
 

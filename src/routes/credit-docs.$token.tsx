@@ -69,11 +69,13 @@ function PublicDocUploadPage() {
   const [uploadedKinds, setUploadedKinds] = useState<string[]>([]);
   const [selectedKind, setSelectedKind] = useState<string>(urlKinds[0] || "");
   const [notified, setNotified] = useState(false);
+  const [heroImage, setHeroImage] = useState<string | null>(null);
 
   useEffect(() => {
     void getPublicDocRequest({ data: { token } })
       .then((r) => {
         setName(r.leadName);
+        setHeroImage(r.heroImage || null);
         const fromServer = r.pendingKinds?.length ? r.pendingKinds : urlKinds;
         if (fromServer.length) {
           setPendingKinds(fromServer);
@@ -148,10 +150,19 @@ function PublicDocUploadPage() {
   return (
     <div className="min-h-dvh bg-[#f3f2f1]">
       <header className="border-b bg-[#008272] px-4 py-4 text-white">
-        <div className="mx-auto max-w-lg">
-          <p className="text-xs font-semibold opacity-90">PAUL MOTOR LEASING</p>
-          <h1 className="text-xl font-bold">Secure document upload</h1>
-          {name ? <p className="text-sm opacity-90">{name}</p> : null}
+        <div className="mx-auto flex max-w-lg items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold opacity-90">PAUL MOTOR LEASING</p>
+            <h1 className="text-xl font-bold">Secure document upload</h1>
+            {name ? <p className="text-sm opacity-90">{name}</p> : null}
+          </div>
+          {heroImage ? (
+            <img
+              src={heroImage}
+              alt=""
+              className="size-[72px] shrink-0 rounded-md border border-white/25 bg-white object-contain shadow-sm"
+            />
+          ) : null}
         </div>
       </header>
       <main className="mx-auto max-w-lg p-4">

@@ -35,6 +35,7 @@ function PublicCreditAppPage() {
   const [busy, setBusy] = useState(false);
   const [uploaded, setUploaded] = useState<string[]>([]);
   const [isGuarantor, setIsGuarantor] = useState(false);
+  const [heroImage, setHeroImage] = useState<string | null>(null);
   const [files, setFiles] = useState<Record<string, File | null>>({
     dl_front: null,
     dl_back: null,
@@ -45,6 +46,7 @@ function PublicCreditAppPage() {
     void getPublicCreditApp({ data: { token } })
       .then((res) => {
         setLead(res.lead);
+        setHeroImage(res.heroImage || null);
         setIsGuarantor(res.application.applicant_role === "guarantor");
         setPayload({
           full_name: res.lead.name || "",
@@ -163,13 +165,22 @@ function PublicCreditAppPage() {
   return (
     <div className="min-h-dvh bg-[#f3f2f1]">
       <header className="border-b bg-[#008272] px-4 py-4 text-white">
-        <div className="mx-auto max-w-3xl">
-          <p className="text-xs font-semibold tracking-wide opacity-90">PAUL MOTOR LEASING</p>
-          <h1 className="text-xl font-bold">
-            {isGuarantor ? "Guarantor credit application" : "Credit application"}
-          </h1>
-          {lead?.vehicle_interest ? (
-            <p className="mt-1 text-sm opacity-90">Vehicle: {lead.vehicle_interest}</p>
+        <div className="mx-auto flex max-w-3xl items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold tracking-wide opacity-90">PAUL MOTOR LEASING</p>
+            <h1 className="text-xl font-bold">
+              {isGuarantor ? "Guarantor credit application" : "Credit application"}
+            </h1>
+            {lead?.vehicle_interest ? (
+              <p className="mt-1 text-sm opacity-90">Vehicle: {lead.vehicle_interest}</p>
+            ) : null}
+          </div>
+          {heroImage ? (
+            <img
+              src={heroImage}
+              alt={lead?.vehicle_interest || ""}
+              className="size-[84px] shrink-0 rounded-md border border-white/25 bg-white object-contain shadow-sm"
+            />
           ) : null}
         </div>
       </header>

@@ -7,6 +7,7 @@ import { getSql, type Sql } from "@/lib/db";
 import { sendCrmEmail } from "./mail";
 import { publicAppUrl } from "./public-url";
 import { CUSTOMER_CHECKLIST, HERO_SHOT_KIND, VEHICLE_CHECKLIST } from "./types";
+import { loadHeroShotForLead } from "./hero-shot";
 import {
   buildRetailQuoteHtml,
   calcLeaseOption,
@@ -829,7 +830,8 @@ async function savePalmettoQuote(
   ];
   const options: LeaseOptionResult[] = [option, blanks[0], blanks[1]];
   const taxRate = taxRateForProvince(province);
-  const html = buildRetailQuoteHtml(client, options, taxRate);
+  const heroDataUrl = await loadHeroShotForLead(sql, leadId);
+  const html = buildRetailQuoteHtml(client, options, taxRate, { heroDataUrl });
   const quoteId = uid();
   const title = `Palmetto · ${name} · ${input.vehicle || "lease"}`.slice(0, 160);
   const payload = { client, options, taxRate, selectedOption: 1, source: "palmetto" };
@@ -837,7 +839,10 @@ async function savePalmettoQuote(
   let pdfData: string | null = null;
   try {
     const { buildRetailQuotePdf, pdfDataUrl } = await import("./quote-pdf");
-    const buf = await buildRetailQuotePdf(client, options, taxRate, { acceptedOption: 1 });
+    const buf = await buildRetailQuotePdf(client, options, taxRate, {
+      acceptedOption: 1,
+      heroDataUrl,
+    });
     pdfData = pdfDataUrl(buf);
     pdfName = `Palmetto-${name.replace(/[^a-z0-9]+/gi, "-").slice(0, 40)}.pdf`;
   } catch {

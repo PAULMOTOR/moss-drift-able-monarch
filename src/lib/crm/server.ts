@@ -13,6 +13,7 @@ import { applyAcceptedOption } from "./quote-accept";
 import { sendCrmEmail, clientFacingFromName, replyToForActor } from "./mail";
 import { publicAppUrl } from "./public-url";
 import { ensureHeroShotForLead } from "./handoff";
+import { loadHeroShotForLead } from "./hero-shot";
 import type { ClientQuoteInfo, ContractStyleKey, LeaseOptionResult } from "./lease-quote";
 import {
   buildFirstInvoiceHtml,
@@ -55,11 +56,12 @@ async function makeQuotePdfData(
   client: ClientQuoteInfo,
   options: LeaseOptionResult[],
   taxRate: number,
-  opts?: { acceptedOption?: number | null },
+  opts?: { acceptedOption?: number | null; heroDataUrl?: string | null },
 ): Promise<string> {
   const { buildRetailQuotePdf, pdfDataUrl } = await import("./quote-pdf");
   const buf = await buildRetailQuotePdf(client, options, taxRate, {
     acceptedOption: opts?.acceptedOption ?? null,
+    heroDataUrl: opts?.heroDataUrl ?? null,
   });
   return pdfDataUrl(buf);
 }
@@ -2222,7 +2224,8 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
     const me = await requireProfile(context.userId);
     const sql = await boot();
     const taxRate = taxRateForProvince(data.client.province || "QC");
-    const html = buildRetailQuoteHtml(data.client, data.options, taxRate);
+    const heroDataUrl = await loadHeroShotForLead(sql, data.leadId);
+    const html = buildRetailQuoteHtml(data.client, data.options, taxRate, { heroDataUrl });
     const quoteId = data.existingId || id();
     const payload = {
       client: data.client,
@@ -2242,7 +2245,9 @@ export const saveLeaseQuote = createServerFn({ method: "POST" })
       make: data.client.make,
       model: data.client.model,
     });
-    const pdfData = await makeQuotePdfData(data.client, data.options, taxRate);
+    const pdfData = await makeQuotePdfData(data.client, data.options, taxRate, {
+      heroDataUrl,
+    });
 
     if (data.existingId) {
       await sql`

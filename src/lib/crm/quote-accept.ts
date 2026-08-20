@@ -20,6 +20,7 @@ import {
   type LeaseOptionResult,
 } from "./lease-quote";
 import { publicAppUrl } from "./public-url";
+import { loadHeroShotForLead } from "./hero-shot";
 
 function uid() {
   return crypto.randomUUID();
@@ -147,6 +148,7 @@ export async function applyAcceptedOption(
     contractInner,
   );
   const invoiceHtml = buildFirstInvoiceHtml(payload.client, opt, taxRate);
+  const heroDataUrl = await loadHeroShotForLead(sql, row.lead_id);
   const retailOne = buildRetailQuoteHtml(
     payload.client,
     payload.options.map((o, i) =>
@@ -155,11 +157,13 @@ export async function applyAcceptedOption(
         : { ...o, cost: 0, payment: 0, deposit: 0, securityDeposit: 0, residual: 0 },
     ),
     taxRate,
+    { heroDataUrl },
   );
   const pdfName = `Accepted Option ${opts.optionNumber} — ${payload.client.clientName || "Client"}.pdf`;
   const { buildRetailQuotePdf, pdfDataUrl } = await import("./quote-pdf");
   const buf = await buildRetailQuotePdf(payload.client, payload.options, taxRate, {
     acceptedOption: opts.optionNumber,
+    heroDataUrl,
   });
   const pdfData = pdfDataUrl(buf);
   const snap = {
