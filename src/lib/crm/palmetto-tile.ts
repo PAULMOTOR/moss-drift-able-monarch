@@ -17,8 +17,13 @@ function uid() {
 }
 
 function xaiKey(): string {
-  const key = process.env.XAI_API_KEY?.trim();
-  if (!key) throw new Error("XAI_API_KEY is not set. Add it in Vercel (CRM project), then Redeploy.");
+  const key =
+    process.env.XAI_IMAGINE_API_KEY?.trim() || process.env.XAI_API_KEY?.trim();
+  if (!key) {
+    throw new Error(
+      "Add XAI_IMAGINE_API_KEY (or XAI_API_KEY) in Vercel on the CRM project, then Redeploy.",
+    );
+  }
   return key;
 }
 
