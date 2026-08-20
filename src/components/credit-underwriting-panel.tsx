@@ -166,6 +166,17 @@ export function CreditUnderwritingPanel({
   const isDealApproved =
     String(primaryApp.status || "").toLowerCase() === "approved" ||
     String(lead.credit_status || "").toLowerCase() === "approved";
+  const primaryStatus = String(primaryApp.status || "").toLowerCase();
+  const leadCredit = String(lead.credit_status || "").toLowerCase();
+  const awaitingDecision =
+    !isDealApproved &&
+    primaryStatus !== "declined" &&
+    leadCredit !== "declined" &&
+    (
+      ["credit_requested", "in_review", "pending_gsm"].includes(primaryStatus) ||
+      ["credit_requested", "in_review", "pending_gsm"].includes(leadCredit)
+    );
+  const showDecision = canApprove && awaitingDecision;
   const appReady =
     primaryApp.status === "app_submitted" ||
     primaryApp.status === "ids_uploaded" ||
@@ -204,6 +215,44 @@ export function CreditUnderwritingPanel({
 
   return (
     <div className="space-y-4 rounded-sm border border-border bg-card p-4">
+      {showDecision ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-sm border border-primary/30 bg-primary/5 p-3">
+          <div>
+            <p className="text-sm font-semibold text-foreground">GSM / Admin decision</p>
+            <p className="text-xs text-muted-foreground">
+              Credit has been requested on this file. Approve or decline the lease.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              disabled={busy}
+              onClick={() => {
+                setApproveNext("");
+                setNotifyPartner(true);
+                setNotifyLessee(false);
+                setShowApprove(true);
+              }}
+            >
+              Approve deal
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={busy}
+              onClick={() => {
+                setDeclineReason("");
+                setDeclineNotify("both");
+                setShowDecline(true);
+              }}
+            >
+              Decline
+            </Button>
+          </div>
+        </div>
+      ) : canApprove && !isDealApproved && primaryStatus !== "declined" ? (
+        <p className="text-xs text-muted-foreground">
+          Approve / Decline appear here after someone clicks <strong>Get Credit Approval</strong>.
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="font-display text-base font-semibold text-primary">
@@ -303,7 +352,7 @@ export function CreditUnderwritingPanel({
               {uwBusy ? "Reading file…" : "Run AI underwrite"}
             </Button>
           ) : null}
-          {canApprove && app.status === "pending_gsm" ? (
+          {showDecision ? (
             <>
               <Button
                 size="sm"

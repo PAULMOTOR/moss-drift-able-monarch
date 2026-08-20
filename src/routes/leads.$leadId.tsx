@@ -529,7 +529,9 @@ function LeadDetail() {
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <p className="text-muted-foreground">
-                Full deal recap for GSM and Admins — credit package, accepted quote, and approve / decline.
+                Full deal recap for GSM and Admins — credit package, accepted quote, and approve /
+                decline. After <strong>Get Credit Approval</strong>, Approve and Decline show on
+                this tab.
               </p>
               <dl className="grid gap-2 sm:grid-cols-2">
                 <div>

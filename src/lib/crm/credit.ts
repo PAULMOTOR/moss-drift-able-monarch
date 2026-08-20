@@ -592,12 +592,12 @@ export const requestCreditReview = createServerFn({ method: "POST" })
         updated_at = now()
       where id = ${data.leadId}
     `;
-    const cms = await sql<{ email: string; name: string }>`
-      select email, name from profiles
-      where active = true and role in ('credit_manager', 'admin')
+    const cms = await sql<{ email: string; name: string; role: string }>`
+      select email, name, role from profiles
+      where active = true and role in ('credit_manager', 'admin', 'gsm')
     `;
     const lead = await sql<{ name: string }>`select name from leads where id = ${data.leadId}`;
-    const link = `${appBaseUrl()}/leads/${data.leadId}?tab=credit`;
+    const link = `${appBaseUrl()}/leads/${data.leadId}?tab=approval`;
     const clientName = lead[0]?.name || "Lead";
     const subject = doNotPull
       ? `DO NOT PULL CREDIT — ${clientName}`
