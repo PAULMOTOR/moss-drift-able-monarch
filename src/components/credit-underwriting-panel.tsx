@@ -14,6 +14,7 @@ import {
   updateChecklistItem,
   uploadChecklistDocument,
   uploadDealDocument,
+  generatePalmettoHeroTile,
 } from "@/lib/crm/credit";
 import {
   listUnderwriteReports,
@@ -58,6 +59,7 @@ export function CreditUnderwritingPanel({
 }) {
   const [data, setData] = useState<Awaited<ReturnType<typeof getCreditPackage>> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [makingTile, setMakingTile] = useState(false);
   const [appEmail, setAppEmail] = useState("");
   const [showRequestApp, setShowRequestApp] = useState(false);
   const [showCreditReq, setShowCreditReq] = useState(false);
@@ -180,6 +182,24 @@ export function CreditUnderwritingPanel({
       r.onerror = () => reject(new Error("Read failed"));
       r.readAsDataURL(file);
     });
+  }
+
+  const listingCount = allDocs.filter((d) => d.kind === "listing_pics").length;
+
+  async function makePalmettoTile() {
+    setMakingTile(true);
+    const toastId = toast.loading("Making Palmetto tile… 10–30s");
+    try {
+      await generatePalmettoHeroTile({ data: { leadId, applicationId: primaryApp.id } });
+      toast.success("Hero Shot is the Palmetto tile", { id: toastId });
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Tile failed — listing photo kept", {
+        id: toastId,
+      });
+    } finally {
+      setMakingTile(false);
+    }
   }
 
   return (
@@ -667,8 +687,11 @@ export function CreditUnderwritingPanel({
         canUpload={canUpload}
         canDeleteDocs={canDeleteDocs}
         busy={busy}
+        makingTile={makingTile}
+        listingCount={listingCount}
         setBusy={setBusy}
         onView={(name, dataUrl) => setViewDoc({ name, data: dataUrl })}
+        onMakeTile={() => void makePalmettoTile()}
         onUpload={async (file) => {
           const fileData = await readFile(file);
           await uploadDealDocument({
@@ -726,6 +749,9 @@ export function CreditUnderwritingPanel({
             });
             toast.success(`${file.name} uploaded`);
             await load();
+            if (itemKey === "listing_pics") {
+              void makePalmettoTile();
+            }
           }}
           onDeleteDoc={async (documentId) => {
             await deleteCreditDocument({ data: { documentId, leadId } });
@@ -1549,19 +1575,25 @@ function HeroShotSection({
   canUpload,
   canDeleteDocs,
   busy,
+  makingTile,
+  listingCount,
   setBusy,
   onView,
   onUpload,
   onDeleteDoc,
+  onMakeTile,
 }: {
   documents: { id: string; kind: string; file_name: string; file_data: string }[];
   canUpload: boolean;
   canDeleteDocs: boolean;
   busy: boolean;
+  makingTile: boolean;
+  listingCount: number;
   setBusy: (v: boolean) => void;
   onView: (name: string, data: string) => void;
   onUpload: (file: File) => Promise<void>;
   onDeleteDoc: (documentId: string) => Promise<void>;
+  onMakeTile: () => void;
 }) {
   const hero = documents.find((d) => d.kind === HERO_SHOT_KIND);
   const preview =
@@ -1574,9 +1606,12 @@ function HeroShotSection({
     <div className="rounded-sm border border-border p-3">
       <h4 className="mb-2 text-sm font-semibold">Hero Shot</h4>
       <p className="mb-2 text-xs text-muted-foreground">
-        Cover photo for this deal. Palmetto Apply fills this automatically. Listing pictures stay
-        separate below.
+        Palmetto inventory tile (1:1). Listing pictures stay separate below.
+        {listingCount ? ` ${listingCount} listing photo${listingCount === 1 ? "" : "s"} on file.` : ""}
       </p>
+      {makingTile ? (
+        <p className="mb-2 text-xs font-medium text-primary">Making Palmetto tile… 10–30s</p>
+      ) : null}
       {hero && preview ? (
         <button
           type="button"
@@ -1602,7 +1637,7 @@ function HeroShotSection({
             type="file"
             accept="image/*"
             className="h-8 max-w-xs text-xs"
-            disabled={busy}
+            disabled={busy || makingTile}
             onChange={async (e) => {
               const file = e.target.files?.[0];
               if (!file) return;
@@ -1617,6 +1652,15 @@ function HeroShotSection({
               }
             }}
           />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy || makingTile}
+            onClick={onMakeTile}
+          >
+            {makingTile ? "Making tile…" : "Make Palmetto tile"}
+          </Button>
           {hero && canDeleteDocs ? (
             <Button
               type="button"

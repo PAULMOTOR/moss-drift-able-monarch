@@ -25,6 +25,12 @@ import {
 
 import { publicAppUrl } from "./public-url";
 import { ensureHeroShotForLead } from "./handoff";
+import {
+  generatePalmettoTileImage,
+  parseVehicleBits,
+  pickListingPhoto,
+  saveHeroShot,
+} from "./palmetto-tile";
 
 function uid() {
   return crypto.randomUUID();
@@ -732,6 +738,76 @@ export const uploadChecklistDocument = createServerFn({ method: "POST" })
       )
     `;
     return { ok: true as const, id };
+  });
+
+/** Build the Palmetto inventory tile from Listing Photo and save it as Hero Shot. */
+export const generatePalmettoHeroTile = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { leadId: string; applicationId: string }) => data)
+  .handler(async ({ context, data }) => {
+    const me = await requireProfile(context.userId);
+    if (!["admin", "rep", "gsm", "credit_manager"].includes(me.role)) {
+      throw new Error("Not allowed");
+    }
+    const sql = await getSql();
+    const leads = await sql<{
+      assigned_to: string | null;
+      vehicle_interest: string | null;
+      inventory_id: string | null;
+    }>`
+      select assigned_to, vehicle_interest, inventory_id from leads where id = ${data.leadId} limit 1
+    `;
+    if (!leads[0]) throw new Error("Lead not found");
+    if (!canSeeCredit(me, leads[0].assigned_to)) {
+      throw new Error("You can only generate a tile on your deals");
+    }
+    const pics = await sql<{
+      file_name: string;
+      mime_type: string;
+      file_data: string;
+    }>`
+      select file_name, mime_type, file_data from credit_documents
+      where lead_id = ${data.leadId} and kind = 'listing_pics'
+      order by created_at asc
+    `;
+    const picked = pickListingPhoto(pics);
+    let inv:
+      | { year: number | null; make: string | null; model: string | null; trim: string | null; color: string | null }
+      | undefined;
+    if (leads[0].inventory_id) {
+      const rows = await sql<{
+        year: number | null;
+        make: string | null;
+        model: string | null;
+        trim: string | null;
+        exterior_color: string | null;
+      }>`
+        select year, make, model, trim, exterior_color from inventory where id = ${leads[0].inventory_id} limit 1
+      `;
+      if (rows[0]) {
+        inv = {
+          year: rows[0].year,
+          make: rows[0].make,
+          model: rows[0].model,
+          trim: rows[0].trim,
+          color: rows[0].exterior_color,
+        };
+      }
+    }
+    const vehicle = parseVehicleBits(leads[0].vehicle_interest || "", inv);
+    const listingDataUrl =
+      picked?.file_data && /^data:image\//i.test(picked.file_data) ? picked.file_data : null;
+    const result = await generatePalmettoTileImage({
+      vehicle,
+      listingDataUrl,
+    });
+    const id = await saveHeroShot(sql, {
+      leadId: data.leadId,
+      applicationId: data.applicationId,
+      dataUrl: result.dataUrl,
+      via: result.via,
+    });
+    return { ok: true as const, id, via: result.via };
   });
 
 /** Sales or credit attach any deal document (not tied to a checklist line). */
