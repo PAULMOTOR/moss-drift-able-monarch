@@ -149,9 +149,11 @@ function QuoteAcceptPage() {
         ) : (
           <section className="space-y-3">
             <p className="text-xs text-muted-foreground">
-              This is not a generic “I agree.” You are accepting Option {data.optionNumber} at{" "}
-              {formatMoney(s.totalPayment)} per month for {s.termMonths} months. We record the
-              option, time, and confirmation.
+              By clicking Accept, you are not committing to a lease, accepting credit, or being
+              approved for a loan. This action does not give us permission to pull your credit
+              report. You are simply confirming your choice for Option {data.optionNumber} at{" "}
+              {formatMoney(s.totalPayment)} per month for {s.termMonths} months so we can move
+              forward.
             </p>
             <Button className="h-12 w-full text-base" disabled={busy} onClick={() => void accept()}>
               {busy
