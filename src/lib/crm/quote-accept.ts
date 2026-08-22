@@ -54,7 +54,7 @@ function requestMeta(): { ip: string; ua: string } {
 }
 
 function vehicleLine(c: ClientQuoteInfo): string {
-  return [c.year, c.make, c.model, c.trim].filter(Boolean).join(" ") || "Vehicle";
+  return [c.year, c.make, c.model, c.trim, c.driveType].filter(Boolean).join(" ") || "Vehicle";
 }
 
 const PROVINCE_NAMES: Record<string, string> = {

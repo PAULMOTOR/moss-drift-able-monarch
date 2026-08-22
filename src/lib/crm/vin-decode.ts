@@ -6,6 +6,21 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 
+export const DRIVE_TYPE_OPTIONS = ["RWD", "FWD", "AWD", "4×4"] as const;
+export type DriveTypeOption = (typeof DRIVE_TYPE_OPTIONS)[number];
+
+/** Map NHTSA DriveType (and similar) to RWD / FWD / AWD / 4×4. */
+export function normalizeDriveType(raw: string): DriveTypeOption | "" {
+  const s = String(raw || "").toLowerCase();
+  if (!s.trim()) return "";
+  if (/all[-\s]?wheel|\bawd\b/.test(s)) return "AWD";
+  if (/4x4|four[-\s]?wheel|\b4wd\b|4-wheel/.test(s)) return "4×4";
+  if (/rear[-\s]?wheel|\brwd\b/.test(s)) return "RWD";
+  if (/front[-\s]?wheel|\bfwd\b/.test(s)) return "FWD";
+  if (/4x2|2wd/.test(s)) return "RWD";
+  return "";
+}
+
 export type VinDecodeResult = {
   vin: string;
   year: number | null;
@@ -79,7 +94,9 @@ export async function decodeVinNhtsa(rawVin: string): Promise<VinDecodeResult> {
   const series = pick(String(row.Series || ""), String(row.Series2 || ""));
   const trim = pick(String(row.Trim || ""), String(row.Trim2 || ""), series);
   const bodyClass = pick(String(row.BodyClass || ""));
-  const driveType = pick(String(row.DriveType || ""));
+  const driveType = normalizeDriveType(
+    pick(String(row.DriveType || ""), String(row.DriveType2 || "")),
+  );
   const fuelType = pick(String(row.FuelTypePrimary || ""));
   const plantCountry = pick(String(row.PlantCountry || ""));
   const manufacturer = pick(String(row.Manufacturer || ""), String(row.ManufacturerName || ""));
@@ -92,7 +109,7 @@ export async function decodeVinNhtsa(rawVin: string): Promise<VinDecodeResult> {
 
   let message = "";
   if (ok) {
-    message = `Decoded ${year} ${make} ${model}${trim ? ` ${trim}` : ""}`;
+    message = `Decoded ${year} ${make} ${model}${trim ? ` ${trim}` : ""}${driveType ? ` ${driveType}` : ""}`;
     if (errCode && errCode !== "0" && !errCode.startsWith("0,")) {
       message += ` (NHTSA note: ${errText || errCode})`;
     }

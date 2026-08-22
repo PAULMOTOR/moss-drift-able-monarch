@@ -603,11 +603,11 @@ export const requestCreditReview = createServerFn({ method: "POST" })
       ? `DO NOT PULL CREDIT — ${clientName}`
       : `Credit review requested — ${clientName}`;
     const dnpBanner = doNotPull
-      ? `\n\n*** DO NOT PULL CREDIT on this file ***\nThe rep checked “Do not pull credit”. Use the attached Equifax (if any) or existing file only — do not run a new bureau pull.\n`
+      ? `\n\n*** PULL CREDIT: NO — do not run a new bureau pull ***\nThe rep selected Pull credit: No. Use the attached Equifax (if any) or existing file only.\n`
       : "";
     const dnpHtml = doNotPull
       ? `<div style="background:#7f1d1d;color:#fff;padding:12px 16px;border-radius:4px;margin:12px 0;font-weight:700">
-DO NOT PULL CREDIT — the rep checked this box. Do not run a new bureau pull. Use existing Equifax only.
+PULL CREDIT: NO — do not run a new bureau pull. Use existing Equifax only.
 </div>`
       : "";
     for (const cm of cms) {
@@ -616,10 +616,10 @@ DO NOT PULL CREDIT — the rep checked this box. Do not run a new bureau pull. U
         subject,
         kind: "credit_review_request",
         leadId: data.leadId,
-        text: `${me.name} requested credit approval for ${clientName}.${dnpBanner}\nNotes: ${data.notes || "—"}\nDo not pull credit: ${doNotPull ? "YES — DO NOT PULL" : "No"}\n\nOpen: ${link}`,
+        text: `${me.name} requested credit approval for ${clientName}.${dnpBanner}\nNotes: ${data.notes || "—"}\nPull credit: ${doNotPull ? "No — DO NOT PULL" : "Yes"}\n\nOpen: ${link}`,
         html: `<p><strong>${me.name}</strong> requested credit approval for <strong>${clientName}</strong>.</p>
 ${dnpHtml}
-<p>Notes: ${data.notes || "—"}<br/>Do not pull credit: <strong>${doNotPull ? "YES — DO NOT PULL" : "No"}</strong></p>
+<p>Notes: ${data.notes || "—"}<br/>Pull credit: <strong>${doNotPull ? "No — DO NOT PULL" : "Yes"}</strong></p>
 <p><a href="${link}">Open deal in CRM</a></p>`,
       });
     }
@@ -627,11 +627,38 @@ ${dnpHtml}
       insert into lead_activities (id, lead_id, kind, body, created_by, created_by_name)
       values (
         ${uid()}, ${data.leadId}, 'credit',
-        ${`Credit approval requested by ${me.name}${doNotPull ? " · DO NOT PULL CREDIT" : ""}`},
+        ${`Credit approval requested by ${me.name} · Pull credit: ${doNotPull ? "No" : "Yes"}`},
         ${me.id}, ${me.name}
       )
     `;
     return { ok: true as const };
+  });
+
+/** Staff: set / correct date of birth on the credit application (Chris uses this to pull bureau). */
+export const updateCreditAppDob = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { leadId: string; applicationId: string; dob: string }) => data)
+  .handler(async ({ context, data }) => {
+    await requireProfile(context.userId);
+    const sql = await getSql();
+    const rows = await sql.query<Record<string, unknown>>(
+      `select * from credit_applications where id = $1 and lead_id = $2 limit 1`,
+      [data.applicationId, data.leadId],
+    );
+    if (!rows[0]) throw new Error("Application not found");
+    const app = mapApp(rows[0]);
+    const dob = String(data.dob || "").trim();
+    if (dob && !/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
+      throw new Error("Date of birth must be YYYY-MM-DD");
+    }
+    const payload: CreditPayload = { ...app.payload, dob, date_of_birth: dob };
+    await sql`
+      update credit_applications set
+        payload = ${JSON.stringify(payload)}::jsonb,
+        updated_at = now()
+      where id = ${app.id}
+    `;
+    return { ok: true as const, dob };
   });
 
 export const updateChecklistItem = createServerFn({ method: "POST" })

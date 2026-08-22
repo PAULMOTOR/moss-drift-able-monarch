@@ -175,6 +175,9 @@ function HelpPage() {
               <strong>Yield %</strong> is for <em>you</em> only (interest + handling). Customers never see it on shared PDFs.
             </li>
             <li>
+              Click <strong>Lease quote</strong> on a lead to land on the latest saved quote — no extra click.
+            </li>
+            <li>
               <strong>Update draft</strong> — saves without changing stage.
             </li>
             <li>
@@ -184,7 +187,7 @@ function HelpPage() {
               <strong>Staff accept</strong> locks an option in-house. <strong>Email lessee to accept</strong> sends a token link: they confirm that exact option (payment, term, cash down). We store time + IP. GSM <strong>Approve</strong> always emails the rep + Chris; referring dealer is on by default; lessee is off unless you check it. Add a one-line “what’s next.”
             </li>
             <li>
-              <strong>Back to lead</strong> always saves a draft first so you don’t lose work.
+              <strong>Back to lead</strong> (top and bottom of the quote screen) always saves a draft first so you don’t lose work.
             </li>
           </ul>
         </Section>

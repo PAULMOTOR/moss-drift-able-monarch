@@ -1,11 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import {
   Check,
   ClipboardPaste,
-  FileUp,
   Footprints,
   Mail,
   Phone,
@@ -17,7 +16,6 @@ import {
 import { AuthGate, PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -35,7 +33,7 @@ import {
   listProfiles,
   parseEmailLead,
 } from "@/lib/crm/server";
-import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
+import { decodeVin, DRIVE_TYPE_OPTIONS, normalizeVin } from "@/lib/crm/vin-decode";
 import { PartnerField } from "@/components/partner-field";
 import {
   LEAD_TYPES,
@@ -55,14 +53,11 @@ export const Route = createFileRoute("/capture")({
   ),
 });
 
-const MAX_PDF_BYTES = 4 * 1024 * 1024; // 4MB base64-safe for prototype
-
 function CapturePage() {
   const navigate = useNavigate();
   const capture = useServerFn(captureLead);
   const parseEmail = useServerFn(parseEmailLead);
   const decodeVinFn = useServerFn(decodeVin);
-  const pdfInputRef = useRef<HTMLInputElement>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [me, setMe] = useState<Profile | null>(null);
@@ -74,7 +69,6 @@ function CapturePage() {
   const [emailRaw, setEmailRaw] = useState("");
   const [parseBusy, setParseBusy] = useState(false);
   const [parseHint, setParseHint] = useState<string | null>(null);
-  const [pdfDrag, setPdfDrag] = useState(false);
   const [form, setForm] = useState({
     lead_type: "inventory" as LeadType,
     name: "",
@@ -92,15 +86,10 @@ function CapturePage() {
     vehicle_year: "" as string,
     vehicle_make: "",
     vehicle_model: "",
+    vehicle_drivetrain: "",
     vehicle_vin: "",
     inventory_id: "" as string,
     assigned_to: "",
-    quote_sent: false,
-    quote_sent_at: "",
-    quote_link: "",
-    quote_notes: "",
-    quote_pdf_name: "" as string,
-    quote_pdf_data: "" as string,
     source_email_raw: "" as string,
   });
 
@@ -157,6 +146,7 @@ function CapturePage() {
         vehicle_year: result.year != null ? String(result.year) : f.vehicle_year,
         vehicle_make: result.make || f.vehicle_make,
         vehicle_model: [result.model, result.trim].filter(Boolean).join(" ") || f.vehicle_model,
+        vehicle_drivetrain: result.driveType || f.vehicle_drivetrain,
       }));
       toast.success(result.message || "VIN decoded");
     } catch (e) {
@@ -262,31 +252,6 @@ function CapturePage() {
     }
   }
 
-  async function readPdfFile(file: File) {
-    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      toast.error("Please drop a PDF quote");
-      return;
-    }
-    if (file.size > MAX_PDF_BYTES) {
-      toast.error("PDF must be under 4 MB");
-      return;
-    }
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("Read failed"));
-      reader.readAsDataURL(file);
-    });
-    setForm((f) => ({
-      ...f,
-      quote_sent: true,
-      quote_sent_at: f.quote_sent_at || new Date().toISOString().slice(0, 16),
-      quote_pdf_name: file.name,
-      quote_pdf_data: dataUrl,
-    }));
-    toast.success(`Attached ${file.name}`);
-  }
-
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -310,15 +275,6 @@ function CapturePage() {
           party_type: form.party_type || "individual",
           legal_entity_name: form.party_type === "business" ? form.legal_entity_name.trim() || null : null,
           partner_id: form.partner_id || null,
-          quote_sent: form.quote_sent,
-          quote_sent_at:
-            form.quote_sent && form.quote_sent_at
-              ? new Date(form.quote_sent_at).toISOString()
-              : null,
-          quote_link: form.quote_link || undefined,
-          quote_notes: form.quote_notes || undefined,
-          quote_pdf_name: form.quote_pdf_name || null,
-          quote_pdf_data: form.quote_pdf_data || null,
           source_email_raw: form.source_email_raw || null,
           estimated_value: selectedInv?.price ?? null,
         },
@@ -827,6 +783,27 @@ Message: Interested in a viewing this weekend.`}
                     {form.vehicle_vin ? ` · ${normalizeVin(form.vehicle_vin).length}/17` : ""}.
                   </p>
                 </div>
+                <div className="grid gap-1 sm:max-w-xs">
+                  <Label className="text-[11px] text-muted-foreground">Drivetrain</Label>
+                  <Select
+                    value={form.vehicle_drivetrain || "__none__"}
+                    onValueChange={(v) =>
+                      setForm((f) => ({ ...f, vehicle_drivetrain: v === "__none__" ? "" : v }))
+                    }
+                  >
+                    <SelectTrigger className="h-11">
+                      <SelectValue placeholder="—" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">—</SelectItem>
+                      {DRIVE_TYPE_OPTIONS.map((d) => (
+                        <SelectItem key={d} value={d}>
+                          {d}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             )}
 
@@ -885,110 +862,6 @@ Message: Interested in a viewing this weekend.`}
                 value={form.notes}
                 onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
               />
-            </div>
-
-            <div className="rounded-xl border border-border bg-muted/30 p-3">
-              <label className="flex items-start gap-3">
-                <Checkbox
-                  checked={form.quote_sent}
-                  onCheckedChange={(c) =>
-                    setForm((f) => ({
-                      ...f,
-                      quote_sent: c === true,
-                      quote_sent_at:
-                        c === true && !f.quote_sent_at
-                          ? new Date().toISOString().slice(0, 16)
-                          : f.quote_sent_at,
-                    }))
-                  }
-                  className="mt-0.5"
-                />
-                <span>
-                  <span className="text-sm font-medium">Quote already sent</span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
-                    Attach the PDF quote, link, and notes
-                  </span>
-                </span>
-              </label>
-              {form.quote_sent ? (
-                <div className="mt-3 grid gap-2">
-                  <Input
-                    type="datetime-local"
-                    value={form.quote_sent_at}
-                    onChange={(e) => setForm((f) => ({ ...f, quote_sent_at: e.target.value }))}
-                  />
-                  <div
-                    className={cn(
-                      "rounded-xl border border-dashed px-3 py-4 text-center transition-colors",
-                      pdfDrag
-                        ? "border-primary bg-primary/10"
-                        : "border-border bg-background/40 hover:border-primary/40",
-                    )}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setPdfDrag(true);
-                    }}
-                    onDragLeave={() => setPdfDrag(false)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setPdfDrag(false);
-                      const file = e.dataTransfer.files?.[0];
-                      if (file) void readPdfFile(file);
-                    }}
-                  >
-                    <FileUp className="mx-auto size-5 text-primary" />
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Drag & drop PDF quote here, or{" "}
-                      <button
-                        type="button"
-                        className="font-medium text-primary underline-offset-2 hover:underline"
-                        onClick={() => pdfInputRef.current?.click()}
-                      >
-                        browse
-                      </button>
-                    </p>
-                    {form.quote_pdf_name ? (
-                      <div className="mt-2 flex items-center justify-center gap-2 text-xs text-foreground">
-                        <span className="truncate font-medium">{form.quote_pdf_name}</span>
-                        <button
-                          type="button"
-                          className="text-muted-foreground hover:text-destructive"
-                          onClick={() =>
-                            setForm((f) => ({
-                              ...f,
-                              quote_pdf_name: "",
-                              quote_pdf_data: "",
-                            }))
-                          }
-                        >
-                          <X className="size-3.5" />
-                        </button>
-                      </div>
-                    ) : null}
-                    <input
-                      ref={pdfInputRef}
-                      type="file"
-                      accept="application/pdf,.pdf"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) void readPdfFile(file);
-                        e.target.value = "";
-                      }}
-                    />
-                  </div>
-                  <Input
-                    placeholder="Quote link (optional)"
-                    value={form.quote_link}
-                    onChange={(e) => setForm((f) => ({ ...f, quote_link: e.target.value }))}
-                  />
-                  <Input
-                    placeholder="Quote notes"
-                    value={form.quote_notes}
-                    onChange={(e) => setForm((f) => ({ ...f, quote_notes: e.target.value }))}
-                  />
-                </div>
-              ) : null}
             </div>
 
             <Button type="submit" className="h-14 w-full text-base font-semibold" disabled={busy}>

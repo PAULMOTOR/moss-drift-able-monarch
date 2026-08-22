@@ -988,7 +988,7 @@ function LeadDetail() {
                     <div className="flex gap-2">
                       <Button asChild size="sm" variant="outline">
                         <Link to="/quote" search={{ leadId: lead.id, quoteId: q.id }}>
-                          Reopen
+                          Open
                         </Link>
                       </Button>
                       {q.status !== "accepted" ? (

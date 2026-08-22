@@ -3,11 +3,13 @@ import {
   BarChart3,
   Calculator,
   CalendarDays,
+  Camera,
   Columns3,
   HelpCircle,
   ListTodo,
   KeyRound,
   LayoutDashboard,
+  LogOut,
   Menu,
   Package,
   Shield,
@@ -20,10 +22,10 @@ import {
 } from "lucide-react";
 
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
-import { UserButton } from "@/lib/auth/gates";
+import { authEnabled, signOut } from "@/lib/auth/client";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -104,13 +106,14 @@ export function AppShell({
 }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [open, setOpen] = useState(false);
-  const [pwOpen, setPwOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [pwBusy, setPwBusy] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState(profile.avatar_url);
   const [perms, setPerms] = useState<Set<string>>(new Set());
+  const photoInputRef = useRef<HTMLInputElement>(null);
   const changePw = useServerFn(changeOwnPassword);
   const updateAvatar = useServerFn(updateOwnAvatar);
 
@@ -147,7 +150,6 @@ export function AppShell({
     try {
       await changePw({ data: { currentPassword: currentPw, newPassword: newPw } });
       toast.success("Password updated");
-      setPwOpen(false);
       setCurrentPw("");
       setNewPw("");
       setConfirmPw("");
@@ -212,46 +214,28 @@ export function AppShell({
         </nav>
 
         <div className="border-t border-sidebar-border p-3">
-          <div className="mb-2 flex items-center gap-2 rounded-sm border border-border bg-muted/50 px-2 py-2">
-            <label className="relative shrink-0 cursor-pointer" title="Change profile photo">
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt=""
-                  className="size-10 rounded-full border border-border object-cover"
-                />
-              ) : (
-                <div className="flex size-10 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-foreground">
-                  {profile.name
-                    .split(" ")
-                    .map((p) => p[0])
-                    .join("")
-                    .slice(0, 2)
-                    .toUpperCase()}
-                </div>
-              )}
-              <input
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={async (e) => {
-                  const f = e.target.files?.[0];
-                  if (!f) return;
-                  if (f.size > 4_000_000) {
-                    toast.error("Use a photo under 4MB");
-                    return;
-                  }
-                  try {
-                    const dataUrl = await shrinkAvatar(f);
-                    const updated = await updateAvatar({ data: { avatar_url: dataUrl } });
-                    setAvatarUrl(updated.avatar_url);
-                    toast.success("Profile photo updated");
-                  } catch (err) {
-                    toast.error(err instanceof Error ? err.message : "Upload failed");
-                  }
-                }}
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-sm border border-border bg-muted/50 px-2 py-2 text-left transition-colors hover:bg-muted"
+            onClick={() => setSettingsOpen(true)}
+            title="My Settings"
+          >
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt=""
+                className="size-10 shrink-0 rounded-full border border-border object-cover"
               />
-            </label>
+            ) : (
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-foreground">
+                {profile.name
+                  .split(" ")
+                  .map((p) => p[0])
+                  .join("")
+                  .slice(0, 2)
+                  .toUpperCase()}
+              </div>
+            )}
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold">{profile.name}</p>
               <p className="truncate text-[11px] text-muted-foreground">
@@ -259,18 +243,7 @@ export function AppShell({
                 {profile.title ? ` · ${profile.title}` : ""}
               </p>
             </div>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="mb-2 w-full justify-start gap-2"
-            onClick={() => setPwOpen(true)}
-          >
-            <KeyRound className="size-4" />
-            Change password
-          </Button>
-          <UserButton />
+          </button>
         </div>
       </aside>
 
@@ -285,51 +258,138 @@ export function AppShell({
         <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 lg:px-8 lg:py-6">{children}</div>
       </main>
 
-      <Dialog open={pwOpen} onOpenChange={setPwOpen}>
+      <Dialog
+        open={settingsOpen}
+        onOpenChange={(v) => {
+          setSettingsOpen(v);
+          if (!v) {
+            setCurrentPw("");
+            setNewPw("");
+            setConfirmPw("");
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Change your password</DialogTitle>
+            <DialogTitle>My Settings</DialogTitle>
           </DialogHeader>
-          <div className="grid gap-3 py-2">
-            <div className="grid gap-1.5">
-              <Label htmlFor="cur-pw">Current password</Label>
-              <Input
-                id="cur-pw"
-                type="password"
-                autoComplete="current-password"
-                value={currentPw}
-                onChange={(e) => setCurrentPw(e.target.value)}
-              />
+          <div className="grid gap-5 py-1">
+            <div className="flex items-center gap-3">
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  className="size-16 rounded-full border border-border object-cover"
+                />
+              ) : (
+                <div className="flex size-16 items-center justify-center rounded-full bg-primary text-lg font-bold text-primary-foreground">
+                  {profile.name
+                    .split(" ")
+                    .map((p) => p[0])
+                    .join("")
+                    .slice(0, 2)
+                    .toUpperCase()}
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="truncate font-semibold">{profile.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {ROLE_LABELS[profile.role] || profile.role}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 gap-1.5"
+                  onClick={() => photoInputRef.current?.click()}
+                >
+                  <Camera className="size-3.5" />
+                  Edit profile image
+                </Button>
+                <input
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = "";
+                    if (!f) return;
+                    if (f.size > 4_000_000) {
+                      toast.error("Use a photo under 4MB");
+                      return;
+                    }
+                    try {
+                      const dataUrl = await shrinkAvatar(f);
+                      const updated = await updateAvatar({ data: { avatar_url: dataUrl } });
+                      setAvatarUrl(updated.avatar_url);
+                      toast.success("Profile photo updated");
+                    } catch (err) {
+                      toast.error(err instanceof Error ? err.message : "Upload failed");
+                    }
+                  }}
+                />
+              </div>
             </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="new-pw">New password (8+)</Label>
-              <Input
-                id="new-pw"
-                type="password"
-                autoComplete="new-password"
-                minLength={8}
-                value={newPw}
-                onChange={(e) => setNewPw(e.target.value)}
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="confirm-pw">Confirm new password</Label>
-              <Input
-                id="confirm-pw"
-                type="password"
-                autoComplete="new-password"
-                minLength={8}
-                value={confirmPw}
-                onChange={(e) => setConfirmPw(e.target.value)}
-              />
+
+            <div className="grid gap-3 border-t border-border pt-4">
+              <p className="flex items-center gap-2 text-sm font-semibold">
+                <KeyRound className="size-4" />
+                Change password
+              </p>
+              <div className="grid gap-1.5">
+                <Label htmlFor="cur-pw">Current password</Label>
+                <Input
+                  id="cur-pw"
+                  type="password"
+                  autoComplete="current-password"
+                  value={currentPw}
+                  onChange={(e) => setCurrentPw(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="new-pw">New password (8+)</Label>
+                <Input
+                  id="new-pw"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={newPw}
+                  onChange={(e) => setNewPw(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="confirm-pw">Confirm new password</Label>
+                <Input
+                  id="confirm-pw"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={confirmPw}
+                  onChange={(e) => setConfirmPw(e.target.value)}
+                />
+              </div>
+              <Button type="button" disabled={pwBusy} onClick={() => void submitPassword()}>
+                {pwBusy ? "Saving…" : "Update password"}
+              </Button>
             </div>
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setPwOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="button" disabled={pwBusy} onClick={() => void submitPassword()}>
-              {pwBusy ? "Saving…" : "Update password"}
+          <DialogFooter className="sm:justify-between">
+            {authEnabled ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="text-destructive"
+                onClick={() => void signOut()}
+              >
+                <LogOut className="size-4" />
+                Sign out
+              </Button>
+            ) : (
+              <span />
+            )}
+            <Button type="button" variant="outline" onClick={() => setSettingsOpen(false)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

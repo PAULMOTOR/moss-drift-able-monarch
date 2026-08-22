@@ -40,7 +40,7 @@ import {
 import type { InventoryItem, Lead } from "@/lib/crm/types";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { getMyProfile } from "@/lib/crm/server";
-import { decodeVin, normalizeVin } from "@/lib/crm/vin-decode";
+import { decodeVin, DRIVE_TYPE_OPTIONS, normalizeVin } from "@/lib/crm/vin-decode";
 import { sendQuoteAcceptLink } from "@/lib/crm/quote-accept";
 import { Check, Calculator, FolderOpen, Mail, Printer, Save, Search, Trash2 } from "lucide-react";
 
@@ -68,6 +68,15 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function vinsClash(leaseVin: string, tradeVin: string): boolean {
+  const a = normalizeVin(leaseVin);
+  const b = normalizeVin(tradeVin);
+  return a.length === 17 && b.length === 17 && a === b;
+}
+
+const DUP_VIN_MSG =
+  "Lease VIN and trade-in VIN must be different — the same serial number cannot be on both.";
+
 function pickPreferredQuote(
   rows: Array<{ id: string; status: string }>,
   requested?: string,
@@ -76,6 +85,19 @@ function pickPreferredQuote(
   const accepted = rows.find((r) => r.status === "accepted");
   if (accepted) return accepted.id;
   return rows[0]?.id ?? null;
+}
+
+/** Pull a VIN out of free text so it never sits in Model. */
+function peelVin(text: string): { text: string; vin: string } {
+  const raw = String(text || "").trim();
+  const m =
+    raw.match(/\bVIN\s*[:#]?\s*([A-HJ-NPR-Z0-9]{11,17})\b/i) ||
+    raw.match(/\b([A-HJ-NPR-Z0-9]{17})\b/);
+  const vin = m ? normalizeVin(m[1]) : "";
+  const cleaned = raw
+    .replace(/\s*[·•|\-]\s*VIN\s*[:#]?\s*[A-HJ-NPR-Z0-9]{11,17}/i, "")
+    .trim();
+  return { text: cleaned, vin };
 }
 
 function QuotePage() {
@@ -108,7 +130,7 @@ function QuotePage() {
   const [heroImage, setHeroImage] = useState<string | null>(null);
   const [quoteId, setQuoteId] = useState<string | null>(search.quoteId || null);
   const [salesman, setSalesman] = useState("");
-  const openedQuoteRef = useRef<string | null>(search.quoteId || null);
+  const openedQuoteRef = useRef<string | null>(null);
 
   const [client, setClient] = useState<ClientQuoteInfo>({
     clientName: "",
@@ -124,6 +146,7 @@ function QuotePage() {
     make: "",
     model: "",
     trim: "",
+    driveType: "",
     color: "",
     km: null,
     vin: "",
@@ -148,6 +171,8 @@ function QuotePage() {
     tradeMake: "",
     tradeModel: "",
     tradeTrim: "",
+    tradeDriveType: "",
+    tradeColor: "",
     tradeKm: null,
     tradeKind: "financed",
   });
@@ -212,7 +237,7 @@ function QuotePage() {
         if (!lead) return;
         setHeroImage(lead.hero_image || null);
         // A saved quote owns the form — don't overwrite with a generic lead template
-        if (openedQuoteRef.current) return;
+        if (openedQuoteRef.current || search.quoteId) return;
         setClient((c) => ({
           ...c,
           clientName:
@@ -228,14 +253,15 @@ function QuotePage() {
           const inv = inventory.find((i) => i.id === lead.inventory_id);
           if (inv) applyInventory(inv);
         } else if (lead.vehicle_interest) {
-          // Parse "2024 Porsche Cayenne" style interest into year/make/model when possible
-          const raw = lead.vehicle_interest.trim();
-          const m = raw.match(/^((?:19|20)\d{2})\s+([A-Za-z0-9À-ÿ-]+)\s+(.+)$/);
+          // Parse "2024 Porsche Cayenne" (and optional "· VIN …") into fields.
+          const peeled = peelVin(lead.vehicle_interest.trim());
+          const m = peeled.text.match(/^((?:19|20)\d{2})\s+([A-Za-z0-9À-ÿ-]+)\s+(.+)$/);
           setClient((c) => ({
             ...c,
             year: m ? Number(m[1]) : c.year,
             make: m ? m[2] : c.make,
-            model: m ? m[3] : raw || c.model,
+            model: m ? m[3] : peeled.text || c.model,
+            vin: peeled.vin || c.vin,
           }));
         }
         if (lead.estimated_value) {
@@ -256,7 +282,7 @@ function QuotePage() {
       })
       .catch(() => toast.error("Could not load lead"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leadId, inventory.length]);
+  }, [leadId, inventory.length, search.quoteId]);
 
   async function loadQuote(
     id: string,
@@ -279,6 +305,7 @@ function QuotePage() {
         options: LeaseOptionResult[];
       };
       if (payload.client) {
+        const peeled = peelVin(payload.client.model || "");
         setClient({
           ...payload.client,
           startDate: payload.client.startDate || todayIso(),
@@ -290,8 +317,13 @@ function QuotePage() {
           tradeMake: payload.client.tradeMake || "",
           tradeModel: payload.client.tradeModel || "",
           tradeTrim: payload.client.tradeTrim || "",
+          tradeDriveType: payload.client.tradeDriveType || "",
+          tradeColor: payload.client.tradeColor || "",
           tradeKm: payload.client.tradeKm ?? null,
           tradeKind: payload.client.tradeKind === "leased" ? "leased" : "financed",
+          driveType: payload.client.driveType || "",
+          model: peeled.text || payload.client.model,
+          vin: payload.client.vin || peeled.vin || "",
         });
       }
       if (payload.options?.length) {
@@ -311,7 +343,7 @@ function QuotePage() {
           })),
         );
       }
-      if (!opts?.silent) toast.success("Quote reopened");
+      if (!opts?.silent) toast.success("Quote opened");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not open quote");
     }
@@ -324,6 +356,7 @@ function QuotePage() {
       make: inv.make,
       model: inv.model,
       trim: inv.trim || "",
+      driveType: "",
       color: inv.exterior_color || "",
       km: inv.mileage,
       vin: inv.vin || "",
@@ -352,6 +385,10 @@ function QuotePage() {
       toast.error("Enter a full 17-character VIN first");
       return;
     }
+    if (vinsClash(vin, client.tradeVin || "")) {
+      toast.error(DUP_VIN_MSG);
+      return;
+    }
     setVinBusy(true);
     try {
       const result = await decodeVinFn({ data: { vin } });
@@ -368,6 +405,7 @@ function QuotePage() {
         make: result.make || c.make,
         model: result.model || c.model,
         trim: result.trim || c.trim,
+        driveType: result.driveType || c.driveType,
         color: invMatch?.exterior_color || c.color,
         km: invMatch?.mileage ?? c.km,
         stock: invMatch?.stock_number || c.stock,
@@ -405,6 +443,10 @@ function QuotePage() {
       toast.error("Enter the trade-in 17-character VIN first");
       return;
     }
+    if (vinsClash(client.vin, vin)) {
+      toast.error(DUP_VIN_MSG);
+      return;
+    }
     setVinBusy(true);
     try {
       const result = await decodeVinFn({ data: { vin } });
@@ -420,8 +462,9 @@ function QuotePage() {
         tradeMake: result.make || c.tradeMake,
         tradeModel: result.model || c.tradeModel,
         tradeTrim: result.trim || c.tradeTrim,
+        tradeDriveType: result.driveType || c.tradeDriveType,
       }));
-      toast.success(`${result.message} · enter trade kilometres`);
+      toast.success(`${result.message} · enter trade colour and kilometres`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "VIN decode failed");
     } finally {
@@ -576,6 +619,10 @@ function QuotePage() {
       toast.error("Client name is required");
       return null;
     }
+    if (vinsClash(client.vin, client.tradeVin || "")) {
+      toast.error(DUP_VIN_MSG);
+      return null;
+    }
     const res = await save({
       data: {
         leadId: leadId || null,
@@ -597,6 +644,10 @@ function QuotePage() {
   async function onShare() {
     if (!client.clientName.trim()) {
       toast.error("Client name is required");
+      return;
+    }
+    if (vinsClash(client.vin, client.tradeVin || "")) {
+      toast.error(DUP_VIN_MSG);
       return;
     }
     setBusy(true);
@@ -640,6 +691,10 @@ function QuotePage() {
   }
 
   async function onAccept(optionNumber: number) {
+    if (vinsClash(client.vin, client.tradeVin || "")) {
+      toast.error(DUP_VIN_MSG);
+      return;
+    }
     if (!quoteId) {
       // auto-save first
       if (!client.clientName.trim()) {
@@ -770,6 +825,8 @@ function QuotePage() {
     });
   }
 
+  const duplicateVin = vinsClash(client.vin, client.tradeVin || "");
+
   return (
     <>
       <PageHeader
@@ -777,6 +834,16 @@ function QuotePage() {
         description="Spreadsheet engine · save instances · accept one of 3 options · print PDF"
         actions={
           <div className="flex flex-wrap gap-2">
+            {leadId ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void onBackToLead()}
+              >
+                ← Back to lead
+              </Button>
+            ) : null}
             <Button type="button" variant="outline" onClick={onPrint}>
               <Printer className="size-4" />
               Print / PDF
@@ -855,7 +922,7 @@ function QuotePage() {
                       onClick={() => void loadQuote(q.id, { syncUrl: true })}
                     >
                       <FolderOpen className="size-4" />
-                      Reopen
+                      {q.id === quoteId ? "Loaded" : "Open"}
                     </Button>
                     <Button
                       type="button"
@@ -948,17 +1015,29 @@ function QuotePage() {
             <Field label="Trim" value={client.trim} onChange={(v) => setClient((c) => ({ ...c, trim: v }))} />
             <Field label="Colour" value={client.color} onChange={(v) => setClient((c) => ({ ...c, color: v }))} />
             <Field label="KM" value={client.km?.toString() || ""} onChange={(v) => setClient((c) => ({ ...c, km: v ? Number(v) : null }))} />
+            <DriveSelect
+              label="Drivetrain (RWD / AWD / FWD / 4×4)"
+              value={client.driveType || ""}
+              onChange={(v) => setClient((c) => ({ ...c, driveType: v }))}
+            />
+            <Field label="Stock #" value={client.stock} onChange={(v) => setClient((c) => ({ ...c, stock: v }))} />
             <div className="grid gap-1.5 sm:col-span-2">
               <Label>VIN</Label>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <Input
                   value={client.vin}
-                  onChange={(e) =>
-                    setClient((c) => ({
-                      ...c,
-                      vin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, "").slice(0, 17),
-                    }))
-                  }
+                  onChange={(e) => {
+                    const vin = e.target.value
+                      .toUpperCase()
+                      .replace(/[^A-HJ-NPR-Z0-9]/gi, "")
+                      .slice(0, 17);
+                    if (vinsClash(vin, client.tradeVin || "")) {
+                      toast.error(DUP_VIN_MSG + " Trade-in VIN was cleared.");
+                      setClient((c) => ({ ...c, vin, tradeVin: "" }));
+                      return;
+                    }
+                    setClient((c) => ({ ...c, vin }));
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -966,14 +1045,17 @@ function QuotePage() {
                     }
                   }}
                   placeholder="17-character VIN"
-                  className="font-mono tracking-wide uppercase"
+                  className={
+                    "font-mono tracking-wide uppercase" +
+                    (duplicateVin ? " border-red-500 focus-visible:ring-red-500" : "")
+                  }
                   maxLength={17}
                   autoComplete="off"
                 />
                 <Button
                   type="button"
                   variant="secondary"
-                  disabled={vinBusy || normalizeVin(client.vin).length !== 17}
+                  disabled={vinBusy || normalizeVin(client.vin).length !== 17 || duplicateVin}
                   onClick={() => void explodeVin()}
                   className="shrink-0"
                 >
@@ -982,30 +1064,43 @@ function QuotePage() {
                 </Button>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Free NHTSA (DOT) decode fills year, make, model, trim. Colour is not in the VIN
+                Free NHTSA (DOT) decode fills year, make, model, trim, and drivetrain. Colour is not in the VIN
                 {client.vin ? ` · ${normalizeVin(client.vin).length}/17` : ""}.
               </p>
             </div>
-            <Field label="Stock #" value={client.stock} onChange={(v) => setClient((c) => ({ ...c, stock: v }))} />
 
             <div className="sm:col-span-2 rounded-sm border border-border bg-muted/30 p-3 space-y-3">
               <div>
                 <p className="text-sm font-semibold">Trade-in vehicle</p>
                 <p className="text-[11px] text-muted-foreground">
-                  VIN explode fills year / make / model / trim for Chris on the contract. KM is manual.
+                  VIN explode fills year / make / model / trim / drivetrain for Chris on the contract.
+                  Colour and KM are manual. Cannot be the same VIN as the leased vehicle.
                 </p>
               </div>
+              {duplicateVin ? (
+                <div
+                  role="alert"
+                  className="rounded-sm border border-red-300 bg-red-50 px-3 py-2 text-xs font-medium text-red-800"
+                >
+                  {DUP_VIN_MSG}
+                </div>
+              ) : null}
               <div className="grid gap-1.5">
                 <Label>Trade VIN</Label>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                   <Input
                     value={client.tradeVin || ""}
-                    onChange={(e) =>
-                      setClient((c) => ({
-                        ...c,
-                        tradeVin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/gi, "").slice(0, 17),
-                      }))
-                    }
+                    onChange={(e) => {
+                      const vin = e.target.value
+                        .toUpperCase()
+                        .replace(/[^A-HJ-NPR-Z0-9]/gi, "")
+                        .slice(0, 17);
+                      if (vinsClash(client.vin, vin)) {
+                        toast.error(DUP_VIN_MSG);
+                        return;
+                      }
+                      setClient((c) => ({ ...c, tradeVin: vin }));
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -1013,14 +1108,21 @@ function QuotePage() {
                       }
                     }}
                     placeholder="Trade-in 17-character VIN"
-                    className="font-mono tracking-wide uppercase"
+                    className={
+                      "font-mono tracking-wide uppercase" +
+                      (duplicateVin ? " border-red-500 focus-visible:ring-red-500" : "")
+                    }
                     maxLength={17}
                     autoComplete="off"
                   />
                   <Button
                     type="button"
                     variant="secondary"
-                    disabled={vinBusy || normalizeVin(client.tradeVin || "").length !== 17}
+                    disabled={
+                      vinBusy ||
+                      normalizeVin(client.tradeVin || "").length !== 17 ||
+                      duplicateVin
+                    }
                     onClick={() => void explodeTradeVin()}
                     className="shrink-0"
                   >
@@ -1035,9 +1137,19 @@ function QuotePage() {
                 <Field label="Trade model" value={client.tradeModel || ""} onChange={(v) => setClient((c) => ({ ...c, tradeModel: v }))} />
                 <Field label="Trade trim" value={client.tradeTrim || ""} onChange={(v) => setClient((c) => ({ ...c, tradeTrim: v }))} />
                 <Field
+                  label="Trade colour"
+                  value={client.tradeColor || ""}
+                  onChange={(v) => setClient((c) => ({ ...c, tradeColor: v }))}
+                />
+                <Field
                   label="Trade kilometres"
                   value={client.tradeKm != null ? String(client.tradeKm) : ""}
                   onChange={(v) => setClient((c) => ({ ...c, tradeKm: v.trim() ? Number(v) || 0 : null }))}
+                />
+                <DriveSelect
+                  label="Trade drivetrain (RWD / AWD / FWD / 4×4)"
+                  value={client.tradeDriveType || ""}
+                  onChange={(v) => setClient((c) => ({ ...c, tradeDriveType: v }))}
                 />
               </div>
               <div className="grid gap-1.5">
@@ -1377,6 +1489,38 @@ function QuotePage() {
         </div>
       ) : null}
     </>
+  );
+}
+
+function DriveSelect({
+  value,
+  onChange,
+  label = "Drivetrain",
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  label?: string;
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <Label>{label}</Label>
+      <Select value={value || "__none__"} onValueChange={(v) => onChange(v === "__none__" ? "" : v)}>
+        <SelectTrigger className="h-9 rounded-sm">
+          <SelectValue placeholder="RWD / AWD / FWD / 4×4" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__none__">—</SelectItem>
+          {DRIVE_TYPE_OPTIONS.map((d) => (
+            <SelectItem key={d} value={d}>
+              {d}
+            </SelectItem>
+          ))}
+          {value && !(DRIVE_TYPE_OPTIONS as readonly string[]).includes(value) ? (
+            <SelectItem value={value}>{value}</SelectItem>
+          ) : null}
+        </SelectContent>
+      </Select>
+    </div>
   );
 }
 

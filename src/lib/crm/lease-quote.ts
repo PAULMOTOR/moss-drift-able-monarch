@@ -142,6 +142,8 @@ export type ClientQuoteInfo = {
   make: string;
   model: string;
   trim: string;
+  /** RWD / FWD / AWD / 4×4 from VIN explode. */
+  driveType?: string;
   color: string;
   km: number | null;
   vin: string;
@@ -169,6 +171,8 @@ export type ClientQuoteInfo = {
   tradeMake?: string;
   tradeModel?: string;
   tradeTrim?: string;
+  tradeDriveType?: string;
+  tradeColor?: string;
   tradeKm?: number | null;
   /**
    * How the trade is paid out.
@@ -635,12 +639,13 @@ function escapeHtml(s: string): string {
 }
 
 function tradeVehicleLine(client: ClientQuoteInfo): string {
-  const label = [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim]
+  const label = [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim, client.tradeDriveType]
     .filter(Boolean)
     .join(" ");
   if (!label && !client.tradeVin && client.tradeKm == null) return "";
   const bits = [
     label || null,
+    client.tradeColor ? client.tradeColor : null,
     client.tradeVin ? `VIN ${client.tradeVin}` : null,
     client.tradeKm != null ? `${client.tradeKm.toLocaleString("en-CA")} km` : null,
   ].filter(Boolean);
@@ -648,7 +653,16 @@ function tradeVehicleLine(client: ClientQuoteInfo): string {
 }
 
 function tradeVehicleLabel(client: ClientQuoteInfo): string {
-  return [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim]
+  return [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim, client.tradeDriveType]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** Year / make / model / trim / drivetrain for quotes, PDFs, and contracts. */
+export function vehicleDisplayLine(
+  client: Pick<ClientQuoteInfo, "year" | "make" | "model" | "trim" | "driveType">,
+): string {
+  return [client.year || "", client.make, client.model, client.trim, client.driveType]
     .filter(Boolean)
     .join(" ");
 }
@@ -704,9 +718,7 @@ export function buildRetailQuoteHtml(
     })
     .join("");
 
-  const vehicle = [client.year || "", client.make, client.model, client.trim]
-    .filter(Boolean)
-    .join(" ");
+  const vehicle = vehicleDisplayLine(client);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -799,9 +811,7 @@ export function buildFirstInvoiceHtml(
   option: LeaseOptionResult,
   taxRate: number,
 ): string {
-  const vehicle = [client.year, client.make, client.model, client.trim]
-    .filter(Boolean)
-    .join(" ");
+  const vehicle = vehicleDisplayLine(client);
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>First Invoice — ${escapeHtml(client.clientName)}</title>
@@ -878,9 +888,7 @@ export function renderContractTemplate(
   option: LeaseOptionResult,
   taxRate: number,
 ): string {
-  const vehicle = [client.year, client.make, client.model, client.trim]
-    .filter(Boolean)
-    .join(" ");
+  const vehicle = vehicleDisplayLine(client);
   const endDate = (() => {
     const s = parseLooseDate(client.startDate) || new Date();
     const e = new Date(s);
@@ -913,6 +921,7 @@ export function renderContractTemplate(
     trade_vehicle: tradeVehicleLabel(client) || "—",
     trade_vin: client.tradeVin || "—",
     trade_km: client.tradeKm != null ? String(client.tradeKm) : "—",
+    trade_color: client.tradeColor || "—",
     financed: formatMoney(option.financed),
     residual: formatMoney(option.residual),
     rate: `${option.ratePct.toFixed(2)}%`,

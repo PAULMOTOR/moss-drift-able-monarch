@@ -162,7 +162,7 @@ function quoteFromPayload(payload: unknown, acceptedOption: number | null): {
       residual: o.residual,
       payment: o.totalPayment,
       vehicleYear: client.year ?? null,
-      vehicle: [client.year, client.make, client.model, client.trim].filter(Boolean).join(" "),
+      vehicle: [client.year, client.make, client.model, client.trim, client.driveType].filter(Boolean).join(" "),
       vin: client.vin || "",
       province: (client.province || "QC").toUpperCase(),
     },
@@ -745,7 +745,7 @@ EQUIFAX NOTES: ${equifaxNotes.slice(0, 500) || "(none)"}
 KYC: ${kycNotes.slice(0, 400) || "(none)"}
 CARFAX: ${carfaxNotes.slice(0, 300) || "(none)"}
 VISA: ${visaNotes.slice(0, 200) || "(none)"}
-DO NOT PULL: ${Boolean(app?.do_not_pull_credit)}
+PULL CREDIT: ${Boolean(app?.do_not_pull_credit) ? "No — DO NOT PULL" : "Yes"}
 
 JSON only:
 {"recommendation":"approve"|"approve_with_conditions"|"send_back"|"decline","summary":"4-6 sentences","conditions":["..."],"red_flags":["..."],"id_consistency":"one line","suggested_cash_down":null,"credit_score":null,"citizenship":"canadian_citizen"|"permanent_resident"|"work_permit"|"student"|"other"|"unknown","market_value":null,"carfax_claim":null}`;

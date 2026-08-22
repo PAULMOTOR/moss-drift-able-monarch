@@ -61,7 +61,7 @@ export async function buildLeaseContractPdf(
   line(page, font, "GST 8630820380001 · QST 12081377070001", margin, y, 8, muted);
   y -= 18;
 
-  const vehicle = [client.year, client.make, client.model, client.trim].filter(Boolean).join(" ");
+  const vehicle = [client.year, client.make, client.model, client.trim, client.driveType].filter(Boolean).join(" ");
   const endDate = (() => {
     const s = client.startDate ? new Date(client.startDate) : new Date();
     const e = new Date(s);
@@ -86,7 +86,8 @@ export async function buildLeaseContractPdf(
     [
       "Trade vehicle",
       [
-        [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim].filter(Boolean).join(" ") || null,
+        [client.tradeYear, client.tradeMake, client.tradeModel, client.tradeTrim, client.tradeDriveType].filter(Boolean).join(" ") || null,
+        client.tradeColor || null,
         client.tradeVin ? `VIN ${client.tradeVin}` : null,
         client.tradeKm != null ? `${client.tradeKm.toLocaleString("en-CA")} km` : null,
       ]

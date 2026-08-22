@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { X } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import {
   addGuarantor,
   approveDealGsm,
@@ -12,10 +12,12 @@ import {
   requestLesseeDocument,
   swapCreditParties,
   updateChecklistItem,
+  updateCreditAppDob,
   uploadChecklistDocument,
   uploadDealDocument,
   generatePalmettoHeroTile,
 } from "@/lib/crm/credit";
+import { addActivity } from "@/lib/crm/server";
 import {
   listUnderwriteReports,
   runAiUnderwrite,
@@ -520,16 +522,24 @@ export function CreditUnderwritingPanel({
         {app.applicant_phone ? ` · ${app.applicant_phone}` : ""}
       </p>
 
+      <DobCard
+        leadId={leadId}
+        applicationId={app.id}
+        payload={app.payload}
+        canEdit={canStaff}
+        onSaved={load}
+      />
+
       {primaryApp.do_not_pull_credit ? (
         <div
           role="alert"
           className="rounded-sm border-2 border-red-700 bg-red-700 px-4 py-3 text-sm font-bold text-white shadow-sm"
         >
-          DO NOT PULL CREDIT
+          PULL CREDIT: NO
           <p className="mt-1 text-xs font-normal text-red-50">
-            The rep checked this box when requesting credit approval. Chris / Credit Manager — do{" "}
-            <strong>not</strong> run a new bureau pull. Use the attached Equifax file (if any) or an
-            existing file only.
+            The rep selected <strong>Pull credit: No</strong> when requesting approval. Chris / Credit
+            Manager — do <strong>not</strong> run a new bureau pull. Use the attached Equifax file (if
+            any) or an existing file only.
           </p>
         </div>
       ) : null}
@@ -986,7 +996,7 @@ export function CreditUnderwritingPanel({
       {app.credit_request_notes ? (
         <p className="text-xs text-muted-foreground">
           Rep notes to credit: {app.credit_request_notes}
-          {app.do_not_pull_credit ? " · Do not pull credit" : ""}
+          {app.do_not_pull_credit ? " · Pull credit: No" : ""}
         </p>
       ) : null}
 
@@ -1064,15 +1074,35 @@ export function CreditUnderwritingPanel({
           <DialogHeader>
             <DialogTitle>Get Credit Approval</DialogTitle>
           </DialogHeader>
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={doNotPull} onCheckedChange={(c) => setDoNotPull(c === true)} />
-            Do not pull credit
-          </label>
+          <div className="grid gap-2">
+            <Label>Pull credit</Label>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={!doNotPull ? "default" : "outline"}
+                onClick={() => setDoNotPull(false)}
+              >
+                Yes
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={doNotPull ? "destructive" : "outline"}
+                onClick={() => setDoNotPull(true)}
+              >
+                No
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Yes = Chris pulls a new bureau. No = use the Equifax on file only.
+            </p>
+          </div>
           {doNotPull ? (
             <div className="space-y-2 rounded-sm border border-red-200 bg-red-50 p-3">
               <p className="text-xs font-semibold text-red-900">
-                Credit Manager will be told <strong>DO NOT PULL CREDIT</strong> in a red banner and
-                email subject.
+                Credit Manager will be told <strong>PULL CREDIT: NO</strong> in a red banner and email
+                subject.
               </p>
               <div>
                 <Label>Upload Equifax file (optional)</Label>
@@ -1126,8 +1156,8 @@ export function CreditUnderwritingPanel({
                   });
                   toast.success(
                     doNotPull
-                      ? "Credit Manager notified — DO NOT PULL CREDIT"
-                      : "Credit Manager notified",
+                      ? "Credit Manager notified — Pull credit: No"
+                      : "Credit Manager notified — Pull credit: Yes",
                   );
                   setShowCreditReq(false);
                   await load();
@@ -1557,10 +1587,167 @@ function recLabel(r: UnderwriteReport["recommendation"]) {
   return "Send back";
 }
 
+function parseDob(raw: string | undefined): Date | null {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) {
+    const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function ageYears(dob: Date, on = new Date()): number {
+  let age = on.getFullYear() - dob.getFullYear();
+  const m = on.getMonth() - dob.getMonth();
+  if (m < 0 || (m === 0 && on.getDate() < dob.getDate())) age -= 1;
+  return age;
+}
+
+function nextBirthday(dob: Date, from = new Date()): { date: Date; days: number; today: boolean } {
+  const start = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const next = new Date(start.getFullYear(), dob.getMonth(), dob.getDate());
+  if (next < start) next.setFullYear(next.getFullYear() + 1);
+  const days = Math.round((next.getTime() - start.getTime()) / 86400000);
+  return { date: next, days, today: days === 0 };
+}
+
+function formatDobNice(d: Date): string {
+  return d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function DobCard({
+  leadId,
+  applicationId,
+  payload,
+  canEdit,
+  onSaved,
+}: {
+  leadId: string;
+  applicationId: string;
+  payload: Record<string, string>;
+  canEdit: boolean;
+  onSaved: () => Promise<void> | void;
+}) {
+  const raw = payload.dob || payload.date_of_birth || "";
+  const [editing, setEditing] = useState(!raw);
+  const [value, setValue] = useState(raw);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setValue(raw);
+    setEditing(!raw);
+  }, [raw, applicationId]);
+  const dob = parseDob(raw);
+  const next = dob ? nextBirthday(dob) : null;
+  const age = dob ? ageYears(dob) : null;
+
+  return (
+    <div className="rounded-sm border border-border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold">Date of birth</p>
+          {dob && age != null && next ? (
+            <p className="mt-0.5 text-sm">
+              {formatDobNice(dob)}
+              <span className="text-muted-foreground"> · age {age}</span>
+              {next.today ? (
+                <span className="ml-2 rounded-sm bg-primary px-1.5 py-0.5 text-[11px] font-semibold text-primary-foreground">
+                  Birthday today
+                </span>
+              ) : next.days <= 14 ? (
+                <span className="ml-2 text-[11px] font-medium text-primary">
+                  Birthday in {next.days} day{next.days === 1 ? "" : "s"} ({formatDobNice(next.date)})
+                </span>
+              ) : (
+                <span className="text-muted-foreground"> · next {formatDobNice(next.date)}</span>
+              )}
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              From the credit app — Chris uses this to pull bureau. Not a marketing calendar.
+            </p>
+          )}
+        </div>
+        {canEdit ? (
+          <Button type="button" size="sm" variant="outline" onClick={() => setEditing((v) => !v)}>
+            {raw ? "Edit" : "Add"}
+          </Button>
+        ) : null}
+      </div>
+      {canEdit && editing ? (
+        <div className="mt-2 flex flex-wrap items-end gap-2">
+          <div className="grid gap-1">
+            <Label className="text-[11px]">YYYY-MM-DD</Label>
+            <Input
+              type="date"
+              className="h-9 w-44"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await updateCreditAppDob({
+                  data: { leadId, applicationId, dob: value },
+                });
+                toast.success(value ? "Date of birth saved" : "Date of birth cleared");
+                setEditing(false);
+                await onSaved();
+              } catch (e) {
+                toast.error(e instanceof Error ? e.message : "Could not save DOB");
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Save
+          </Button>
+        </div>
+      ) : null}
+      {dob && next ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="mt-1 h-7 px-2 text-xs"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const body = next.today
+                ? `Birthday today — ${formatDobNice(dob)} (age ${age}).`
+                : `Birthday note: ${formatDobNice(dob)} (age ${age}). Next birthday ${formatDobNice(next.date)}.`;
+              await addActivity({ data: { leadId, body, kind: "note" } });
+              toast.success("Birthday note added to the deal");
+            } catch (e) {
+              toast.error(e instanceof Error ? e.message : "Could not add note");
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Add birthday note
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function UnderwriteCard({ report }: { report: UnderwriteReport }) {
   const pending =
     report.model === "pending" ||
     /about 20 seconds|Reading the file/.test(report.summary || "");
+  const [open, setOpen] = useState(pending);
+  useEffect(() => {
+    if (pending) setOpen(true);
+  }, [pending, report.id]);
   const tone = pending
     ? "border-amber-300 bg-amber-50 text-amber-950"
     : report.recommendation === "approve"
@@ -1571,48 +1758,63 @@ function UnderwriteCard({ report }: { report: UnderwriteReport }) {
           ? "border-amber-300 bg-amber-50 text-amber-950"
           : "border-border bg-muted/40";
   return (
-    <div className={`space-y-2 rounded-sm border p-3 text-sm ${tone}`}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
+    <div className={`rounded-sm border text-sm ${tone}`}>
+      <button
+        type="button"
+        className="flex w-full items-start justify-between gap-2 p-3 text-left"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <div className="min-w-0">
           <p className="font-semibold">{pending ? "Reading the file…" : recLabel(report.recommendation)}</p>
           <p className="text-[11px] opacity-80">
             {report.ran_by_name || "GSM"} · {new Date(report.created_at).toLocaleString("en-CA")}
             {report.model ? ` · ${report.model}` : ""}
+            {!open && report.summary && !pending
+              ? ` · ${report.summary.replace(/\s+/g, " ").slice(0, 90)}${report.summary.length > 90 ? "…" : ""}`
+              : ""}
           </p>
         </div>
-        <Badge variant="secondary">{report.recommendation.replace(/_/g, " ")}</Badge>
-      </div>
-      {report.policy?.flags?.length ? (
-        <ul className="space-y-1 text-xs">
-          {report.policy.flags.map((f) => (
-            <li key={f.id}>
-              <span className="font-medium">
-                {f.severity === "fail" ? "Fail" : f.severity === "warn" ? "Watch" : "OK"} — {f.label}.
-              </span>{" "}
-              {f.detail}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <p className="whitespace-pre-wrap text-sm leading-relaxed">{report.summary}</p>
-      {report.red_flags.length ? (
-        <div>
-          <p className="text-xs font-semibold">Red flags</p>
-          <ul className="list-disc pl-4 text-xs">
-            {report.red_flags.map((f) => (
-              <li key={f}>{f}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {report.conditions.length ? (
-        <div>
-          <p className="text-xs font-semibold">If you approve, still need</p>
-          <ul className="list-disc pl-4 text-xs">
-            {report.conditions.map((f) => (
-              <li key={f}>{f}</li>
-            ))}
-          </ul>
+        <span className="flex shrink-0 items-center gap-1">
+          <Badge variant="secondary">{report.recommendation.replace(/_/g, " ")}</Badge>
+          <ChevronDown className={`size-4 transition-transform ${open ? "rotate-180" : ""}`} />
+        </span>
+      </button>
+      {open ? (
+        <div className="space-y-2 border-t border-black/10 px-3 pb-3 pt-2">
+          {report.policy?.flags?.length ? (
+            <ul className="space-y-1 text-xs">
+              {report.policy.flags.map((f) => (
+                <li key={f.id}>
+                  <span className="font-medium">
+                    {f.severity === "fail" ? "Fail" : f.severity === "warn" ? "Watch" : "OK"} — {f.label}.
+                  </span>{" "}
+                  {f.detail}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <p className="whitespace-pre-wrap text-sm leading-relaxed">{report.summary}</p>
+          {report.red_flags.length ? (
+            <div>
+              <p className="text-xs font-semibold">Red flags</p>
+              <ul className="list-disc pl-4 text-xs">
+                {report.red_flags.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {report.conditions.length ? (
+            <div>
+              <p className="text-xs font-semibold">If you approve, still need</p>
+              <ul className="list-disc pl-4 text-xs">
+                {report.conditions.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

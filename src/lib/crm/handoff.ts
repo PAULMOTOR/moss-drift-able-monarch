@@ -784,6 +784,8 @@ async function savePalmettoQuote(
     tradeMake: "",
     tradeModel: "",
     tradeTrim: "",
+    tradeDriveType: "",
+    tradeColor: "",
     tradeKm: null,
     tradeKind: "financed",
   };

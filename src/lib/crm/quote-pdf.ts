@@ -150,7 +150,7 @@ export async function buildRetailQuotePdf(
   });
   y -= 18;
 
-  const vehicle = [client.year || "", client.make, client.model, client.trim]
+  const vehicle = [client.year || "", client.make, client.model, client.trim, client.driveType]
     .filter(Boolean)
     .join(" ");
 
